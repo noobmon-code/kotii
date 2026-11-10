@@ -50,7 +50,7 @@ export default function PointsScreen() {
           icon="human-child"
           tint="yellow"
           title="Nenhuma criança cadastrada"
-          message="Na aba Família, em “Sem celular”, adicione as crianças da casa. Depois, dê a elas tarefas que valem pontos."
+          message="Em Configurações, em “Pessoas e pets sem celular”, adicione as crianças da casa. Depois, dê a elas tarefas que valem pontos."
         />
       ) : (
         kids.map((kid, index) => (

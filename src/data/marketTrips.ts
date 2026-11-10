@@ -187,7 +187,7 @@ export async function readMarketTripPush(): Promise<boolean | null> {
 }
 
 /**
- * A opção em Família → "Avisos neste navegador". `value` undefined: ainda
+ * A opção em Configurações → "Avisos neste navegador". `value` undefined: ainda
  * lendo (ou não deu para ler). `set` liga ou desliga e devolve false quando
  * faltou a permissão do navegador. `pending`: uma mudança ainda no ar; até
  * ela terminar, outro toque não faz nada (devolve true: não há o que avisar)

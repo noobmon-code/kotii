@@ -69,8 +69,12 @@ export interface NukeSnapshot {
   shopping: { list: string; items: { name: string; quantity: number; unit: string }[] }[];
   /** Cardápio de hoje em diante (menuLines). */
   menu?: string[];
-  /** `aboveUsual`: o valor já conhecido está acima do normal da conta (describeAboveForNuke). */
-  bills: { name: string; amount: number | null; next_due_on: string; autopay: boolean; aboveUsual?: string }[];
+  /**
+   * `aboveUsual`: o valor já conhecido está acima do normal da conta (describeAboveForNuke). Sem o campo (Finanças
+   * desligada, lib/features), a linha das contas não entra: o retrato não diz "nada" do que o app não buscou.
+   */
+  bills?: { name: string; amount: number | null; next_due_on: string; autopay: boolean; aboveUsual?: string }[];
+  /** Os gastos do mês e o orçamento; null quando não há (também com Finanças desligada): a linha não entra. */
   spending: {
     month: string;
     total: number;
@@ -133,12 +137,16 @@ export function buildNukeContext(s: NukeSnapshot): string {
       ? s.shopping.map((l) => `Lista "${l.list}" (falta comprar): ${listOrNone(l.items.map((i) => `${i.name} ${formatQuantity(i.quantity, i.unit)}`))}.`)
       : ['Listas de compras: nada pendente.']),
     `Cardápio (hoje e próximos dias): ${listOrNone(s.menu ?? [], 14)}.`,
-    `Contas (atrasadas e próximos 30 dias): ${listOrNone(
-      s.bills.map(
-        (b) =>
-          `${b.name} ${b.amount != null ? formatBRL(b.amount) : 'valor varia'}${b.aboveUsual ? `, ${b.aboveUsual}` : ''} — ${b.next_due_on < s.today ? 'venceu' : 'vence'} ${shortDate(b.next_due_on)}${b.autopay ? ' (débito automático)' : ''}`,
-      ),
-    )}.`,
+    ...(s.bills
+      ? [
+          `Contas (atrasadas e próximos 30 dias): ${listOrNone(
+            s.bills.map(
+              (b) =>
+                `${b.name} ${b.amount != null ? formatBRL(b.amount) : 'valor varia'}${b.aboveUsual ? `, ${b.aboveUsual}` : ''} — ${b.next_due_on < s.today ? 'venceu' : 'vence'} ${shortDate(b.next_due_on)}${b.autopay ? ' (débito automático)' : ''}`,
+            ),
+          )}.`,
+        ]
+      : []),
   ];
   if (s.spending) {
     const cats = s.spending.byCategory.map((c) => `${getFinanceCategory(c.category).label} ${formatBRL(c.amount)}`);
@@ -183,15 +191,37 @@ export function historyForApi(messages: NukeMessage[], limit = HISTORY_LIMIT): {
 const UNITS = new Set(['un', 'kg', 'g', 'l', 'ml']);
 const RECURRENCES = new Set(['none', 'daily', 'weekly', 'monthly']);
 const SCREENS = new Set<string>(['hoje', 'compras', 'cardapio', 'despensa', 'tarefas', 'aparelhos', 'financas', 'contas', 'notas', 'precos', 'saude', 'familia']);
+/** As telas que só existem com Finanças: sem ela, o botão para elas não aparece. */
+const FINANCE_SCREENS = new Set<string>(['financas', 'contas']);
 const isDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
 const isText = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 
-/** Confere cada ação que veio da função antes de mostrar um botão para ela. */
-export function parseActions(raw: unknown): NukeAction[] {
+/**
+ * Se este app oferece a ação. Sem Finanças (`finance` false, a chave de lib/features), não oferece lançar um gasto
+ * nem abrir Finanças ou as contas: a ação gravaria nos gastos, ou abriria uma tela que não existe. Vale para a
+ * resposta que chega (parseActions) e também para as ações guardadas na conversa do aparelho, que voltam como
+ * estavam quando foram sugeridas (de antes da chave, por exemplo): a tela não mostra o botão delas e a execução
+ * recusa. A conversa guardada fica como está, e com a chave ligada de novo elas voltam.
+ */
+export function actionAvailable(action: { type: string; screen?: string }, { finance }: { finance: boolean }): boolean {
+  if (finance) return true;
+  if (action.type === 'add_expense') return false;
+  return !(action.type === 'open_screen' && FINANCE_SCREENS.has(String(action.screen)));
+}
+
+/** A recusa de uma ação que este app não oferece (actionAvailable), se ela chegar a ser executada. */
+export const NUKE_ACTION_UNAVAILABLE = 'Isso não está disponível nesta versão do app.';
+
+/**
+ * Confere cada ação que veio da função antes de mostrar um botão para ela. Sem Finanças (`finance` false, a chave
+ * de lib/features), a função continua podendo sugerir lançar um gasto ou abrir Finanças ou as contas: essas ações
+ * ficam de fora (actionAvailable), como as de um tipo que o app não conhece.
+ */
+export function parseActions(raw: unknown, options: { finance: boolean }): NukeAction[] {
   if (!Array.isArray(raw)) return [];
   const out: NukeAction[] = [];
   for (const a of raw) {
-    if (!a || typeof a !== 'object' || !isText(a.label)) continue;
+    if (!a || typeof a !== 'object' || !isText(a.label) || !actionAvailable(a, options)) continue;
     if (a.type === 'add_to_list' && Array.isArray(a.items)) {
       const items = a.items.filter(
         (i: { name?: unknown; quantity?: unknown; unit?: unknown; category?: unknown }) =>
@@ -236,9 +266,17 @@ export function describeAction(action: NukeAction): string {
   }
 }
 
-export const NUKE_SUGGESTIONS = [
-  'O que pede atenção hoje?',
-  'Quanto gastei este mês?',
-  'O que dá para cozinhar com o que tem na despensa?',
-  'Coloca café e leite na lista',
-];
+/** As perguntas prontas da conversa vazia. Sem Finanças, sem a do gasto do mês: o retrato não leva os gastos. */
+export function nukeSuggestions(finance: boolean): string[] {
+  return [
+    'O que pede atenção hoje?',
+    ...(finance ? ['Quanto gastei este mês?'] : []),
+    'O que dá para cozinhar com o que tem na despensa?',
+    'Coloca café e leite na lista',
+  ];
+}
+
+/** A apresentação do Nuke na conversa vazia: o que ele sabe da casa (as contas, só com Finanças). */
+export function nukeIntro(finance: boolean): string {
+  return `Sei o que tem na despensa, nas listas${finance ? ', nas contas' : ''} e na agenda da casa. Pergunte, ou me peça para anotar algo.`;
+}

@@ -3,10 +3,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { fetchReceiptHistoryPage } from '@/data/receipts';
-import { ReceiptsPanel } from '@/features/finance/ReceiptsPanel';
+import { ReceiptsPanel } from '@/features/market/ReceiptsPanel';
 import { Button, ListRow } from '@/ui/primitives';
 
-// Finanças > Notas de verdade, com as buscas de verdade de src/data/receipts.ts e um "servidor" que filtra,
+// Compras > Notas de verdade, com as buscas de verdade de src/data/receipts.ts e um "servidor" que filtra,
 // ordena, conta e corta como o PostgREST (teto de linhas por resposta). O que se confere: casa com mais de 200
 // notas (a lista antiga parava nas 200 mais recentes, calada) e rascunho antigo, que não pode sumir de "Para
 // revisar".
@@ -181,7 +181,7 @@ afterEach(async () => {
   client.clear();
 });
 
-describe('Finanças > Notas com mais de 200 notas', () => {
+describe('Compras > Notas com mais de 200 notas', () => {
   it('"Para revisar" traz todos os rascunhos, também o de mais de um ano; o histórico vem por mês, 50 de cada vez, contando o que falta', async () => {
     await open();
     const text = page();
@@ -213,7 +213,7 @@ describe('Finanças > Notas com mais de 200 notas', () => {
     // Chegou ao fim: nem botão nem frase.
     const text = page();
     expect(text).not.toContain('Mostrando as');
-    expect(renderer!.root.findAllByType(Button).map((b) => b.props.title)).toEqual(['Adicionar nota', 'Preços', 'Mercado do mês']);
+    expect(renderer!.root.findAllByType(Button).map((b) => b.props.title)).toEqual(['Adicionar nota']);
     // A nota mais antiga do histórico, de quase um ano e meio antes.
     expect(text).toContain('Setembro de 2025');
   });

@@ -36,8 +36,12 @@ export async function fetchBills(db: SupabaseClient = supabase): Promise<Bill[]>
   return unwrap(await db.from('bills').select(BILL_COLUMNS).order('active', { ascending: false }).order('next_due_on')) as Bill[];
 }
 
-export function useBills() {
-  return useQuery({ queryKey: ['bills'], queryFn: () => fetchBills() });
+/**
+ * As contas da casa. `enabled` false (a chave de Finanças desligada, lib/features): não busca. Uma busca desligada
+ * nunca fica `isSuccess`: quem espera tudo carregar deixa esta de fora da lista, em vez de esperar por ela.
+ */
+export function useBills(enabled = true) {
+  return useQuery({ queryKey: ['bills'], queryFn: () => fetchBills(), enabled });
 }
 
 export function useBill(id: string | undefined) {
@@ -479,9 +483,11 @@ export function useSetPaymentPayer() {
 // ---------------------------------------------------------------------------
 // Orçamento
 
-export function useBudgets() {
+/** Os limites do mês por categoria. `enabled` como em useBills. */
+export function useBudgets(enabled = true) {
   return useQuery({
     queryKey: ['budgets'],
+    enabled,
     queryFn: async () =>
       (unwrap(await supabase.from('budgets').select('category, monthly_limit')) as Budget[]).map((b) => ({
         ...b,

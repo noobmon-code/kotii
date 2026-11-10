@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { router } from 'expo-router';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import WeatherScreen from '@/app/clima';
@@ -210,11 +211,13 @@ describe('Clima da casa: definir o bairro', () => {
 });
 
 describe('Clima da casa: a dica por notificação', () => {
-  it('com avisos neste aparelho, aponta para os avisos da Família', async () => {
+  it('com avisos neste aparelho, aponta para os avisos de Configurações, e o botão abre direto a tela deles', async () => {
     mockState.location = PINHEIROS;
     await mount();
-    expect(page()).toContain('Cada pessoa liga no próprio aparelho, em Família, “Avisos neste celular”.');
+    expect(page()).toContain('Cada pessoa liga no próprio aparelho, em Configurações, “Avisos neste celular”.');
     expect(button('Abrir os avisos')).toBeDefined();
+    await act(async () => button('Abrir os avisos')!.props.onPress());
+    expect(router.push).toHaveBeenCalledWith('/avisos');
     expect(page()).not.toContain('tela Hoje');
   });
 

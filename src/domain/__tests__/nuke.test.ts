@@ -1,7 +1,17 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { FEEDBACK_MAX_LENGTH } from '../appFeedback';
-import { buildNukeContext, describeAction, historyForApi, type NukeSnapshot, parseActions } from '../nuke';
+import {
+  actionAvailable,
+  buildNukeContext,
+  describeAction,
+  historyForApi,
+  nukeIntro,
+  nukeSuggestions,
+  type NukeAction,
+  type NukeSnapshot,
+  parseActions,
+} from '../nuke';
 import { supplyLines } from '../supplies';
 
 const snapshot: NukeSnapshot = {
@@ -155,31 +165,37 @@ describe('nuke history and actions', () => {
   });
 
   it('keeps only well-formed actions from the server', () => {
-    const actions = parseActions([
-      { type: 'add_to_list', label: 'Adicionar', items: [{ name: 'Café', quantity: 2, unit: 'un', category: 'cafe_cha' }, { name: '', quantity: 1, unit: 'un', category: 'outros' }] },
-      { type: 'create_chore', label: 'Criar', title: 'Trocar filtro', due_on: '2026-10-01', recurrence: 'monthly' },
-      { type: 'add_expense', label: 'Registrar', description: 'Feira', amount: -3, category: 'mercado', spent_on: '2026-09-27' },
-      { type: 'open_screen', label: 'Ver contas', screen: 'contas' },
-      { type: 'open_screen', label: 'Ver', screen: 'admin' },
-      'lixo',
-    ]);
+    const actions = parseActions(
+      [
+        { type: 'add_to_list', label: 'Adicionar', items: [{ name: 'Café', quantity: 2, unit: 'un', category: 'cafe_cha' }, { name: '', quantity: 1, unit: 'un', category: 'outros' }] },
+        { type: 'create_chore', label: 'Criar', title: 'Trocar filtro', due_on: '2026-10-01', recurrence: 'monthly' },
+        { type: 'add_expense', label: 'Registrar', description: 'Feira', amount: -3, category: 'mercado', spent_on: '2026-09-27' },
+        { type: 'open_screen', label: 'Ver contas', screen: 'contas' },
+        { type: 'open_screen', label: 'Ver', screen: 'admin' },
+        'lixo',
+      ],
+      { finance: true },
+    );
     expect(actions.map((a) => a.type)).toEqual(['add_to_list', 'create_chore', 'open_screen']);
     expect(actions[0].type === 'add_to_list' && actions[0].items).toHaveLength(1);
     expect(describeAction(actions[0])).toBe('Café (2 un)');
     expect(describeAction(actions[1])).toBe('Trocar filtro · 01/10/2026');
-    expect(parseActions(null)).toEqual([]);
+    expect(parseActions(null, { finance: true })).toEqual([]);
   });
 
   it('recado para quem faz o app: só com um tipo conhecido e texto, e o cartão mostra o texto inteiro', () => {
-    const actions = parseActions([
-      { type: 'send_feedback', label: 'Mandar recado', kind: 'sugestao', text: '  Queria um modo escuro mais forte.\n' },
-      { type: 'send_feedback', label: 'Mandar recado', kind: 'elogio', text: 'Adorei a lista!\nMuito prática.' },
-      { type: 'send_feedback', label: 'Mandar recado', kind: 'duvida', text: 'Tipo que o app não conhece' },
-      { type: 'send_feedback', label: 'Mandar recado', kind: 'problema', text: '   ' },
-      { type: 'send_feedback', label: 'Mandar recado', kind: 'problema', text: null },
-      { type: 'send_feedback', label: 'Mandar recado', text: 'Sem tipo' },
-      { type: 'send_feedback', label: '', kind: 'outro', text: 'Sem rótulo' },
-    ]);
+    const actions = parseActions(
+      [
+        { type: 'send_feedback', label: 'Mandar recado', kind: 'sugestao', text: '  Queria um modo escuro mais forte.\n' },
+        { type: 'send_feedback', label: 'Mandar recado', kind: 'elogio', text: 'Adorei a lista!\nMuito prática.' },
+        { type: 'send_feedback', label: 'Mandar recado', kind: 'duvida', text: 'Tipo que o app não conhece' },
+        { type: 'send_feedback', label: 'Mandar recado', kind: 'problema', text: '   ' },
+        { type: 'send_feedback', label: 'Mandar recado', kind: 'problema', text: null },
+        { type: 'send_feedback', label: 'Mandar recado', text: 'Sem tipo' },
+        { type: 'send_feedback', label: '', kind: 'outro', text: 'Sem rótulo' },
+      ],
+      { finance: false },
+    );
     expect(actions).toEqual([
       { type: 'send_feedback', label: 'Mandar recado', kind: 'sugestao', text: 'Queria um modo escuro mais forte.' },
       { type: 'send_feedback', label: 'Mandar recado', kind: 'elogio', text: 'Adorei a lista!\nMuito prática.' },
@@ -187,15 +203,84 @@ describe('nuke history and actions', () => {
     expect(describeAction(actions[0])).toBe('“Queria um modo escuro mais forte.”');
     expect(describeAction(actions[1])).toBe('“Adorei a lista!\nMuito prática.”');
     // Nunca passa do tamanho da coluna: o que o cartão mostra é o que vai.
-    const [long] = parseActions([{ type: 'send_feedback', label: 'Mandar recado', kind: 'outro', text: '👍'.repeat(FEEDBACK_MAX_LENGTH + 10) }]);
+    const [long] = parseActions([{ type: 'send_feedback', label: 'Mandar recado', kind: 'outro', text: '👍'.repeat(FEEDBACK_MAX_LENGTH + 10) }], {
+      finance: false,
+    });
     expect(long.type === 'send_feedback' && Array.from(long.text)).toHaveLength(FEEDBACK_MAX_LENGTH);
   });
 
   it('um tipo de ação que o app não conhece fica de fora, sem derrubar as outras', () => {
-    const actions = parseActions([
-      { type: 'apagar_tudo', label: 'Apagar' },
-      { type: 'open_screen', label: 'Ver contas', screen: 'contas' },
-    ]);
+    const actions = parseActions(
+      [
+        { type: 'apagar_tudo', label: 'Apagar' },
+        { type: 'open_screen', label: 'Ver contas', screen: 'contas' },
+      ],
+      { finance: true },
+    );
     expect(actions).toEqual([{ type: 'open_screen', label: 'Ver contas', screen: 'contas' }]);
+  });
+
+  describe('com Finanças desligada (lib/features)', () => {
+    const fromServer = [
+      { type: 'add_expense', label: 'Registrar', description: 'Feira', amount: 42.5, category: 'mercado', spent_on: '2026-09-27' },
+      { type: 'open_screen', label: 'Ver Finanças', screen: 'financas' },
+      { type: 'open_screen', label: 'Ver contas', screen: 'contas' },
+      { type: 'open_screen', label: 'Ver notas', screen: 'notas' },
+      { type: 'open_screen', label: 'Ver a despensa', screen: 'despensa' },
+      { type: 'create_chore', label: 'Criar', title: 'Trocar filtro', due_on: '2026-10-01', recurrence: 'monthly' },
+    ];
+
+    it('a função ainda sugere lançar gasto e abrir Finanças ou as contas: o app deixa essas de fora e mostra as outras', () => {
+      expect(parseActions(fromServer, { finance: false })).toEqual([
+        { type: 'open_screen', label: 'Ver notas', screen: 'notas' },
+        { type: 'open_screen', label: 'Ver a despensa', screen: 'despensa' },
+        { type: 'create_chore', label: 'Criar', title: 'Trocar filtro', due_on: '2026-10-01', recurrence: 'monthly' },
+      ]);
+    });
+
+    it('a mesma regra vale para as ações guardadas na conversa (de antes da chave): as de Finanças não são oferecidas', () => {
+      // Como voltam do aparelho: já conferidas quando chegaram, e algumas já feitas.
+      const stored: (NukeAction & { done?: boolean })[] = [
+        { type: 'add_expense', label: 'Registrar', description: 'Feira', amount: 42.5, category: 'mercado', spent_on: '2026-09-27' },
+        { type: 'add_expense', label: 'Registrar', description: 'Pão', amount: 8, category: 'mercado', spent_on: '2026-09-26', done: true },
+        { type: 'open_screen', label: 'Ver Finanças', screen: 'financas' },
+        { type: 'open_screen', label: 'Ver contas', screen: 'contas' },
+        { type: 'open_screen', label: 'Ver notas', screen: 'notas' },
+        { type: 'create_chore', label: 'Criar', title: 'Trocar filtro', due_on: '2026-10-01', recurrence: 'monthly' },
+        { type: 'send_feedback', label: 'Mandar recado', kind: 'elogio', text: 'Gostei da lista.' },
+      ];
+      const offered = (finance: boolean) =>
+        stored.filter((a) => actionAvailable(a, { finance })).map((a) => (a.type === 'open_screen' ? a.screen : a.type));
+      expect(offered(false)).toEqual(['notas', 'create_chore', 'send_feedback']);
+      expect(offered(true)).toEqual(['add_expense', 'add_expense', 'financas', 'contas', 'notas', 'create_chore', 'send_feedback']);
+    });
+
+    it('ligada, as mesmas ações passam', () => {
+      expect(parseActions(fromServer, { finance: true }).map((a) => (a.type === 'open_screen' ? a.screen : a.type))).toEqual([
+        'add_expense',
+        'financas',
+        'contas',
+        'notas',
+        'despensa',
+        'create_chore',
+      ]);
+    });
+
+    it('o retrato não leva contas nem gastos: nenhuma linha deles, nem um "nada" que diria que não há conta', () => {
+      const text = buildNukeContext({ ...snapshot, bills: undefined, spending: null });
+      expect(text).not.toMatch(/Contas|Gastos|Orçamento/);
+      // O resto do retrato é o de sempre.
+      expect(text).toContain('Lista "Mercado" (falta comprar): Café 2 un.');
+      expect(text).toContain('02/10 14:00 Pediatra (Lucas)');
+      // Com contas no retrato (Finanças ligada), a linha vem, também vazia.
+      expect(buildNukeContext({ ...snapshot, bills: [] })).toContain('Contas (atrasadas e próximos 30 dias): nada.');
+    });
+
+    it('a conversa vazia não oferece a pergunta do gasto do mês nem diz que o Nuke sabe das contas', () => {
+      expect(nukeSuggestions(false)).toEqual(['O que pede atenção hoje?', 'O que dá para cozinhar com o que tem na despensa?', 'Coloca café e leite na lista']);
+      expect(nukeSuggestions(true)).toContain('Quanto gastei este mês?');
+      expect(nukeIntro(false)).toBe('Sei o que tem na despensa, nas listas e na agenda da casa. Pergunte, ou me peça para anotar algo.');
+      expect(nukeIntro(true)).toBe('Sei o que tem na despensa, nas listas, nas contas e na agenda da casa. Pergunte, ou me peça para anotar algo.');
+    });
   });
 });

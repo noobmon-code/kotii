@@ -23,6 +23,7 @@ import {
 import { categoryMergeWarning } from '@/domain/productCategory';
 import { normalizeSearch } from '@/domain/search';
 import type { ProductName } from '@/domain/similarNames';
+import { FEATURES } from '@/lib/features';
 import { Backdrop } from '@/ui/Backdrop';
 import { confirmAction, notify } from '@/ui/dialogs';
 import {
@@ -218,8 +219,9 @@ function ConfirmStep({
   const keepId = chosen ?? defaultKeep(opened.id, other.id, { [opened.id]: facts[opened.id].purchases, [other.id]: facts[other.id].purchases });
   const [keep, gone] = keepId === opened.id ? [opened, other] : [other, opened];
   const side = (product: ProductName): MergeSide => ({ name: product.name, facts: facts[product.id] });
-  // A categoria que fica é a do nome que fica: com as duas diferentes, o aviso diz qual, e que o passado muda junto.
-  const category = categoryMergeWarning(keep, gone);
+  // A categoria que fica é a do nome que fica: com as duas diferentes, o aviso diz qual, e que o passado muda junto
+  // (em Finanças também, só com a chave de lib/features ligada).
+  const category = categoryMergeWarning(keep, gone, FEATURES.finance);
   const warnings = [...mergeWarnings(side(opened), side(other)), ...(category ? [category] : [])];
   const summary = mergeSummary(side(gone), keep.name);
 

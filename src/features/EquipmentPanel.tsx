@@ -47,10 +47,10 @@ export function EquipmentPanel() {
     <View style={styles.gap}>
       {equipment.isError ? <StaleNotice onRetry={() => equipment.refetch()} /> : null}
       <Row style={styles.actions}>
+        {/* A ação principal da parte é o botão primário; "Prestadores" é outra tela, secundário ao lado. */}
         <Button
           title="Novo aparelho"
           icon="plus"
-          variant="secondary"
           style={styles.action}
           onPress={() => router.push({ pathname: '/aparelho/[id]', params: { id: 'novo' } })}
         />

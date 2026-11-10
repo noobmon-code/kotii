@@ -530,6 +530,19 @@ async function openMarketList(name = 'Mercado'): Promise<{ id: string; name: str
 }
 
 /**
+ * O atalho "Lista de mercado" da tela Hoje: a lista de mercado aberta mais recente da casa, ou uma nova "Mercado"
+ * (openMarketList, no servidor: a que a tela guardou pode ter sido arquivada em outro aparelho). As listas são
+ * buscadas de novo: a criada agora entra em Compras → Listas.
+ */
+export function useOpenMarketList() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => openMarketList(),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['lists'] }),
+  });
+}
+
+/**
  * Vários itens de uma vez; sem `listId`, cria uma lista de mercado nova. Com
  * `reuseMarketList`, usa a lista de mercado aberta mais recente (ou cria uma,
  * openMarketList) e não repete o que já está pendente nela: quem chama pode

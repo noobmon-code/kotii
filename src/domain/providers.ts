@@ -489,12 +489,13 @@ export function lastServiceMention(job: Pick<ServiceJob, 'done_on'>, referenceYe
 /**
  * A pergunta antes de excluir um prestador: o histórico dele vai junto.
  * `jobCount` nulo: os serviços não carregaram, então o aviso fala do histórico todo.
+ * `finance`: Finanças ligada (lib/features); desligada, a pergunta não fala dos gastos de lá, que a pessoa não vê.
  */
-export function deleteProviderWarning(name: string, jobCount: number | null): string {
+export function deleteProviderWarning(name: string, jobCount: number | null, finance: boolean): string {
   if (jobCount === 0) return `Excluir ${name}?`;
   const history =
     jobCount == null ? 'todo o histórico de serviços' : jobCount === 1 ? 'o serviço registrado' : `os ${jobCount} serviços registrados`;
-  return `Excluir ${name} e ${history}? Não dá para desfazer. Os gastos já lançados em Finanças continuam lá.`;
+  return `Excluir ${name} e ${history}? Não dá para desfazer.${finance ? ' Os gastos já lançados em Finanças continuam lá.' : ''}`;
 }
 
 // ---------------------------------------------------------------------------

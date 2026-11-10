@@ -41,7 +41,7 @@ export const DASHBOARD_MONTHS = 6;
 // ---------------------------------------------------------------------------
 // Vocabulário
 
-/** Os usos da IA, na ordem da aba Família. */
+/** Os usos da IA, na ordem de Configurações. */
 export const APP_AI_KINDS: readonly AiKind[] = ['chat', 'photo', 'menu', 'nfce', 'finance'];
 
 /** As funções que o painel conta, na ordem da rpc, com o nome que a tela mostra. */

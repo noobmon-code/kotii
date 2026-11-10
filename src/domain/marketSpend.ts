@@ -279,7 +279,7 @@ export interface MarketMonth {
   /** "Farmácia, fora desta conta: R$ 42,00": o que foi pago nos itens de farmácia. */
   pharmacy: string | null;
   pharmacyCents: number;
-  /** Rascunhos do mês, que ainda não contam: a frase, os mais recentes para abrir e "e mais 2 em Finanças > Notas". */
+  /** Rascunhos do mês, que ainda não contam: a frase, os mais recentes para abrir e "e mais 2 em Compras > Notas". */
   drafts: { label: string; receipts: MarketReceiptRef[]; more: string | null } | null;
   /**
    * "O que mudou": por que os itens custaram mais ou menos que na janela do mês anterior (a do cabeçalho), em
@@ -739,9 +739,15 @@ const spendStoreKey = (spend: MarketSpend) => `avulso:${listNameKey(spend.name) 
 
 /**
  * Tudo o que a tela "Mercado do mês" mostra, a partir das notas do mês e do mês anterior (com mercado e itens) e
- * dos gastos sem nota lançados como Mercado (`spends`). `today` diz se o mês é o corrente.
+ * dos gastos sem nota lançados como Mercado (`spends`). `today` diz se o mês é o corrente. Os rascunhos que não
+ * cabem na tela são mandados para Compras > Notas, que lista todos.
  */
-export function marketMonth(receipts: MarketReceipt[], month: string, today: string, spends: MarketSpend[] = []): MarketMonth {
+export function marketMonth(
+  receipts: MarketReceipt[],
+  month: string,
+  today: string,
+  spends: MarketSpend[] = [],
+): MarketMonth {
   const range = monthRange(month);
   // O total e as idas do cabeçalho: a mesma conta da entrada no resumo de gastos.
   const end = periodEnd(month, today);
@@ -1047,7 +1053,7 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
                 accessibilityLabel: `${storeName}, ${shortDate(date)}. Abrir a nota para revisar`,
               };
             }),
-            more: draftCount > DRAFTS_SHOWN ? `e mais ${draftCount - DRAFTS_SHOWN} em Finanças > Notas` : null,
+            more: draftCount > DRAFTS_SHOWN ? `e mais ${draftCount - DRAFTS_SHOWN} em Compras > Notas` : null,
           },
     change,
     emptyTitle: total.emptyTitle,
@@ -1229,6 +1235,12 @@ export function noCategoryItems(category: string, month: string): string {
  * daqui (o Resumo conta); num mês passado não há nada assim, e a frase não fala disso. No Resumo, "aqui" seria o
  * próprio Resumo: lá a frase diz o nome da tela, "no Mercado do mês", e "lá".
  */
+/**
+ * A linha do Mercado do mês no Resumo de Finanças, sem as notas na mão: onde ver o mês por inteiro (a linha não
+ * abre a tela, que tem uma entrada só, em Compras → Notas).
+ */
+export const MARKET_MONTH_WHERE = 'Por categoria, por item e por mercado, em Compras > Notas';
+
 export function marketVsSummary(month: string, today: string, where: 'mes' | 'resumo'): string {
   const start = where === 'mes' ? 'Diferente da barra “Mercado” do Resumo: aqui' : 'Diferente da barra “Mercado”: no Mercado do mês';
   const there = where === 'mes' ? '' : ' lá';

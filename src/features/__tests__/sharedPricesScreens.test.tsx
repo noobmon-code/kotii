@@ -2,17 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { router } from 'expo-router';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
-import FamilyScreen from '@/app/(tabs)/familia';
+import SettingsScreen from '@/app/(tabs)/configuracoes';
 import PricesScreen from '@/app/precos';
 import ProductScreen from '@/app/produto/[id]';
 import { formatShortDate, toISODate } from '@/domain/dates';
-import { SHARED_PRICES_NOTICE, SHARING_ABOUT, type SharedPrice } from '@/domain/sharedPrices';
+import { SHARED_PRICES_NOTICE, SHARING_ABOUT, SHARING_SUMMARY, SHARING_TITLE, type SharedPrice } from '@/domain/sharedPrices';
 import { storePricesFromSaved } from '@/domain/storePrices';
 import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
 import type { LatestPrice, PriceObservation, Product, Store } from '@/lib/types';
-import { HeaderButton } from '@/ui/FeatureCard';
 
-// As telas de verdade (produto, Preços e Família), com as buscas trocadas por respostas prontas: o que se confere
+// As telas de verdade (produto, Preços e a aba Configurações), com as buscas trocadas por respostas prontas: o que se confere
 // aqui é o que elas mostram dos preços de outras casas, e que nada muda quando o banco ainda não tem a função.
 
 interface Query {
@@ -28,7 +27,7 @@ interface Query {
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockQueries: Record<'products' | 'history' | 'stores' | 'prices' | 'shared' | 'available', Query> = {} as never;
-/** Quem pediu os preços de outras casas: o cartão da aba Família não pede. */
+/** Quem pediu os preços de outras casas: o cartão de Configurações não pede. */
 const mockSharedPrices = jest.fn(() => mockQueries.shared);
 
 jest.mock('expo-router', () => ({
@@ -52,7 +51,7 @@ jest.mock('@/features/market/PriceHistorySection', () => ({ PriceHistorySection:
 // Juntar produtos (o cartão de sugestões e a confirmação) também tem os testes dele.
 jest.mock('@/features/MergeSuggestionsCard', () => ({ MergeSuggestionsCard: () => null }));
 jest.mock('@/features/MergeProductsModal', () => ({ MergeProductsModal: () => null }));
-// A aba Família: a casa, as pessoas e as outras seções não entram no que se confere aqui.
+// A aba Configurações: a casa, as pessoas e as outras seções não entram no que se confere aqui.
 jest.mock('@/data/health', () => ({ usePeople: () => ({ data: [] }) }));
 jest.mock('@/data/home', () => ({ useKidPoints: () => ({ data: {} }) }));
 jest.mock('@/data/household', () => {
@@ -76,9 +75,11 @@ jest.mock('@/lib/auth', () => {
 });
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: unknown) => String(error) }));
 jest.mock('@/ui/dialogs', () => ({ confirmAction: jest.fn(), notify: jest.fn() }));
-jest.mock('@/features/AiUsageSection', () => ({ AiUsageSection: () => null }));
-jest.mock('@/features/DocumentsSection', () => ({ DocumentsSection: () => null }));
-jest.mock('@/features/HouseRemindersSection', () => ({ HouseRemindersSection: () => null }));
+jest.mock('@/features/AiUsageCard', () => ({ AiUsageCard: () => null }));
+jest.mock('@/data/appDashboard', () => ({ useIsAppAdmin: () => ({ data: false }) }));
+jest.mock('@/data/storeModeration', () => ({ useIsModerator: () => ({ data: false }) }));
+jest.mock('@/data/weather', () => ({ useHouseholdLocation: () => ({ data: null }) }));
+jest.mock('@/lib/reminders', () => ({ REMINDER_PLACE: 'neste celular' }));
 // Os desenhos animados (reanimated), o fundo e as imagens não entram no que se confere aqui.
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 // A leitura do código de barras tem os testes dela (productBarcode*.test.tsx): aqui, como num banco ainda sem a tabela.
@@ -399,10 +400,14 @@ describe('Preços: a linha "Visto por"', () => {
   });
 });
 
-describe('aba Família: "Preços compartilhados"', () => {
+describe('Configurações: "Preços compartilhados"', () => {
   it('com o compartilhamento no banco, a casa lê o que entra na base comum (mesmo sem preço nenhum para ela)', async () => {
-    const page = await mount(<FamilyScreen />);
-    expect(page).toContain(`Preços compartilhados${SHARING_ABOUT}`);
+    const page = await mount(<SettingsScreen />);
+    // Fechada, a linha diz em poucas palavras; o texto inteiro vem ao tocar.
+    expect(page).toContain(`${SHARING_TITLE}${SHARING_SUMMARY}`);
+    expect(page).not.toContain(SHARING_ABOUT);
+    await press(`${SHARING_TITLE}${SHARING_SUMMARY}`);
+    expect(textOf(renderer!.root)).toContain(`${SHARING_TITLE}${SHARING_SUMMARY}${SHARING_ABOUT}`);
     // Não há chave para desligar.
     expect(renderer!.root.findAll((node) => node.props.accessibilityRole === 'switch')).toHaveLength(0);
   });
@@ -411,7 +416,7 @@ describe('aba Família: "Preços compartilhados"', () => {
     // Nem quando os preços já estão aí, nem quando a função dos preços falta: o cartão segue a pergunta.
     for (const shared of [loaded([seen(SUPER, 'SUPER OUTRO', 21.9, 3)]), loaded(null)]) {
       mockQueries.shared = shared;
-      expect(await mount(<FamilyScreen />)).toContain(`Preços compartilhados${SHARING_ABOUT}`);
+      expect(await mount(<SettingsScreen />)).toContain(`${SHARING_TITLE}${SHARING_SUMMARY}`);
       await act(async () => renderer?.unmount());
     }
     expect(mockSharedPrices).not.toHaveBeenCalled();
@@ -425,50 +430,20 @@ describe('aba Família: "Preços compartilhados"', () => {
   ];
 
   it.each(CARD_NOT_AVAILABLE)('%s: o cartão não aparece e a aba é a de sempre', async (_name, answer) => {
-    const withCard = await mount(<FamilyScreen />);
+    const withCard = await mount(<SettingsScreen />);
     await act(async () => renderer?.unmount());
     mockQueries.available = answer();
-    const page = await mount(<FamilyScreen />);
+    const page = await mount(<SettingsScreen />);
     // A aba inteira, menos o cartão: nada mais muda.
-    expect(page).toBe(withCard.replace(`Preços compartilhados${SHARING_ABOUT}${TERMS_TITLE}`, ''));
+    expect(page).toBe(withCard.replace(`${SHARING_TITLE}${SHARING_SUMMARY}`, ''));
     expect(page).not.toContain('Preços compartilhados');
-    expect(page.startsWith('FamíliaSuas casas')).toBe(true);
-    expect(page).toContain('Código de conviteABC234');
+    expect(page.startsWith('ConfiguraçõesCasaMoradores (1)')).toBe(true);
   });
 
-  it('o cartão leva aos termos de uso, que dizem que o compartilhamento vem ligado', async () => {
-    const page = await mount(<FamilyScreen />);
-    expect(page).toContain(`Preços compartilhados${SHARING_ABOUT}${TERMS_TITLE}`);
-    await press(TERMS_TITLE);
+  it('logo depois do cartão, na mesma categoria, os termos de uso, que dizem que o compartilhamento vem ligado', async () => {
+    const page = await mount(<SettingsScreen />);
+    expect(page).toContain(`Sobre o Kotii${SHARING_TITLE}${SHARING_SUMMARY}${TERMS_TITLE}${termsVersionLabel()}`);
+    await press(`${TERMS_TITLE}${termsVersionLabel()}`);
     expect(router.push).toHaveBeenCalledWith('/termos');
-  });
-
-  it('a conta saiu da aba: a engrenagem do topo e a linha do fim abrem as Configurações (com os termos, sair e apagar)', async () => {
-    mockQueries.available = loaded(false);
-    const page = await mount(<FamilyScreen />);
-    // Os termos, o e-mail, sair e apagar a conta ficam nas Configurações (settingsScreen.test.tsx).
-    expect(page).not.toContain(termsVersionLabel());
-    expect(page).not.toContain('ana@exemplo.com');
-    expect(page).not.toContain('Sair da conta');
-    expect(page).not.toContain('Apagar minha conta');
-    // "Sair da casa" é da casa, e fica.
-    expect(page).toContain('Sair da casa');
-    expect(page.endsWith('Sair da casaConfiguraçõesSeu perfil, tema do app, clima da casa, termos e conta')).toBe(true);
-    await press('ConfiguraçõesSeu perfil, tema do app, clima da casa, termos e conta');
-    expect(router.push).toHaveBeenCalledWith('/configuracoes');
-    jest.mocked(router.push).mockClear();
-    // Sem o cartão do topo: nem o nome da casa nem um título à vista antes do primeiro cartão (o "Família" do começo é
-    // o título da página só para o leitor de tela); a engrenagem é o primeiro toque.
-    expect(page.startsWith('FamíliaSuas casas')).toBe(true);
-    const headers = renderer!.root.findAll((node) => typeof node.type === 'string' && node.props.accessibilityRole === 'header');
-    expect(headers[0].props.children).toBe('Família');
-    expect(page).not.toContain('Casa da Ana');
-    const gear = renderer!.root.findAll((node) => node.props.accessibilityLabel === 'Configurações' && typeof node.props.onPress === 'function');
-    expect(gear).toHaveLength(1);
-    const touches = renderer!.root.findAll((node) => typeof node.props.onPress === 'function');
-    expect(touches[0].type).toBe(HeaderButton);
-    expect(touches[0].props.label).toBe('Configurações');
-    await act(async () => gear[0].props.onPress());
-    expect(router.push).toHaveBeenCalledWith('/configuracoes');
   });
 });

@@ -64,7 +64,7 @@ export function PlansPanel({
   if (!plans.data || !people.data) return <Loading />;
 
   const humans = people.data.filter((p) => p.kind === 'pessoa');
-  // Pet escolhido na aba Cuidados não tem treino nem dieta: mostra todos.
+  // Pet escolhido em Cuidados ou em Remédios não tem treino nem dieta: mostra todos.
   const selected = humans.some((h) => h.id === personId) ? personId : null;
   const visible = (plans.data as (WorkoutPlan | DietPlan)[]).filter((p) => !selected || p.person_id === selected);
   const active = visible.filter((p) => p.status === 'active');
@@ -95,7 +95,6 @@ export function PlansPanel({
       <Button
         title={copy.add}
         icon="camera-outline"
-        variant="secondary"
         onPress={() => (humans.length ? importer.start(kind, selected ?? (humans.length === 1 ? humans[0].id : null)) : openNewPerson())}
       />
       {visible.length === 0 ? <EmptyState icon={copy.icon} title={copy.emptyTitle} message={copy.emptyMessage} /> : null}

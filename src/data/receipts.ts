@@ -41,7 +41,7 @@ type OptionalItemColumn = (typeof OPTIONAL_ITEM_COLUMNS)[number];
 const missingItemColumn = (error: unknown, columns: readonly OptionalItemColumn[]) =>
   columns.find((column) => isMissingColumn(error, column));
 
-/** Uma nota da lista de Finanças > Notas: com quantos itens ela tem. */
+/** Uma nota da lista de Compras > Notas: com quantos itens ela tem. */
 export type ReceiptListRow = Receipt & { receipt_items: { count: number }[] };
 
 const LIST_COLUMNS = `${RECEIPT_COLUMNS}, receipt_items(count)`;
@@ -114,7 +114,7 @@ export function nextReceiptCursor(page: ReceiptHistoryPage): ReceiptCursor | und
 }
 
 /**
- * O histórico de Finanças > Notas, em páginas de RECEIPTS_PAGE notas confirmadas. A chave começa com
+ * O histórico de Compras > Notas, em páginas de RECEIPTS_PAGE notas confirmadas. A chave começa com
  * 'receipts': confirmar, mudar ou excluir uma nota já recarrega (as páginas já abertas vêm de novo, em ordem).
  */
 export function useReceiptHistory() {

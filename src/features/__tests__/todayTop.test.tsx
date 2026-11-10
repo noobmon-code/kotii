@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { onlineManager } from '@tanstack/react-query';
+import { router } from 'expo-router';
 import { Children, type ReactElement } from 'react';
 import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -8,6 +10,7 @@ import TodayScreen from '@/app/(tabs)/index';
 import type { HouseholdLocation } from '@/data/weather';
 import { todayISO } from '@/domain/dates';
 import { defaultSky } from '@/domain/sky';
+import { MARKET_LIST_OFFLINE, MARKET_LIST_SHORTCUT } from '@/domain/today';
 import type { Forecast, WeatherHour } from '@/domain/weather';
 import { SkyHeader, washStops } from '@/features/SkyHeader';
 import { AngledGradient } from '@/ui/gradient';
@@ -53,11 +56,22 @@ jest.mock('@/data/finance', () => ({
   useSpending: () => mockQuery(undefined),
 }));
 jest.mock('@/data/house', () => ({ useDocuments: () => mockQuery(), useEquipmentList: () => mockQuery() }));
+// As listas abertas que o aparelho tem, e o pedido ao servidor do atalho "Lista de mercado".
+const mockMarket = {
+  lists: [] as { id: string; name: string; kind: string; archived_at: string | null; created_at: string; pending: number; items: [] }[],
+  openList: jest.fn(async () => ({ id: 'mercado-do-servidor', name: 'Mercado' })),
+};
 jest.mock('@/data/market', () => ({
   useAddItemsToList: () => ({ mutateAsync: jest.fn() }),
+  useOpenMarketList: () => ({ mutateAsync: mockMarket.openList }),
   usePurchaseRecords: () => mockQuery(),
-  useShoppingLists: () => mockQuery(),
+  useShoppingLists: () => mockQuery(mockMarket.lists),
 }));
+jest.mock('@/data/health', () => ({ usePeople: () => mockQuery() }));
+jest.mock('@/data/firstSteps', () => ({ useAnyList: () => mockQuery(false), useAnyReceipt: () => mockQuery(false) }));
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
+);
 jest.mock('@/data/marketTrips', () => ({ useRefreshMarketTrips: () => () => undefined }));
 jest.mock('@/data/menu', () => ({ useMenu: () => mockQuery() }));
 jest.mock('@/data/pendingReceipts', () => ({ usePendingReceipts: () => ({ pending: [] }) }));
@@ -68,13 +82,11 @@ jest.mock('@/features/ChoresPanel', () => ({ announceCompletion: jest.fn() }));
 jest.mock('@/features/finance/BillsPanel', () => ({ BillRow: () => null }));
 jest.mock('@/features/finance/PayBillModal', () => ({ PayBillModal: () => null }));
 jest.mock('@/features/health/HealthTodaySections', () => ({
-  hasHealthToday: () => false,
-  healthTodayCount: () => 0,
-  HealthTodaySections: () => null,
+  useHealthRows: () => ({ workout: () => null, appointment: () => null, toConfirm: () => null, vaccine: () => null, draft: () => null }),
 }));
 jest.mock('@/features/health/MedicationSections', () => ({
   DoseSubtitle: () => null,
-  MedicationRefills: () => null,
+  useRefillRows: () => () => null,
   useRefills: () => ({ rows: [], attention: [] }),
 }));
 jest.mock('@/features/health/useHealthOverview', () => ({
@@ -82,12 +94,12 @@ jest.mock('@/features/health/useHealthOverview', () => ({
 }));
 jest.mock('@/features/InstallAppCard', () => ({ InstallAppCard: () => null }));
 jest.mock('@/features/MarketTrip', () => ({ MarketTripBanner: () => null }));
-jest.mock('@/features/PendingReceiptCard', () => ({ PendingReceiptRow: () => null }));
-jest.mock('@/features/ReceiptScanner', () => ({ useReceiptScanner: () => ({ start: jest.fn(), busy: false, modal: null }) }));
+jest.mock('@/features/PendingReceiptCard', () => ({ pendingReceiptListRow: () => null }));
+jest.mock('@/features/ReceiptScanner', () => ({ useReceiptScanner: () => ({ open: jest.fn(), busy: false, element: null }) }));
 jest.mock('@/features/RecentPurchases', () => ({
   useJustListed: () => ({ pending: new Set<string>(), add: jest.fn(), drop: jest.fn() }),
 }));
-jest.mock('@/features/SuppliesSection', () => ({ SuppliesTodaySection: () => null }));
+jest.mock('@/features/SuppliesSection', () => ({ useSupplyTodayRows: () => () => null }));
 jest.mock('@/features/TermsNotice', () => ({ TermsNoticeCard: () => null }));
 jest.mock('@/lib/auth', () => {
   const me = { household_id: 'h1', user_id: 'ana', display_name: 'Ana', role: 'owner' };
@@ -98,7 +110,8 @@ jest.mock('@/lib/auth', () => {
   };
 });
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: unknown) => String(error) }));
-jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
+const mockNotify = jest.fn();
+jest.mock('@/ui/dialogs', () => ({ notify: (...args: unknown[]) => mockNotify(...args) }));
 jest.mock('@/ui/iconArt', () => ({ IconArt: () => null }));
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
@@ -132,11 +145,16 @@ beforeEach(() => {
   mockWeather.location = null;
   mockWeather.forecast = undefined;
   mockWeather.forecastFor = [];
+  mockMarket.lists = [];
+  mockMarket.openList.mockClear();
+  mockNotify.mockClear();
+  jest.mocked(router.push).mockClear();
 });
 
 afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
+  onlineManager.setOnline(true);
 });
 
 describe('o topo da tela Hoje', () => {
@@ -174,5 +192,84 @@ describe('o topo da tela Hoje', () => {
     const text = rawText(renderer!.root);
     expect(text).not.toMatch(/clima|bairro|Onde fica a casa/i);
     expect(text).not.toContain('Pinheiros');
+  });
+});
+
+describe('os atalhos da tela Hoje', () => {
+  const tile = (label: string) => renderer!.root.findAll((node) => node.props.label === label && typeof node.props.onPress === 'function')[0];
+  const list = (id: string, kind: string, createdAt: string, archived: string | null = null) => ({
+    id,
+    name: id,
+    kind,
+    archived_at: archived,
+    created_at: createdAt,
+    pending: 0,
+    items: [] as [],
+  });
+
+  it('são "Escanear nota", "Lista de mercado" (antes "Listas de compras", que fazia o mesmo que a aba) e "Criar nova tarefa"', async () => {
+    await mount();
+    const labels = renderer!.root.findAll((node) => typeof node.props.wash === 'string').map((node) => node.props.label);
+    expect(labels).toEqual(['Escanear nota', MARKET_LIST_SHORTCUT, 'Criar nova tarefa']);
+    expect(rawText(renderer!.root)).not.toContain('Listas de compras');
+  });
+
+  it('"Lista de mercado" pergunta ao servidor a lista de mercado aberta mais recente (ou uma nova) e abre ela', async () => {
+    // A guardada aqui pode ter sido arquivada em outro aparelho: com internet, quem diz é o servidor.
+    mockMarket.lists = [list('guardada', 'mercado', '2026-11-01T10:00:00Z')];
+    await mount();
+    await act(async () => tile(MARKET_LIST_SHORTCUT).props.onPress());
+    expect(mockMarket.openList).toHaveBeenCalledTimes(1);
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/lista/[id]', params: { id: 'mercado-do-servidor' } });
+  });
+
+  it('dois toques seguidos fazem um pedido só (sem lista aberta, dois criariam duas)', async () => {
+    let answer: (value: { id: string; name: string }) => void = () => undefined;
+    mockMarket.openList.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    await mount();
+    await act(async () => {
+      tile(MARKET_LIST_SHORTCUT).props.onPress();
+      tile(MARKET_LIST_SHORTCUT).props.onPress();
+    });
+    expect(mockMarket.openList).toHaveBeenCalledTimes(1);
+    await act(async () => answer({ id: 'nova', name: 'Mercado' }));
+    expect(router.push).toHaveBeenCalledTimes(1);
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/lista/[id]', params: { id: 'nova' } });
+  });
+
+  it('sem internet, abre a lista de mercado aberta mais recente que o aparelho guardou, sem pedir nada', async () => {
+    onlineManager.setOnline(false);
+    mockMarket.lists = [
+      list('farmacia', 'farmacia', '2026-11-09T10:00:00Z'),
+      list('antiga', 'mercado', '2026-10-01T10:00:00Z'),
+      list('nova', 'mercado', '2026-11-05T10:00:00Z'),
+    ];
+    await mount();
+    await act(async () => tile(MARKET_LIST_SHORTCUT).props.onPress());
+    expect(mockMarket.openList).not.toHaveBeenCalled();
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/lista/[id]', params: { id: 'nova' } });
+  });
+
+  it('sem internet e sem lista de mercado guardada, avisa (criar a lista precisa de internet)', async () => {
+    onlineManager.setOnline(false);
+    mockMarket.lists = [list('farmacia', 'farmacia', '2026-11-09T10:00:00Z')];
+    await mount();
+    await act(async () => tile(MARKET_LIST_SHORTCUT).props.onPress());
+    expect(mockMarket.openList).not.toHaveBeenCalled();
+    expect(router.push).not.toHaveBeenCalled();
+    expect(mockNotify).toHaveBeenCalledWith(MARKET_LIST_SHORTCUT, MARKET_LIST_OFFLINE);
+  });
+
+  it('o pedido que falha avisa, e o próximo toque pergunta de novo', async () => {
+    mockMarket.openList.mockImplementationOnce(async () => {
+      throw new Error('falhou');
+    });
+    await mount();
+    await act(async () => tile(MARKET_LIST_SHORTCUT).props.onPress());
+    expect(mockNotify).toHaveBeenCalledWith('Erro', 'Error: falhou');
+    expect(router.push).not.toHaveBeenCalled();
+    await act(async () => tile(MARKET_LIST_SHORTCUT).props.onPress());
+    expect(mockMarket.openList).toHaveBeenCalledTimes(2);
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/lista/[id]', params: { id: 'mercado-do-servidor' } });
   });
 });

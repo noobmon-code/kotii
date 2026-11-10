@@ -1,4 +1,4 @@
-// Finanças > Notas: o histórico das notas confirmadas, em páginas (as mais
+// Compras > Notas: o histórico das notas confirmadas, em páginas (as mais
 // recentes primeiro) e separado por mês. Nenhuma nota some calada: o que
 // ainda não veio é contado, com o botão de ver mais. Os rascunhos ("Para
 // revisar") são lidos todos, à parte (data/receipts).

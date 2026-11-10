@@ -17,7 +17,7 @@ import { gtinLabel } from '@/domain/barcode';
 import { CATEGORIES, getCategory } from '@/domain/categories';
 import { genericItem } from '@/domain/genericItem';
 import { noStorePriceSentence } from '@/domain/priceHistory';
-import { PRODUCT_CATEGORY_NOTE } from '@/domain/productCategory';
+import { productCategoryNote } from '@/domain/productCategory';
 import { PRODUCT_NAME_TAKEN, productNameTakenHint } from '@/domain/productMerge';
 import type { ProductName } from '@/domain/similarNames';
 import {
@@ -36,6 +36,7 @@ import { MergeProductsModal } from '@/features/MergeProductsModal';
 import { MergeSuggestionsCard } from '@/features/MergeSuggestionsCard';
 import { useProductBarcode } from '@/features/ProductBarcode';
 import { SharedPricesSection } from '@/features/SharedPrices';
+import { FEATURES } from '@/lib/features';
 import { errorMessage } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
@@ -265,8 +266,9 @@ export default function ProductScreen() {
       <PickerModal
         visible={pickingCategory}
         title="Categoria"
-        // Mudar a categoria muda também os meses passados no Mercado do mês e em Finanças: a pessoa sabe antes.
-        message={PRODUCT_CATEGORY_NOTE}
+        // Mudar a categoria muda também os meses passados no Mercado do mês (e em Finanças, com a chave de
+        // lib/features ligada): a pessoa sabe antes.
+        message={productCategoryNote(FEATURES.finance)}
         options={CATEGORIES.map((cat) => ({ id: cat.key, title: cat.label, left: <CategoryIcon category={cat.key} size={32} /> }))}
         onClose={() => setPickingCategory(false)}
         onSelect={(category) => {

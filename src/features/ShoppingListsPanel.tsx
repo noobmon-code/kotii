@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { useArchivedLists, useCreateList, useReopenList, useShoppingLists } from '@/data/market';
@@ -9,6 +9,7 @@ import { isNetworkFailure } from '@/lib/networkErrors';
 import type { ListKind } from '@/lib/types';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
+import { moveFocus } from '@/ui/focus';
 import {
   Button,
   Card,
@@ -25,9 +26,7 @@ import {
   Section,
   Text,
   TextField,
-  Tile,
 } from '@/ui/primitives';
-import { FeatureCard } from '@/ui/FeatureCard';
 import { space } from '@/ui/theme';
 
 export const LIST_KINDS: { value: ListKind; label: string; icon: IconName }[] = [
@@ -46,6 +45,8 @@ export function ShoppingListsPanel() {
   const lists = useShoppingLists();
   const createList = useCreateList();
   const [creating, setCreating] = useState(false);
+  // O botão sai da tela enquanto o formulário está aberto: "Cancelar" devolve o foco a ele (ver o formulário).
+  const newListButton = useRef<View>(null);
   const [name, setName] = useState('');
   const [kind, setKind] = useState<ListKind>('mercado');
   // As arquivadas: uma entrada discreta, só quando há alguma; abertas, cada uma com "Reabrir".
@@ -78,12 +79,11 @@ export function ShoppingListsPanel() {
       {lists.isError ? (
         <StaleNotice message={isNetworkFailure(lists.error) ? LISTS_OFFLINE : undefined} onRetry={() => lists.refetch()} />
       ) : null}
-      <Row gap={space.md} style={styles.tiles}>
-        <Tile icon="plus" tint="orange" label="Nova lista" onPress={() => setCreating(true)} />
-        <Tile icon="chart-line" tint="blue" label="Preços" onPress={() => router.push('/precos')} />
-        <Tile icon="silverware-fork-knife" tint="green" label="Cardápio da semana" onPress={() => router.push('/cardapio')} />
-      </Row>
-
+      {/* A ação principal da parte é um botão primário no alto (os atalhos de azulejo ficam só na tela Hoje); o
+          formulário toma o lugar dele enquanto está aberto. Como o botão tocado sai da tela, o foco não pode ficar
+          sem lugar: o campo do nome o recebe ao abrir (e a pessoa já digita) e "Cancelar" o devolve ao botão; sem
+          isso, a web voltava ao começo da página e o VoiceOver/TalkBack perdia o lugar. Preços e Cardápio são
+          outras telas, não criar: botões secundários logo abaixo. */}
       {creating ? (
         <Card style={styles.gap}>
           <Text variant="heading">Nova lista</Text>
@@ -92,13 +92,34 @@ export function ShoppingListsPanel() {
               <Chip key={k.value} label={k.label} icon={k.icon} selected={kind === k.value} onPress={() => setKind(k.value)} />
             ))}
           </Row>
-          <TextField value={name} onChangeText={setName} placeholder="Nome (ex.: Compras do mês)" onSubmitEditing={create} />
+          <TextField value={name} onChangeText={setName} placeholder="Nome (ex.: Compras do mês)" onSubmitEditing={create} autoFocus />
           <Row>
-            <Button title="Cancelar" variant="secondary" onPress={() => setCreating(false)} style={styles.flex} />
+            <Button
+              title="Cancelar"
+              variant="secondary"
+              onPress={() => {
+                setCreating(false);
+                moveFocus(newListButton);
+              }}
+              style={styles.flex}
+            />
             <Button title="Criar" onPress={create} loading={createList.isPending} style={styles.flex} />
           </Row>
         </Card>
-      ) : null}
+      ) : (
+        <Button ref={newListButton} title="Nova lista" icon="plus" onPress={() => setCreating(true)} />
+      )}
+      <Row style={styles.links}>
+        <Button title="Preços" icon="chart-line" variant="secondary" style={styles.link} onPress={() => router.push('/precos')} />
+        <Button
+          title="Cardápio"
+          accessibilityLabel="Cardápio da semana"
+          icon="silverware-fork-knife"
+          variant="secondary"
+          style={styles.link}
+          onPress={() => router.push('/cardapio')}
+        />
+      </Row>
 
       {lists.data.length === 0 && !creating ? (
         // Todas arquivadas: a casa já teve listas.
@@ -163,13 +184,6 @@ export function ShoppingListsPanel() {
         </View>
       ) : null}
 
-      {/* Daqui também se chega ao dinheiro do mercado, que nasce das notas das compras destas listas. */}
-      <FeatureCard
-        gradient="salvia"
-        title="Para onde foi o dinheiro do mercado"
-        subtitle="Mercado do mês: por item, por categoria e por mercado"
-        onPress={() => router.push('/mercado')}
-      />
     </View>
   );
 }
@@ -179,5 +193,8 @@ const styles = StyleSheet.create({
   gap: { gap: space.lg },
   gapSm: { gap: space.sm },
   wrap: { flexWrap: 'wrap' },
-  tiles: { alignItems: 'stretch' },
+  // Lado a lado num celular de 360 ("Cardápio da semana" inteiro não caberia ao lado de "Preços"); se não couber, um
+  // embaixo do outro.
+  links: { flexWrap: 'wrap' },
+  link: { flexGrow: 1 },
 });

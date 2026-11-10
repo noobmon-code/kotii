@@ -1,3 +1,4 @@
+import { onlineManager } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useMemo, useRef, useState, type ReactNode } from 'react';
@@ -39,6 +40,7 @@ import { CATEGORIES, getCategory } from '@/domain/categories';
 import { COMMON_ITEMS } from '@/domain/commonItems';
 import { formatBRDate, formatShortDate, parseBRDate, toISODate } from '@/domain/dates';
 import { duplicateReceiptNotice, findDuplicateReceipt } from '@/domain/duplicateReceipt';
+import { receiptSavedText } from '@/domain/finishPurchase';
 import {
   applyListChoices,
   forgottenLinks,
@@ -134,6 +136,9 @@ import { StaleNotice } from '@/features/health/StaleNotice';
 import { ReceiptItemEditor } from '@/features/ReceiptItemEditor';
 import { ReceiptListSection } from '@/features/ReceiptListSection';
 import { RenameStoreModal } from '@/features/RenameStoreModal';
+import { FEATURES } from '@/lib/features';
+import { handConfirmedReceipt } from '@/lib/finishPurchase';
+import { goBackOr } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import type { ReceiptItem } from '@/lib/types';
 import { Backdrop } from '@/ui/Backdrop';
@@ -849,16 +854,23 @@ export default function ReceiptScreen() {
       confirming.current = false;
       setCheckingPantry(false);
     }
-    const run = () =>
+    const run = () => {
+      // A pergunta de encerrar a ida, no fim do "Finalizar compra", segue as regras do "Limpar": o toque com internet
+      // e a resposta em até 30 s (domain/finishPurchase).
+      const tappedAt = Date.now();
+      const onlineAtTap = onlineManager.isOnline();
       confirm.mutate(payload, {
         onSuccess: () => {
           const pantryCount = payload.filter((p) => p.pantry).length;
-          const done = [
-            pantryCount ? `${pantryCount} ${pantryCount === 1 ? 'item foi' : 'itens foram'} para a despensa.` : null,
-            listCount ? `${listCount} ${listCount === 1 ? 'item saiu' : 'itens saíram'} da lista.` : null,
-          ].filter(Boolean);
-          notify('Nota salva', done.length ? done.join(' ') : undefined);
-          router.back();
+          // Aberta pelo "Finalizar compra" da lista: quem diz o que a nota fez é a lista, para onde a revisão volta
+          // (com o que ficou no carrinho e a pergunta de encerrar a ida). Senão, o aviso é daqui, como sempre.
+          const removedListItems = [...removals.values()].flatMap((list) => list.map((entry) => entry.id));
+          if (!handConfirmedReceipt({ tappedAt, onlineAtTap, pantryCount, removedListItems })) {
+            notify('Nota salva', receiptSavedText(pantryCount, listCount));
+          }
+          // Volta para quem abriu a revisão (a lista, no "Finalizar compra"; o QR code e a pendente já saíram do
+          // caminho). Sem tela para voltar (no navegador, a página recarregada), as notas da casa.
+          goBackOr({ pathname: '/compras', params: { aba: 'notas' } });
         },
         onError: (err) => {
           // A nota sumiu em outro aparelho (P0002): a tela busca a nota de novo, e vira a da nota que sumiu.
@@ -867,6 +879,7 @@ export default function ReceiptScreen() {
           void receiptQuery.refetch();
         },
       });
+    };
     if (!receipt.store_id) {
       confirmAction(
         'Nota sem mercado',
@@ -1148,12 +1161,16 @@ export default function ReceiptScreen() {
             ))}
           </View>
         ) : null}
-        <PayerChips
-          value={receipt.paid_by}
-          onChange={(paidBy) => {
-            if (!refuseStale()) updateReceipt.mutate({ paid_by: paidBy }, { onError });
-          }}
-        />
+        {/* "Quem pagou" só serve à divisão de gastos de Finanças: com a chave desligada (lib/features), uma pergunta
+            a menos na revisão. */}
+        {FEATURES.finance ? (
+          <PayerChips
+            value={receipt.paid_by}
+            onChange={(paidBy) => {
+              if (!refuseStale()) updateReceipt.mutate({ paid_by: paidBy }, { onError });
+            }}
+          />
+        ) : null}
         {isDraft ? null : <Text variant="small">{CONFIRMED_EDIT_NOTE}</Text>}
         {photos.length ? (
           <Button

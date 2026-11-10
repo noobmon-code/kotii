@@ -68,12 +68,8 @@ export function ChoresPanel() {
 
   return (
     <View style={styles.gap}>
-      <Button
-        title="Nova tarefa"
-        icon="plus"
-        variant="secondary"
-        onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: 'nova' } })}
-      />
+      {/* A ação principal da parte, primária e no alto; "Pontos das crianças" é outra tela, secundário. */}
+      <Button title="Nova tarefa" icon="plus" onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: 'nova' } })} />
       {kids.length ? (
         <Button title="Pontos das crianças" icon="star-circle-outline" variant="secondary" onPress={() => router.push('/pontos')} />
       ) : null}

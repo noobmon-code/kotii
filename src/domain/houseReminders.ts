@@ -22,6 +22,10 @@ export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments
 /** O nome do aviso de caixa e receita acabando: a tela do remédio diz qual ligar. */
 export const REFILLS_REMINDER_LABEL = 'Remédios e receitas acabando';
 
+/** A dica do resumo de amanhã; sem Finanças (`finance` false), ele não tem contas para listar e não as cita. */
+const eveHint = (finance: boolean) =>
+  `Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, compromissos, aniversários, ${finance ? 'contas, ' : ''}tarefas, vacinas e documentos. Só quando há algo fora da rotina (o compromisso de toda semana e a tarefa de todo dia não entram). Com ele ligado, a consulta e o compromisso de amanhã vêm nele, no lugar do aviso das 19h`;
+
 export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint: string }[] = [
   { key: 'bills', label: 'Contas a pagar', hint: 'Na véspera, no dia do vencimento e, se ficar em aberto, uma vez depois, às 9h' },
   { key: 'documents', label: 'Documentos', hint: 'Quando começa o prazo de renovar, uma semana antes e no dia em que vence, às 9h' },
@@ -44,21 +48,43 @@ export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint
     hint: `Às 7h, quando o tempo pede algo: dia de lavar roupa, chuva, calor, frio, temporal. O bairro da casa se define em ${HOUSE_PLACE_WHERE}`,
   },
   { key: 'supplies', label: 'Gás, água e ração', hint: 'Uns dias antes de acabar e no dia previsto, pela conta do Kotii, às 9h' },
-  {
-    key: 'eve',
-    label: 'Resumo de amanhã',
-    hint: 'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, compromissos, aniversários, contas, tarefas, vacinas e documentos. Só quando há algo fora da rotina (o compromisso de toda semana e a tarefa de todo dia não entram). Com ele ligado, a consulta e o compromisso de amanhã vêm nele, no lugar do aviso das 19h',
-  },
+  { key: 'eve', label: 'Resumo de amanhã', hint: eveHint(true) },
 ];
+
+/**
+ * Os tipos que este app não oferece: com Finanças desligada (`finance` false, a chave de lib/features), o das
+ * contas a pagar. Eles somem da lista e contam como desligados (effectiveHouseReminderKinds), e o que já estava
+ * agendado deles sai do aparelho.
+ */
+export function hiddenHouseReminderKinds(finance: boolean): HouseReminderKind[] {
+  return finance ? [] : ['bills'];
+}
+
+/**
+ * Os tipos que valem de fato: a escolha guardada no aparelho, com os escondidos desligados. A escolha em si fica
+ * guardada como estava: com Finanças ligada de novo, o aviso de contas volta como a pessoa tinha deixado.
+ */
+export function effectiveHouseReminderKinds(
+  kinds: Record<HouseReminderKind, boolean>,
+  finance: boolean,
+): Record<HouseReminderKind, boolean> {
+  const hidden = hiddenHouseReminderKinds(finance);
+  return hidden.length ? { ...kinds, ...Object.fromEntries(hidden.map((kind) => [kind, false])) } : kinds;
+}
 
 /**
  * Os tipos que a lista de avisos oferece. Num banco ainda sem as tabelas das
  * reposições (`suppliesAvailable === false`), o tipo delas não aparece: a
  * pessoa ligaria um aviso sem ter onde cadastrar o gás. Só no `false`: sem
- * resposta ainda (ou com a busca falhando sem internet), a linha fica.
+ * resposta ainda (ou com a busca falhando sem internet), a linha fica. Sem
+ * Finanças (`finance` false), nem o aviso das contas, e a dica do resumo de
+ * amanhã deixa de citar contas.
  */
-export function shownHouseReminderKinds(suppliesAvailable: boolean | undefined) {
-  return HOUSE_REMINDER_KINDS.filter((kind) => kind.key !== 'supplies' || suppliesAvailable !== false);
+export function shownHouseReminderKinds(suppliesAvailable: boolean | undefined, finance: boolean) {
+  const hidden = hiddenHouseReminderKinds(finance);
+  return HOUSE_REMINDER_KINDS.filter((kind) => !hidden.includes(kind.key) && (kind.key !== 'supplies' || suppliesAvailable !== false)).map(
+    (kind) => (kind.key === 'eve' ? { ...kind, hint: eveHint(finance) } : kind),
+  );
 }
 
 export interface HouseReminder {

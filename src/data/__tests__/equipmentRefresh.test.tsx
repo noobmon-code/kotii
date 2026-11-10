@@ -15,7 +15,6 @@ import { Button, ErrorNotice, ListRow, Screen } from '@/ui/primitives';
 type Row = Record<string, unknown>;
 type Answer = { data: unknown; error: unknown };
 
-const mockIdle = { data: undefined, isPending: false, isError: false, isRefetching: false, error: null, refetch: jest.fn() };
 const mockFridge: Row = {
   id: 'e-1',
   name: 'Geladeira',
@@ -81,13 +80,10 @@ jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn(), confirmAction: jest.fn() }));
 jest.mock('@/lib/auth', () => ({ useHousehold: () => ({ data: { members: [] } }) }));
 jest.mock('@/lib/session', () => ({ endSessionIfGone: async () => false }));
-// As outras abas não entram nesta história.
-jest.mock('@/features/ShoppingListsPanel', () => ({ ShoppingListsPanel: () => null }));
-jest.mock('@/features/PantryPanel', () => ({ PantryPanel: () => null }));
+// As outras partes da aba não entram nesta história.
+jest.mock('@/features/AgendaPanel', () => ({ AgendaPanel: () => null, agendaQueryKeys: () => [] }));
+jest.mock('@/features/DocumentsSection', () => ({ DocumentsSection: () => null }));
 jest.mock('@/features/ChoresPanel', () => ({ ChoresPanel: () => null }));
-jest.mock('@/features/SuppliesSection', () => ({ SuppliesSection: () => null }));
-jest.mock('@/data/market', () => ({ useShoppingLists: () => mockIdle }));
-jest.mock('@/data/supplies', () => ({ useSupplies: () => mockIdle }));
 jest.mock('@/lib/supabase', () => {
   // Uma consulta do supabase-js: responde quando alguém espera por ela, pela tabela.
   const query = (table: string) => {

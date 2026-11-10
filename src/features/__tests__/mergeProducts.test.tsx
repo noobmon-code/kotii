@@ -312,15 +312,16 @@ describe('confirmação de juntar', () => {
   it('categorias diferentes: o aviso diz qual fica (a do nome que fica) e que as compras dos meses passados mudam junto', async () => {
     mockBank.products = mockBank.products.map((item) => (item.id === ARROZ.id ? { ...item, category: 'outros' } : item));
     await open();
+    // Sem Finanças (lib/features), o aviso fala só do Mercado do mês.
     expect(screen()).toContain(
       'Os dois estão em categorias diferentes: "Arroz Tio João 5 kg" em Grãos, massas e cereais, "Arroz 5kg" em Outros. ' +
-        'Fica Grãos, massas e cereais: as compras de "Arroz 5kg", também as dos meses passados, passam para essa categoria no Mercado do mês e em Finanças.',
+        'Fica Grãos, massas e cereais: as compras de "Arroz 5kg", também as dos meses passados, passam para essa categoria no Mercado do mês.',
     );
     // Escolher o outro nome troca a categoria que fica, e o aviso diz isso.
     await press(pressables('radio')[0]);
     expect(screen()).toContain(
       'Os dois estão em categorias diferentes: "Arroz 5kg" em Outros, "Arroz Tio João 5 kg" em Grãos, massas e cereais. ' +
-        'Fica Outros: as compras de "Arroz Tio João 5 kg", também as dos meses passados, passam para essa categoria no Mercado do mês e em Finanças.',
+        'Fica Outros: as compras de "Arroz Tio João 5 kg", também as dos meses passados, passam para essa categoria no Mercado do mês.',
     );
     // Ainda dá para juntar.
     await press(button('Juntar produtos'));

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { ReactNode } from 'react';
-import { AccessibilityInfo, Platform, ScrollView } from 'react-native';
+import { AccessibilityInfo, Platform, ScrollView, StyleSheet } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import ShoppingListScreen from '@/app/lista/[id]/index';
@@ -11,19 +11,26 @@ import { PRICE_CALCULATOR_LABEL, WAITING_SENTENCE as WAITING_TEXT } from '@/doma
 import { SHARED_PRICES_NOTICE, type SharedPrice } from '@/domain/sharedPrices';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import { ALL_IN_CART_MESSAGE, FINISH_OFFLINE_NOTICE } from '@/domain/finishPurchase';
 import { CHOSEN_STORE_MS } from '@/domain/listEstimate';
+import { LIST_MENU_LABEL } from '@/domain/listMode';
 import type { MarketTrip } from '@/domain/marketTrips';
 import { CartPantryModal } from '@/features/CartPantryModal';
 import { ListEstimateCard } from '@/features/ListEstimateCard';
 import { forgetAddedItems, rememberAdded } from '@/lib/addedItems';
+import { handConfirmedReceipt, stopWaitingForReceipt } from '@/lib/finishPurchase';
+import { pickReceiptImages } from '@/data/receipts';
+import { router } from 'expo-router';
 import { PasteListModal } from '@/features/PasteListModal';
 import { ANNOUNCE_DELAY_MS, PriceCalculator } from '@/features/PriceCalculator';
+import { ListMenu } from '@/features/ListMenu';
+import { RecentPurchases, RestockStrip } from '@/features/RecentPurchases';
 import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
 import type { LatestPrice, PantryItem, Product, ShoppingListItem } from '@/lib/types';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
-import { askYesNo, notify } from '@/ui/dialogs';
-import { Badge, Button, Card, ErrorNotice, ListRow, Loading, Screen, Text, TextField } from '@/ui/primitives';
+import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
+import { Badge, Button, Card, Chip, EmptyState, ErrorNotice, IconButton, ListRow, Loading, Screen, Text, TextField } from '@/ui/primitives';
 
 // A tela da lista de verdade, com as buscas trocadas por respostas prontas: o que se confere aqui é o que ela
 // faz com o que cada busca devolve (carregada, a caminho, falhou), que as regras de domain/ não enxergam.
@@ -54,6 +61,8 @@ const mockSeen: {
   options?: Record<string, unknown>;
 } = {};
 
+/** A volta da lista ao foco (de outra tela por cima dela, como a revisão da nota): o teste chama quando quer. */
+const mockFocus: { effect: (() => void) | null } = { effect: null };
 jest.mock('expo-router', () => ({
   router: { push: jest.fn(), back: jest.fn() },
   Stack: {
@@ -63,11 +72,24 @@ jest.mock('expo-router', () => ({
     },
   },
   useLocalSearchParams: () => ({ id: 'l1' }),
+  useFocusEffect: (effect: () => void) => {
+    mockFocus.effect = effect;
+  },
 }));
-// O que está guardado da lista é o que a tela recebeu por último.
+// O que está guardado da lista é o que a tela recebeu por último. A conexão é a mesma das idas ao mercado.
 jest.mock('@tanstack/react-query', () => ({
   useQueryClient: () => ({ getQueryData: (key: unknown[]) => (key[0] === 'listItems' ? mockQueries.items?.data : undefined) }),
+  onlineManager: { isOnline: () => mockTrips.online },
 }));
+// O leitor de nota de verdade (o menu do "Finalizar compra" usa as opções dele), sem ler nada: a leitura tem os
+// testes dela (pendingReceiptFlow, duplicateReceipt).
+jest.mock('@/data/receipts', () => ({
+  MAX_RECEIPT_PHOTOS: 6,
+  pickReceiptImages: jest.fn(async () => []),
+  useScanReceipt: () => ({ mutate: jest.fn(), isPending: false }),
+  useCreateManualReceipt: () => ({ mutate: jest.fn(), isPending: false }),
+}));
+jest.mock('@/ui/NukeLive', () => ({ NukeLive: () => null }));
 jest.mock('@/data/home', () => ({ usePantry: () => mockQueries.pantry }));
 jest.mock('@/data/listPhotos', () => ({
   dropPendingPhotos: jest.fn(),
@@ -86,6 +108,7 @@ const mockQueue = {
   removePending: jest.fn<(input: unknown) => Promise<string>>(),
   reopen: jest.fn(),
   rename: jest.fn(),
+  archive: jest.fn(),
 };
 /**
  * A fila do limpar: guarda as respostas até "a conexão voltar" (deliverClears), como a fila de verdade faz com o
@@ -102,7 +125,7 @@ jest.mock('@/data/market', () => {
     newToggleToken: () => 'selo',
     removalWaitsForQueue: () => false,
     useAddListItem: () => ({ add: mockQueue.add }),
-    useArchiveList: mutation,
+    useArchiveList: () => ({ mutate: mockQueue.archive, isPending: false }),
     useReopenList: () => ({ mutate: mockQueue.reopen, isPending: false }),
     useRenameList: () => ({ mutate: mockQueue.rename, isPending: false }),
     useClearCheckedItems: () => ({
@@ -134,7 +157,7 @@ jest.mock('@/data/learnedAbbreviations', () => ({
 }));
 jest.mock('@/lib/auth', () => ({ useAuth: () => ({ session: { user: { id: 'u1' } } }), useHouseholdId: () => 'h1' }));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: unknown) => String(error) }));
-jest.mock('@/ui/dialogs', () => ({ askYesNo: jest.fn(), confirmAction: jest.fn(), notify: jest.fn() }));
+jest.mock('@/ui/dialogs', () => ({ afterPaint: (run: () => void) => run(), askYesNo: jest.fn(), confirmAction: jest.fn(), notify: jest.fn() }));
 // Os desenhos animados (reanimated) e o fundo não entram no que se confere aqui.
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 // O caminho depois de ler o código de barras tem os testes dele (productBarcodeFlow.test.tsx): aqui, só o botão e o
@@ -1219,16 +1242,111 @@ const liveTrip = (patch: Partial<MarketTrip> = {}): MarketTrip => ({
 });
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
 const button = (title: string) => renderer!.root.findAllByType(Button).find((entry) => entry.props.title === title);
+/** O botão do rodapé da tela (Screen `footer`), ou undefined. */
+const footer = () => renderer!.root.findByType(Screen).props.footer as { props: { title: string; onPress: () => void } } | undefined;
+const finishSheet = () => renderer!.root.findAllByType(ActionSheet).find((sheet) => sheet.props.title === 'Finalizar compra')!;
+/** Toca no "Finalizar compra" do rodapé. */
+const tapFinish = () => act(async () => footer()!.props.onPress());
+/** Escolhe no menu do "Finalizar compra", como ele faz: fecha e depois roda a ação. */
+async function pick(label: string) {
+  const sheet = finishSheet();
+  const action = (sheet.props.actions as SheetAction[]).find((entry) => entry.label === label);
+  expect(action).toBeDefined();
+  await act(async () => {
+    sheet.props.onClose();
+    action!.onPress();
+  });
+}
 
-describe('renomear e reabrir a lista', () => {
+describe('o menu da lista, no cabeçalho ao lado da calculadora: renomear, arquivar e reabrir', () => {
+  let header: ReactTestRenderer | undefined;
+
+  afterEach(async () => {
+    await act(async () => header?.unmount());
+    header = undefined;
+  });
+
+  /** Desenha o que a tela pôs à direita no cabeçalho, como o Stack faz, e devolve o botão do menu. */
+  async function menuButton() {
+    const headerRight = mockSeen.options?.headerRight as ((props: { tintColor?: string }) => ReactNode) | undefined;
+    expect(headerRight).toBeDefined();
+    await act(async () => {
+      header = create(<>{headerRight!({ tintColor: '#3656F4' })}</>);
+    });
+    const found = header!.root.findAll((node) => node.props.accessibilityLabel === LIST_MENU_LABEL && Boolean(node.props.onPress));
+    expect(found).toHaveLength(1);
+    return found[0];
+  }
+  /** O menu que a tela desenha (o cabeçalho só tem o botão). */
+  const menu = () => renderer!.root.findByType(ListMenu).findByType(ActionSheet);
+  const menuChoices = () => (menu().props.actions as SheetAction[]).map((action) => action.label);
+  /** Abre o menu pelo botão do cabeçalho e escolhe, como o menu faz: fecha e depois roda a ação. */
+  async function fromMenu(label: string) {
+    const open = await menuButton();
+    await act(async () => open.props.onPress());
+    expect(menu().props.visible).toBe(true);
+    const action = (menu().props.actions as SheetAction[]).find((entry) => entry.label === label);
+    expect(action).toBeDefined();
+    await act(async () => {
+      menu().props.onClose();
+      action!.onPress();
+    });
+    expect(menu().props.visible).toBe(false);
+  }
+
+  it('o botão do menu fica ao lado da calculadora, com nome para o leitor de tela e o toque de 44', async () => {
+    await mount();
+    const open = await menuButton();
+    expect(open.props.accessibilityRole).toBe('button');
+    const style = StyleSheet.flatten(typeof open.props.style === 'function' ? open.props.style({ pressed: false }) : open.props.style);
+    expect(style).toMatchObject({ minWidth: 44, minHeight: 44 });
+    // A calculadora e o menu, nessa ordem, numa linha.
+    const labels = header!.root
+      .findAll((node) => typeof node.props.accessibilityLabel === 'string' && Boolean(node.props.onPress))
+      .map((node) => node.props.accessibilityLabel);
+    expect([...new Set(labels)]).toEqual([PRICE_CALCULATOR_LABEL, LIST_MENU_LABEL]);
+    // Fechado até o toque; o título é o nome da lista.
+    expect(menu().props.visible).toBe(false);
+    expect(menu().props.title).toBe('Mercado');
+    expect(menuChoices()).toEqual(['Renomear lista', 'Arquivar lista']);
+  });
+
+  it('os botões largos do fim da tela saíram: renomear e arquivar ficam só no menu', async () => {
+    mockQueries.items = loaded([listItem('a', 'Arroz', null)]);
+    await mount();
+    expect(button('Renomear lista')).toBeUndefined();
+    expect(button('Arquivar lista')).toBeUndefined();
+    expect(button('Reabrir lista')).toBeUndefined();
+  });
+
   it('"Renomear lista" abre o modal com o nome de agora e grava o nome novo', async () => {
     await mount();
-    await act(async () => button('Renomear lista')!.props.onPress());
+    await fromMenu('Renomear lista');
     const field = renderer!.root.findAllByType(TextField).find((entry) => entry.props.label === 'Nome da lista')!;
     expect(field.props.value).toBe('Mercado');
     await act(async () => field.props.onChangeText(' Feira  do sábado'));
     await act(async () => button('Salvar')!.props.onPress());
     expect(mockQueue.rename).toHaveBeenCalledWith('Feira do sábado', expect.anything());
+  });
+
+  it('"Arquivar lista" pergunta como antes e, confirmado, arquiva e volta', async () => {
+    jest.mocked(confirmAction).mockClear();
+    mockQueue.archive.mockClear();
+    jest.mocked(router.back).mockClear();
+    await mount();
+    await fromMenu('Arquivar lista');
+    expect(confirmAction).toHaveBeenCalledWith(
+      'Arquivar lista',
+      'A lista some das telas, mas as notas e preços continuam.',
+      'Arquivar',
+      expect.any(Function),
+    );
+    expect(mockQueue.archive).not.toHaveBeenCalled();
+    await act(async () => jest.mocked(confirmAction).mock.calls[0][3]());
+    expect(mockQueue.archive).toHaveBeenCalledTimes(1);
+    const [, options] = mockQueue.archive.mock.calls[0] as [unknown, { onSuccess: () => void }];
+    await act(async () => options.onSuccess());
+    expect(router.back).toHaveBeenCalled();
   });
 
   it('a lista arquivada é só para ver: sem pôr item, sem limpar, sem marcar nem editar, com o aviso', async () => {
@@ -1249,10 +1367,10 @@ describe('renomear e reabrir a lista', () => {
     expect(mockSeen.editor?.onSave).toBeUndefined();
     expect(mockSeen.editor?.onRemove).toBeUndefined();
     expect(page).not.toContain('Toque num item para pôr no carrinho');
-    // Ver ainda dá: os itens, mandar a lista, renomear e reabrir.
+    // Ver ainda dá: os itens, mandar a lista; o menu renomeia e reabre, e o aviso também reabre.
     expect(button('Mandar a lista')).toBeDefined();
-    expect(button('Renomear lista')).toBeDefined();
     expect(button('Reabrir lista')).toBeDefined();
+    expect(menuChoices()).toEqual(['Renomear lista', 'Reabrir lista']);
   });
 
   it('a lista aberta continua com tudo', async () => {
@@ -1265,29 +1383,178 @@ describe('renomear e reabrir a lista', () => {
     expect(typeof mockSeen.editor?.onSave).toBe('function');
   });
 
-  it('a lista arquivada mostra "Reabrir lista" no lugar de "Arquivar lista"', async () => {
+  it('a lista arquivada reabre pelo aviso e pelo menu, e também se renomeia', async () => {
     mockQueries.list = loaded({ id: 'l1', name: 'Churrasco', kind: 'mercado', archived_at: '2026-10-20T12:00:00Z', created_at: '2026-10-01T12:00:00Z' });
+    mockQueue.reopen.mockClear();
     await mount();
     expect(button('Arquivar lista')).toBeUndefined();
     await act(async () => button('Reabrir lista')!.props.onPress());
     expect(mockQueue.reopen).toHaveBeenCalledWith('l1', expect.anything());
+    await fromMenu('Reabrir lista');
+    expect(mockQueue.reopen).toHaveBeenCalledTimes(2);
+    await fromMenu('Renomear lista');
+    expect(renderer!.root.findAllByType(TextField).find((entry) => entry.props.label === 'Nome da lista')!.props.value).toBe('Churrasco');
   });
 });
 
-describe('limpar o carrinho com uma ida ao mercado aberta', () => {
+describe('o modo compra: com item no carrinho ou com a própria ida, a lista sobe', () => {
+  const fields = (placeholder: string) => renderer!.root.findAllByType(TextField).filter((field) => field.props.placeholder === placeholder);
+  const quantityFields = () => renderer!.root.findAllByType(TextField).filter((field) => field.props.accessibilityLabel === 'Quantidade');
+  const unitChips = () => renderer!.root.findAllByType(Chip).filter((chip) => ['un', 'kg', 'g', 'l', 'ml'].includes(chip.props.label));
+  const moreOptions = () => renderer!.root.findAllByType(IconButton).filter((entry) => String(entry.props.label).startsWith('Mais opções'));
+  const strips = () => renderer!.root.findAllByType(RestockStrip).length + renderer!.root.findAllByType(RecentPurchases).length;
+  const typeName = (text: string) => act(() => fields('Adicionar item')[0].props.onChangeText(text));
+  const submit = () => act(() => fields('Adicionar item')[0].props.onSubmitEditing());
+  const pending = listItem('a', 'Arroz', null);
+  const inCart = { ...listItem('b', 'Carvão', null), checked_at: minutesAgo(5) };
+
+  beforeEach(() => {
+    mockQueue.add.mockClear();
+    // Algo que passou do costume: "Acho que acabou" teria o que mostrar.
+    mockQueries.purchases = loaded(ranOutHistory('Café Pilão 500g', 'pilao'));
+  });
+
+  it('montando (carrinho vazio, sem ida): o cartão inteiro e as faixas, sem "Mais opções"', async () => {
+    mockQueries.items = loaded([pending]);
+    await mount();
+    expect(fields('Adicionar item')).toHaveLength(1);
+    expect(quantityFields()).toHaveLength(1);
+    expect(unitChips().length).toBeGreaterThan(0);
+    expect(button('Escolher dos itens comuns')).toBeDefined();
+    expect(button('Colar lista')).toBeDefined();
+    expect(strips()).toBe(2);
+    expect(moreOptions()).toHaveLength(0);
+  });
+
+  it('com item no carrinho: o cartão recolhe ao campo, e "Acabou" e os recentes somem; o "Finalizar compra" continua', async () => {
+    mockBarcode.available = true;
+    mockQueries.items = loaded([pending, inCart]);
+    await mount();
+    expect(fields('Adicionar item')).toHaveLength(1);
+    expect(quantityFields()).toHaveLength(0);
+    expect(unitChips()).toHaveLength(0);
+    expect(button('Escolher dos itens comuns')).toBeUndefined();
+    expect(button('Colar lista')).toBeUndefined();
+    expect(button('Ler código de barras')).toBeUndefined();
+    expect(strips()).toBe(0);
+    expect(footer()!.props.title).toBe('Finalizar compra');
+    // O resto do cartão fica a um toque, e o leitor de tela diz o que o botão abre e que está fechado.
+    const [more] = moreOptions();
+    expect(more.props.label).toBe('Mais opções: quantidade, unidade, itens comuns, colar lista e código de barras');
+    expect(more.props.expanded).toBe(false);
+    // Ainda dá para pôr o que faltou: as sugestões da busca e o "Adicionar" aparecem com o texto.
+    await typeName('Leite');
+    expect(button('Adicionar "Leite"')).toBeDefined();
+    await submit();
+    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Leite', quantity: 1, unit: 'un' }), 'u1');
+  });
+
+  it('"Mais opções" traz o cartão inteiro de volta; recolher volta a quantidade a 1 un', async () => {
+    mockBarcode.available = true;
+    mockQueries.items = loaded([pending, inCart]);
+    await mount();
+    await act(async () => moreOptions()[0].props.onPress());
+    expect(moreOptions()[0].props.expanded).toBe(true);
+    expect(quantityFields()).toHaveLength(1);
+    expect(unitChips().length).toBeGreaterThan(0);
+    expect(button('Escolher dos itens comuns')).toBeDefined();
+    expect(button('Colar lista')).toBeDefined();
+    expect(button('Ler código de barras')).toBeDefined();
+    // As faixas são para montar a lista: continuam fora.
+    expect(strips()).toBe(0);
+
+    await act(async () => quantityFields()[0].props.onChangeText('3'));
+    await act(async () => unitChips().find((chip) => chip.props.label === 'kg')!.props.onPress());
+    await act(async () => moreOptions()[0].props.onPress());
+    expect(quantityFields()).toHaveLength(0);
+    // Recolhido, o item não sai com a quantidade que ficou escondida.
+    await typeName('Banana');
+    await submit();
+    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Banana', quantity: 1, unit: 'un' }), 'u1');
+    await act(async () => moreOptions()[0].props.onPress());
+    expect(quantityFields()[0].props.value).toBe('1');
+  });
+
+  it('com a própria ida nesta lista, modo compra também com o carrinho vazio; a ida de outra pessoa não muda nada', async () => {
+    mockQueries.items = loaded([pending]);
+    mockTrips.list = [liveTrip()];
+    await mount();
+    expect(quantityFields()).toHaveLength(0);
+    expect(strips()).toBe(0);
+    expect(moreOptions()).toHaveLength(1);
+    await act(async () => renderer!.unmount());
+
+    mockTrips.list = [liveTrip({ user_id: 'u2', display_name: 'Beto' })];
+    await mount();
+    expect(quantityFields()).toHaveLength(1);
+    expect(strips()).toBe(2);
+    expect(moreOptions()).toHaveLength(0);
+  });
+
+  it('a lista vazia na própria ida diz para digitar o que faltou, sem as faixas', async () => {
+    mockTrips.list = [liveTrip()];
+    const page = await mount();
+    expect(page).toContain('Lista vazia');
+    expect(page).toContain('Digite no campo acima o que faltou.');
+    expect(strips()).toBe(0);
+  });
+
+  it('o carrinho que começa no meio da digitação não leva o texto, e com a quantidade mudada o cartão fica inteiro', async () => {
+    mockQueries.items = loaded([pending]);
+    await mount();
+    await typeName('Pão');
+    await typeQuantity('6');
+    // Outra pessoa da casa pôs o primeiro item no carrinho (a lista chega em tempo real).
+    mockQueries.items = loaded([pending, inCart]);
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(fields('Adicionar item')[0].props.value).toBe('Pão');
+    expect(quantityFields()).toHaveLength(1);
+    expect(moreOptions()[0].props.expanded).toBe(true);
+    await submit();
+    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Pão', quantity: 6 }), 'u1');
+  });
+
+  it('com a quantidade de sempre, recolhe sem perder o texto; o carrinho limpo volta a montar, e a próxima compra recolhe de novo', async () => {
+    mockQueries.items = loaded([pending]);
+    await mount();
+    await typeName('Pão');
+    mockQueries.items = loaded([pending, inCart]);
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(fields('Adicionar item')[0].props.value).toBe('Pão');
+    expect(quantityFields()).toHaveLength(0);
+    await act(async () => moreOptions()[0].props.onPress());
+    expect(quantityFields()).toHaveLength(1);
+
+    mockQueries.items = loaded([pending]);
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(moreOptions()).toHaveLength(0);
+    expect(quantityFields()).toHaveLength(1);
+
+    mockQueries.items = loaded([pending, inCart]);
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(quantityFields()).toHaveLength(0);
+    expect(moreOptions()[0].props.expanded).toBe(false);
+  });
+});
+
+describe('finalizar a compra sem a nota, com uma ida ao mercado aberta: a pergunta de encerrar vem no fim', () => {
   beforeEach(() => {
     mockQueries.items = loaded([{ ...listItem('a', 'Arroz', null), checked_at: minutesAgo(5) }]);
     jest.mocked(askYesNo).mockReset();
   });
 
-  /** "Limpar", a confirmação do que vai para a despensa e a resposta do servidor. */
+  /** "Finalizar compra" sem a nota, a confirmação do que vai para a despensa e a resposta do servidor. */
   async function clearCart() {
     await tapClear();
     await deliverClears();
   }
-  /** O toque em "Limpar" e a confirmação do que vai para a despensa. */
+  /**
+   * "Finalizar compra", "Sem a nota: só limpar o carrinho" (sem internet o menu nem abre: o limpar vem direto) e a
+   * confirmação do que vai para a despensa.
+   */
   async function tapClear() {
-    await act(async () => button('Limpar')!.props.onPress());
+    await tapFinish();
+    if (finishSheet().props.visible) await pick('Sem a nota: só limpar o carrinho');
     await act(async () => (mockSeen.cartPantry!.onConfirm as (rows: unknown[]) => void)([]));
   }
   /** A fila manda o que esperava e o servidor responde que deu certo. */
@@ -1366,6 +1633,329 @@ describe('limpar o carrinho com uma ida ao mercado aberta', () => {
     await act(async () => (mockSeen.cartPantry!.onConfirm as (rows: unknown[]) => void)([]));
     await deliverClears();
     expect(askYesNo).not.toHaveBeenCalled();
+  });
+
+  it('o "Limpar" da seção "No carrinho" só esvazia: a pergunta passou para o fim do "Finalizar compra"', async () => {
+    mockTrips.list = [liveTrip()];
+    mockQueue.clear.mockClear();
+    await mount();
+    await act(async () => button('Limpar')!.props.onPress());
+    expect(mockSeen.cartPantry).toMatchObject({ single: false });
+    await act(async () => (mockSeen.cartPantry!.onConfirm as (rows: unknown[]) => void)([]));
+    expect(mockQueue.clear).toHaveBeenCalledWith(expect.objectContaining({ items: [{ id: 'a', token: 'selo' }] }), expect.anything());
+    await deliverClears();
+    expect(askYesNo).not.toHaveBeenCalled();
+    expect(mockTrips.end).not.toHaveBeenCalled();
+  });
+});
+
+describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
+  const arroz = listItem('a', 'Arroz', null);
+  const leite = { ...listItem('l', 'Leite', null, 'laticinios'), checked_at: minutesAgo(5), toggle_token: 't-leite' };
+  const cafe = { ...listItem('c', 'Café', null, 'cafe_cha'), checked_at: minutesAgo(3), toggle_token: 't-cafe' };
+
+  beforeEach(() => {
+    jest.mocked(askYesNo).mockReset();
+    jest.mocked(notify).mockReset();
+    jest.mocked(router.push).mockClear();
+    jest.mocked(pickReceiptImages).mockClear();
+    mockQueue.clear.mockClear();
+    mockFocus.effect = null;
+    stopWaitingForReceipt('l1');
+  });
+
+  /**
+   * A revisão confirmou a nota (o que nota/[id] entrega: o toque de agora, e a resposta `answerMs` depois) e voltou:
+   * a lista ganha o foco de novo.
+   */
+  async function confirmedAndBack({
+    answerMs = 1500,
+    ...receipt
+  }: {
+    pantryCount: number;
+    removedListItems: string[];
+    onlineAtTap?: boolean;
+    answerMs?: number;
+  }) {
+    const tappedAt = Date.now();
+    const handed = handConfirmedReceipt({ tappedAt, onlineAtTap: true, ...receipt }, tappedAt + answerMs);
+    await act(async () => mockFocus.effect?.());
+    return handed;
+  }
+
+  describe('o rodapé, pelo contexto', () => {
+    it('com o carrinho vazio, "Onde comprar mais barato?", como antes', async () => {
+      mockQueries.items = loaded([arroz]);
+      await mount();
+      expect(footer()?.props.title).toBe('Onde comprar mais barato?');
+      expect(button('Finalizar compra')).toBeUndefined();
+    });
+
+    it('com item no carrinho, "Finalizar compra" no lugar dele; "Limpar" continua no carrinho', async () => {
+      mockQueries.items = loaded([arroz, leite]);
+      await mount();
+      expect(footer()?.props.title).toBe('Finalizar compra');
+      expect(button('Onde comprar mais barato?')).toBeUndefined();
+      expect(button('Limpar')).toBeDefined();
+    });
+
+    it('"Tudo no carrinho!": o botão no estado, além do rodapé, e o texto diz o que ele faz', async () => {
+      mockQueries.items = loaded([leite, cafe]);
+      const page = await mount();
+      expect(page).toContain('Tudo no carrinho!');
+      expect(page).toContain(ALL_IN_CART_MESSAGE);
+      expect(page).not.toContain('Quando guardar as compras, limpe o carrinho.');
+      expect(footer()?.props.title).toBe('Finalizar compra');
+      // O do estado, secundário (o primário é o do rodapé), faz o mesmo: pergunta como finalizar.
+      const state = renderer!.root.findAllByType(EmptyState).find((entry) => entry.props.title === 'Tudo no carrinho!')!;
+      const inState = state.findAllByType(Button).find((entry) => entry.props.title === 'Finalizar compra')!;
+      expect(inState.props.variant).toBe('secondary');
+      expect(finishSheet().props.visible).toBe(false);
+      await act(async () => inState.props.onPress());
+      expect(finishSheet().props.visible).toBe(true);
+    });
+
+    it('com algo ainda para comprar, o "Finalizar compra" é só o do rodapé', async () => {
+      mockQueries.items = loaded([arroz, leite]);
+      await mount();
+      expect(renderer!.root.findAllByType(Button).filter((entry) => entry.props.title === 'Finalizar compra')).toHaveLength(1);
+    });
+
+    it('a lista arquivada é só para ver: sem "Finalizar compra"', async () => {
+      mockQueries.list = loaded({ id: 'l1', name: 'Churrasco', kind: 'mercado', archived_at: '2026-10-20T12:00:00Z', created_at: '2026-10-01T12:00:00Z' });
+      mockQueries.items = loaded([leite]);
+      await mount();
+      expect(footer()).toBeUndefined();
+      expect(button('Finalizar compra')).toBeUndefined();
+    });
+
+    it('na lista "outros" também (a nota de qualquer loja casa com a lista), sem o "Onde comprar"', async () => {
+      mockQueries.list = loaded({ id: 'l1', name: 'Casa', kind: 'outros', archived_at: null, created_at: '2026-10-01T12:00:00Z' });
+      mockQueries.items = loaded([arroz]);
+      await mount();
+      expect(footer()).toBeUndefined();
+      await act(async () => renderer!.unmount());
+      mockQueries.items = loaded([arroz, leite]);
+      await mount();
+      expect(footer()?.props.title).toBe('Finalizar compra');
+    });
+  });
+
+  it('o toque pergunta como finalizar: as opções do leitor de nota e o caminho sem ela', async () => {
+    mockQueries.items = loaded([arroz, leite]);
+    await mount();
+    expect(finishSheet().props.visible).toBe(false);
+    await tapFinish();
+    expect(finishSheet().props.visible).toBe(true);
+    expect((finishSheet().props.actions as SheetAction[]).map((action) => action.label)).toEqual([
+      'Ler o QR code da nota',
+      'Tirar foto da nota',
+      'Escolher da galeria (até 6 fotos)',
+      'Digitar manualmente',
+      'Sem a nota: só limpar o carrinho',
+    ]);
+    // A nota: o leitor de sempre, nada sai do carrinho ainda.
+    await pick('Ler o QR code da nota');
+    expect(router.push).toHaveBeenCalledWith('/nota/qrcode');
+    expect(mockQueue.clear).not.toHaveBeenCalled();
+  });
+
+  it('pela foto, a câmera do leitor de sempre', async () => {
+    mockQueries.items = loaded([leite]);
+    await mount();
+    await tapFinish();
+    await pick('Tirar foto da nota');
+    expect(pickReceiptImages).toHaveBeenCalledWith('camera', 1);
+  });
+
+  it('sem a nota: o "Limpar" de sempre, com o carrinho do toque e a pergunta da ida depois', async () => {
+    mockTrips.list = [liveTrip()];
+    jest.mocked(askYesNo).mockResolvedValue(false);
+    mockQueries.items = loaded([arroz, leite]);
+    await mount();
+    await tapFinish();
+    await pick('Sem a nota: só limpar o carrinho');
+    expect(mockSeen.cartPantry).toMatchObject({ single: false, notice: undefined });
+    await act(async () => (mockSeen.cartPantry!.onConfirm as (rows: unknown[]) => void)([]));
+    expect(mockQueue.clear).toHaveBeenCalledWith(expect.objectContaining({ items: [{ id: 'l', token: 't-leite' }] }), expect.anything());
+    for (const options of mockClearQueue.splice(0)) await act(async () => options.onSuccess?.());
+    expect(askYesNo).toHaveBeenCalledTimes(1);
+    expect(askYesNo).toHaveBeenCalledWith('Encerrar a ida ao mercado?', expect.stringContaining('O carrinho foi limpo.'), 'Encerrar', 'Agora não');
+    // Ninguém espera nota: uma confirmada agora avisa sozinha, na revisão.
+    expect(handConfirmedReceipt({ tappedAt: Date.now(), onlineAtTap: true, pantryCount: 0, removedListItems: [] })).toBe(false);
+  });
+
+  it('sem internet, pula a nota: o "Limpar" abre com o aviso de que ela pode ser lida depois em Compras → Notas', async () => {
+    mockTrips.online = false;
+    mockQueries.items = loaded([arroz, leite]);
+    await mount();
+    await tapFinish();
+    expect(finishSheet().props.visible).toBe(false);
+    expect(FINISH_OFFLINE_NOTICE).toContain('Compras → Notas');
+    expect(mockSeen.cartPantry).toMatchObject({ single: false, notice: FINISH_OFFLINE_NOTICE });
+  });
+
+  describe('com a nota: a revisão confirma e volta para a lista', () => {
+    beforeEach(() => {
+      mockQueries.items = loaded([arroz, leite, cafe]);
+    });
+
+    it('a lista diz o que a nota fez e o que ficou no carrinho (a revisão não avisa), sem a ida', async () => {
+      await mount();
+      await tapFinish();
+      await pick('Ler o QR code da nota');
+      // A revisão tirou o leite da lista; o café ficou no carrinho (a nota não o tinha, ou não casou).
+      expect(await confirmedAndBack({ pantryCount: 2, removedListItems: ['l'] })).toBe(true);
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify).toHaveBeenCalledWith(
+        'Nota salva',
+        '2 itens foram para a despensa. 1 item saiu da lista. Ficou 1 item no carrinho que a nota não tirou da lista. Se não comprou, toque nele para devolver à lista; se comprou, use "Limpar".',
+      );
+      expect(askYesNo).not.toHaveBeenCalled();
+      // O que ficou continua no carrinho, com o "Limpar".
+      expect(button('Limpar')).toBeDefined();
+      expect(mockQueue.clear).not.toHaveBeenCalled();
+    });
+
+    it('a busca nova da lista já chegou sem o que a nota tirou: o mesmo carrinho que sobrou', async () => {
+      await mount();
+      await tapFinish();
+      await pick('Tirar foto da nota');
+      mockQueries.items = loaded([arroz, cafe]);
+      await act(async () => renderer!.update(<ShoppingListScreen />));
+      await confirmedAndBack({ pantryCount: 1, removedListItems: ['l'] });
+      expect(String(jest.mocked(notify).mock.calls[0][1])).toContain('Ficou 1 item no carrinho');
+    });
+
+    it('a nota tirou tudo do carrinho: só o que ela fez', async () => {
+      await mount();
+      await tapFinish();
+      await pick('Ler o QR code da nota');
+      await confirmedAndBack({ pantryCount: 2, removedListItems: ['l', 'c', 'outra-lista'] });
+      expect(notify).toHaveBeenCalledWith('Nota salva', '2 itens foram para a despensa. 3 itens saíram da lista.');
+    });
+
+    it('com a própria ida nesta lista, a pergunta de encerrar vem no fim, uma vez, com o que a nota fez', async () => {
+      mockTrips.list = [liveTrip()];
+      jest.mocked(askYesNo).mockResolvedValue(true);
+      mockTrips.end.mockResolvedValue(true);
+      await mount();
+      await tapFinish();
+      await pick('Ler o QR code da nota');
+      await confirmedAndBack({ pantryCount: 2, removedListItems: ['l', 'c'] });
+      expect(askYesNo).toHaveBeenCalledTimes(1);
+      expect(askYesNo).toHaveBeenCalledWith(
+        'Encerrar a ida ao mercado?',
+        'A nota foi salva. 2 itens foram para a despensa. 2 itens saíram da lista. Ao encerrar, a casa deixa de ver o aviso de que você está nas compras.',
+        'Encerrar',
+        'Agora não',
+      );
+      expect(notify).not.toHaveBeenCalled();
+      expect(mockTrips.end).toHaveBeenCalledWith('t1');
+      // Voltar de novo à lista (de outra tela) não pergunta outra vez.
+      await act(async () => mockFocus.effect?.());
+      expect(askYesNo).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['com a ida de outra pessoa', () => [liveTrip({ user_id: 'outra' })], {}],
+      ['com a ida de outra lista', () => [liveTrip({ list_id: 'l2' })], {}],
+      ['o toque de confirmar foi sem internet', () => [liveTrip()], { onlineAtTap: false }],
+      ['a confirmação demorou mais de 30 s para responder', () => [liveTrip()], { answerMs: 31_000 }],
+    ])('%s: não pergunta da ida, só o "Nota salva"', async (_why, trips, patch) => {
+      mockTrips.list = trips();
+      await mount();
+      await tapFinish();
+      await pick('Ler o QR code da nota');
+      await confirmedAndBack({ pantryCount: 0, removedListItems: ['l', 'c'], ...patch });
+      expect(askYesNo).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenCalledWith('Nota salva', '2 itens saíram da lista.');
+    });
+
+    it('sem internet na volta: não pergunta (encerrar é um pedido ao servidor)', async () => {
+      mockTrips.list = [liveTrip()];
+      await mount();
+      await tapFinish();
+      await pick('Ler o QR code da nota');
+      mockTrips.online = false;
+      await confirmedAndBack({ pantryCount: 0, removedListItems: ['l', 'c'] });
+      expect(askYesNo).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenCalledWith('Nota salva', '2 itens saíram da lista.');
+    });
+
+    it('voltou sem confirmar (desistiu, ou a nota ficou pendente da Sefaz): nada a dizer, e a espera acaba', async () => {
+      mockTrips.list = [liveTrip()];
+      await mount();
+      await tapFinish();
+      await pick('Ler o QR code da nota');
+      await act(async () => mockFocus.effect?.());
+      expect(notify).not.toHaveBeenCalled();
+      expect(askYesNo).not.toHaveBeenCalled();
+      // Uma nota confirmada depois, por outro caminho, avisa sozinha na revisão.
+      expect(handConfirmedReceipt({ tappedAt: Date.now(), onlineAtTap: true, pantryCount: 0, removedListItems: [] })).toBe(false);
+    });
+
+    describe('"Onde estou" depois da nota', () => {
+      const estimateCard = () => renderer!.root.findByType(ListEstimateCard);
+      /** No mercado s1 ("Onde estou"), "Finalizar compra" pelo QR code. */
+      async function atStoreAndFinish() {
+        await mount();
+        await act(async () => estimateCard().props.onChangeStore('s1'));
+        expect(estimateCard().props.storeId).toBe('s1');
+        await tapFinish();
+        await pick('Ler o QR code da nota');
+      }
+
+      it('a nota que esvazia o carrinho encerra as compras, como o "Limpar": a escolha sai', async () => {
+        await atStoreAndFinish();
+        await confirmedAndBack({ pantryCount: 2, removedListItems: ['l', 'c'] });
+        expect(estimateCard().props.storeId).toBeNull();
+        expect(await AsyncStorage.getItem('kotii:store-choice:l1')).toBeNull();
+      });
+
+      it('com algo ainda no carrinho a pessoa pode estar no mercado: a escolha fica', async () => {
+        await atStoreAndFinish();
+        await confirmedAndBack({ pantryCount: 1, removedListItems: ['l'] });
+        expect(estimateCard().props.storeId).toBe('s1');
+      });
+
+      it('com algo no carrinho, encerrar a ida no fim do fluxo tira a escolha; "Agora não" a deixa', async () => {
+        mockTrips.list = [liveTrip()];
+        jest.mocked(askYesNo).mockResolvedValue(false);
+        await atStoreAndFinish();
+        await confirmedAndBack({ pantryCount: 1, removedListItems: ['l'] });
+        expect(askYesNo).toHaveBeenCalledTimes(1);
+        expect(estimateCard().props.storeId).toBe('s1');
+        await act(async () => renderer!.unmount());
+        renderer = undefined;
+
+        jest.mocked(askYesNo).mockResolvedValue(true);
+        mockTrips.end.mockResolvedValue(true);
+        await atStoreAndFinish();
+        await confirmedAndBack({ pantryCount: 1, removedListItems: ['l'] });
+        expect(mockTrips.end).toHaveBeenCalledWith('t1');
+        expect(estimateCard().props.storeId).toBeNull();
+      });
+
+      it('se encerrar der errado, a ida continua, e a escolha também', async () => {
+        mockTrips.list = [liveTrip()];
+        jest.mocked(askYesNo).mockResolvedValue(true);
+        mockTrips.end.mockRejectedValue(new Error('sem rede'));
+        await atStoreAndFinish();
+        await confirmedAndBack({ pantryCount: 1, removedListItems: ['l'] });
+        expect(notify).toHaveBeenCalledWith('Não deu para encerrar', expect.any(String));
+        expect(estimateCard().props.storeId).toBe('s1');
+      });
+    });
+
+    it('a lista que sai da tela no meio deixa de esperar a nota', async () => {
+      await mount();
+      await tapFinish();
+      await pick('Ler o QR code da nota');
+      await act(async () => renderer!.unmount());
+      renderer = undefined;
+      expect(handConfirmedReceipt({ tappedAt: Date.now(), onlineAtTap: true, pantryCount: 0, removedListItems: [] })).toBe(false);
+    });
   });
 });
 

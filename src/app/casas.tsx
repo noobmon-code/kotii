@@ -6,6 +6,7 @@ import { useAddHousehold, useSwitchHousehold } from '@/data/household';
 import { PLACE_NOT_SAVED_TITLE, placeNotSavedMessage } from '@/domain/housePlace';
 import { HousePlacePicker, useNewHousePlace } from '@/features/HousePlacePicker';
 import { useAuth, useHousehold } from '@/lib/auth';
+import { FEATURES } from '@/lib/features';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { Badge, Button, Card, IconBadge, ListCard, ListRow, Loading, Screen, Section, Segmented, Text, TextField } from '@/ui/primitives';
@@ -91,7 +92,8 @@ export default function HouseholdsScreen() {
     <Screen>
       <Section title="Suas casas">
         <Text variant="muted">
-          Cada casa tem os próprios moradores, listas, contas e tarefas. O celular mostra uma por vez; os avisos chegam de todas.
+          {/* As contas são de Finanças: sem ela (lib/features), a frase não as cita. */}
+          {`Cada casa tem os próprios moradores, listas${FEATURES.finance ? ', contas' : ''} e tarefas. O celular mostra uma por vez; os avisos chegam de todas.`}
         </Text>
         <ListCard>
           {households.map((h) => (

@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { Image } from 'expo-image';
-import { Children, Fragment, isValidElement, useState, type ReactNode, type RefObject } from 'react';
+import { Children, Fragment, isValidElement, useState, type ReactNode, type Ref, type RefObject } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -257,6 +257,7 @@ export function Button({
   compact,
   style,
   accessibilityLabel,
+  ref,
 }: {
   title: string;
   onPress: () => void;
@@ -268,6 +269,8 @@ export function Button({
   style?: StyleProp<ViewStyle>;
   /** O que o leitor de tela diz no lugar do título, quando o título sozinho não basta ("Troquei" em cada linha de uma lista, vários "Juntar" na mesma tela). */
   accessibilityLabel?: string;
+  /** Para devolver o foco ao botão (`moveFocus` de `src/ui/focus.ts`) quando o que ele abriu fecha. */
+  ref?: Ref<View>;
 }) {
   const c = useColors();
   const palette: Record<ButtonVariant, { bg: string; fg: keyof Colors; border: string }> = {
@@ -281,6 +284,7 @@ export function Button({
   const inactive = disabled || loading;
   return (
     <Pressable
+      ref={ref}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       accessibilityState={{ disabled: inactive, busy: loading }}
@@ -315,6 +319,7 @@ export function IconButton({
   label,
   color = 'textMuted',
   disabled,
+  expanded,
 }: {
   icon: IconName;
   onPress: () => void;
@@ -322,12 +327,15 @@ export function IconButton({
   color?: keyof Colors;
   /** Apagado e sem toque, como o Button desligado. */
   disabled?: boolean;
+  /** Para o botão que abre e fecha um conteúdo (como `ListRow`): o leitor de tela diz se está aberto. */
+  expanded?: boolean;
 }) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityState={disabled ? { disabled } : undefined}
+      aria-expanded={expanded}
       hitSlop={8}
       onPress={onPress}
       disabled={disabled}
@@ -580,10 +588,16 @@ export function Segmented<T extends string>({
   options,
   value,
   onChange,
+  widths = 'equal',
 }: {
-  options: { value: T; label: string }[];
+  options: readonly { value: T; label: string }[];
   value: T;
   onChange: (value: T) => void;
+  /**
+   * `equal`: as partes do mesmo tamanho. `content`: cada parte do tamanho do rótulo, com a sobra dividida por igual,
+   * para quando um rótulo comprido não cabe na parte igual ("Documentos" na Casa, num celular de 360).
+   */
+  widths?: 'equal' | 'content';
 }) {
   const c = useColors();
   // O item aberto é um cartão branco; à noite, um cinza um pouco mais claro que o fundo.
@@ -598,7 +612,12 @@ export function Segmented<T extends string>({
             accessibilityRole="tab"
             accessibilityState={{ selected }}
             onPress={() => onChange(o.value)}
-            style={[styles.segment, selected && { backgroundColor: selectedBg }, selected && styles.segmentSelected]}>
+            style={[
+              styles.segment,
+              widths === 'content' ? styles.segmentByContent : styles.segmentEqual,
+              selected && { backgroundColor: selectedBg },
+              selected && styles.segmentSelected,
+            ]}>
             <Text variant="label" color={selected ? 'text' : 'textMuted'} numberOfLines={1}>
               {o.label}
             </Text>
@@ -815,27 +834,13 @@ export function ListRow({
 }
 
 /**
- * Atalho de vidro com o ícone e o rótulo embaixo (ações rápidas). O ícone é um desenho 3D (`art`) ou um ícone
- * numa orbe (`icon`). A cor aparece como um brilho no canto de cima (`wash`, ou o do `tint`), não como fundo.
+ * Atalho de vidro da tela Hoje, com o desenho 3D (`art`) e o rótulo embaixo. A cor aparece como um brilho no canto
+ * de cima (`wash`, de `WASHES`), não como fundo. Os azulejos ficam só na Hoje: nas outras telas, criar é um botão
+ * primário no alto e ir a outra tela é um botão secundário ou uma linha (ver AGENTS.md); por isso o Tile não tem
+ * mais a versão com ícone numa orbe.
  */
-export function Tile({
-  icon,
-  art,
-  label,
-  onPress,
-  tint = 'orange',
-  wash,
-}: {
-  icon?: IconName;
-  art?: IconArtName;
-  label: string;
-  onPress: () => void;
-  tint?: Tint;
-  wash?: string;
-}) {
+export function Tile({ art, label, onPress, wash }: { art: IconArtName; label: string; onPress: () => void; wash: string }) {
   const glass = useGlassStyle();
-  const t = useTint(tint);
-  const glow = useGlow(tint);
   const dark = useScheme() === 'dark';
   return (
     <Pressable
@@ -846,17 +851,11 @@ export function Tile({
       <AngledGradient
         angle={130.8}
         stops={[
-          { offset: 0, color: wash ?? glow, opacity: dark ? 0.32 : 1 },
-          { offset: 1, color: wash ?? glow, opacity: 0 },
+          { offset: 0, color: wash, opacity: dark ? 0.32 : 1 },
+          { offset: 1, color: wash, opacity: 0 },
         ]}
       />
-      {art ? (
-        <IconArt name={art} />
-      ) : (
-        <Orb size={48} glow={glow}>
-          <MaterialCommunityIcons name={icon ?? 'star'} size={24} color={t.art} />
-        </Orb>
-      )}
+      <IconArt name={art} />
       <Text variant="label" style={styles.tileLabel} numberOfLines={2}>
         {label}
       </Text>
@@ -982,11 +981,13 @@ const styles = StyleSheet.create({
   inputMultiline: { minHeight: 88, paddingTop: space.md, textAlignVertical: 'top' },
   segmented: { flexDirection: 'row', borderRadius: radius.pill, padding: 4, borderWidth: 1 },
   segment: {
-    flex: 1,
     alignItems: 'center',
     paddingVertical: space.sm + 2,
     borderRadius: radius.pill,
   },
+  segmentEqual: { flex: 1 },
+  // A base é o rótulo, e a sobra vai por igual para cada parte; sem sobra (a tela estreita), elas encolhem juntas.
+  segmentByContent: { flexGrow: 1, flexShrink: 1, flexBasis: 'auto', paddingHorizontal: space.xs },
   segmentSelected: {
     shadowColor: '#784028',
     shadowOpacity: 0.1,

@@ -4,7 +4,7 @@ import type { ReactElement } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import ProductScreen from '@/app/produto/[id]';
-import { PRODUCT_CATEGORY_NOTE } from '@/domain/productCategory';
+import { productCategoryNote } from '@/domain/productCategory';
 import { NO_SAVED_PRICES_OFFLINE, SAVED_PRICES_ERROR, SAVED_PRICES_OFFLINE } from '@/domain/storePrices';
 import { PriceHistorySection } from '@/features/market/PriceHistorySection';
 import { Loading } from '@/ui/primitives';
@@ -177,7 +177,7 @@ describe('tela do produto sem internet', () => {
     onlineManager.setOnline(false);
     open();
     await settle();
-    expect(mockPicker.props).toMatchObject({ title: 'Categoria', message: PRODUCT_CATEGORY_NOTE });
+    expect(mockPicker.props).toMatchObject({ title: 'Categoria', message: productCategoryNote(false) });
   });
 
   it('sem preço deste produto guardado: diz isso, sem dizer que não há nota', async () => {

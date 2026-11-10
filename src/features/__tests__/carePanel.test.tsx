@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { router } from 'expo-router';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { CarePanel } from '@/features/health/CarePanel';
 import { StaleNotice } from '@/features/health/StaleNotice';
-import { Button, ErrorNotice, Loading } from '@/ui/primitives';
+import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
+import { Button, Chip, ErrorNotice, Loading, Section } from '@/ui/primitives';
 
 // O painel de verdade, com as buscas trocadas por respostas prontas. O que se confere aqui: a busca de "quem tem
 // resultados de exame" (a casa toda) só segura o painel em "Todos", que é onde ela decide alguma coisa; e uma
@@ -16,11 +18,11 @@ interface Query {
   refetch: jest.Mock;
 }
 
-type Name = 'people' | 'appointments' | 'vaccines' | 'exams' | 'owners' | 'medications';
+type Name = 'people' | 'appointments' | 'vaccines' | 'exams' | 'owners';
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockQueries: Record<Name, Query> = {} as never;
 
-jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
+jest.mock('expo-router', () => ({ router: { push: jest.fn(), navigate: jest.fn() } }));
 jest.mock('@/data/health', () => ({
   usePeople: () => mockQueries.people,
   useAppointments: () => mockQueries.appointments,
@@ -28,9 +30,9 @@ jest.mock('@/data/health', () => ({
   useExams: () => mockQueries.exams,
   useExamResultOwners: () => mockQueries.owners,
 }));
-jest.mock('@/data/home', () => ({ useMedications: () => mockQueries.medications }));
-// A lista de remédios tem as buscas dela (doses do dia), e os desenhos não entram no que se confere aqui.
-jest.mock('@/features/health/MedicationSections', () => ({ MedicationList: () => null }));
+// Os remédios saíram dos Cuidados (têm a parte deles, Saúde → Remédios): o painel não os busca mais.
+const mockMedications = jest.fn();
+jest.mock('@/data/home', () => ({ useMedications: () => mockMedications() }));
 // O ícone carrega a fonte depois de montado, fora do act: aqui ele não desenha nada.
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));
 
@@ -78,6 +80,9 @@ function open(personId: string | null) {
 }
 const has = (component: Parameters<ReactTestRenderer['root']['findAllByType']>[0]) => renderer.root.findAllByType(component).length > 0;
 const buttons = () => renderer.root.findAllByType(Button).map((button) => button.props.title);
+/** O menu do "Adicionar" do alto e o que ele oferece. */
+const addSheet = () => renderer.root.findAllByType(ActionSheet).find((sheet) => sheet.props.title === 'Adicionar')!;
+const addChoices = () => (addSheet().props.actions as SheetAction[]).map((action) => action.label);
 
 beforeEach(() => {
   Object.assign(mockQueries, {
@@ -86,7 +91,6 @@ beforeEach(() => {
     vaccines: loaded([]),
     exams: loaded([exam('e1', 'ana')]),
     owners: loaded(['ana']),
-    medications: loaded([]),
   });
 });
 
@@ -113,7 +117,7 @@ describe('painel de cuidados: a busca de quem tem resultados de exame', () => {
     open(null);
     expect(has(ErrorNotice)).toBe(true);
     act(() => renderer.root.findByType(ErrorNotice).props.onRetry());
-    for (const name of ['people', 'appointments', 'vaccines', 'exams', 'owners', 'medications'] as Name[]) {
+    for (const name of ['people', 'appointments', 'vaccines', 'exams', 'owners'] as Name[]) {
       expect([name, mockQueries[name].refetch.mock.calls.length]).toEqual([name, 1]);
     }
   });
@@ -144,7 +148,7 @@ describe('painel de cuidados: a busca de quem tem resultados de exame', () => {
 });
 
 describe('painel de cuidados: a atualização que falha com o dado já carregado', () => {
-  const retried = () => (['people', 'appointments', 'vaccines', 'exams', 'owners', 'medications'] as Name[]).filter((name) => mockQueries[name].refetch.mock.calls.length > 0);
+  const retried = () => (['people', 'appointments', 'vaccines', 'exams', 'owners'] as Name[]).filter((name) => mockQueries[name].refetch.mock.calls.length > 0);
 
   it('em "Todos", a de quem tem resultados não esconde o painel: ele fica, com o aviso e a entrada de antes', () => {
     mockQueries.owners = stale(['ana']);
@@ -186,5 +190,75 @@ describe('painel de cuidados: a atualização que falha com o dado já carregado
   it('sem falha nenhuma, não há aviso', () => {
     open(null);
     expect(has(StaleNotice)).toBe(false);
+  });
+});
+
+describe('painel de cuidados: as fichas nascem em Configurações', () => {
+  it('filtra pela pessoa e edita a ficha, mas não cadastra: nem no seletor, nem na lista das pessoas', () => {
+    open(null);
+    const chips = renderer.root.findAllByType(Chip).map((chip) => chip.props.label);
+    expect(chips).toEqual(['Todos', 'Ana', 'Beto']);
+    // O "Adicionar" do alto é de consulta, vacina e exame: pessoa ou pet não estão nele, nem em outro botão.
+    expect(buttons().filter((title) => /Adicionar (pessoa|pet)|Pessoa ou pet/.test(title))).toEqual([]);
+    expect(addChoices()).toEqual(['Consulta', 'Vacina', 'Exame']);
+    act(() => renderer.unmount());
+    open('ana');
+    expect(buttons()).toContain('Editar ficha');
+    expect(renderer.root.findAllByType(Chip).map((chip) => chip.props.label)).toEqual(['Todos', 'Ana', 'Beto']);
+  });
+
+  it('sem ninguém cadastrado, o convite leva a Configurações, onde se cadastra', () => {
+    mockQueries.people = loaded([]);
+    open(null);
+    expect(buttons()).toEqual(['Abrir Configurações']);
+    act(() => renderer.root.findAllByType(Button)[0].props.onPress());
+    expect(router.navigate).toHaveBeenCalledWith('/configuracoes');
+    expect(router.push).not.toHaveBeenCalled();
+  });
+});
+
+describe('painel de cuidados: consultas, vacinas e exames', () => {
+  const sections = () => renderer.root.findAllByType(Section).map((section) => section.props.title);
+
+  it('a ação principal é um "Adicionar" primário no alto, depois do filtro; as seções ficam sem o "+" no título', () => {
+    open(null);
+    const [first] = renderer.root.findAllByType(Button);
+    expect(first.props.title).toBe('Adicionar');
+    expect(first.props.variant ?? 'primary').toBe('primary');
+    expect(first.props.accessibilityLabel).toBe('Adicionar consulta, vacina ou exame');
+    expect(renderer.root.findAllByType(Section).every((section) => section.props.action === undefined)).toBe(true);
+    // O botão vem depois do seletor de pessoa (ele diz de quem é o registro novo).
+    const order = renderer.root.findAll((node) => node.type === Chip || node.type === Button).map((node) => node.type);
+    expect(order.indexOf(Button)).toBeGreaterThan(order.lastIndexOf(Chip));
+  });
+
+  it.each([
+    ['em "Todos"', 'Consulta', null, '/consulta/[id]', ''],
+    ['com a Ana escolhida', 'Vacina', 'ana', '/vacina/[id]', 'ana'],
+    ['com a Ana escolhida', 'Exame', 'ana', '/exame/[id]', 'ana'],
+  ])('%s, "Adicionar" → "%s" abre a tela nova (já da pessoa escolhida)', (_who, label, personId, pathname, pessoa) => {
+    jest.mocked(router.push).mockClear();
+    open(personId);
+    act(() => renderer.root.findAllByType(Button)[0].props.onPress());
+    const sheet = addSheet();
+    expect(sheet.props.visible).toBe(true);
+    // Com a pessoa escolhida, o menu diz para quem.
+    expect(sheet.props.message).toBe(personId ? 'Para Ana.' : undefined);
+    const action = (sheet.props.actions as SheetAction[]).find((entry) => entry.label === label)!;
+    act(() => {
+      sheet.props.onClose();
+      action.onPress();
+    });
+    expect(router.push).toHaveBeenCalledWith({ pathname, params: { id: 'nova', pessoa } });
+  });
+
+  it('os remédios ficam na parte deles (Saúde → Remédios): aqui nem a seção, nem o botão, nem a busca', () => {
+    open(null);
+    expect(sections()).toEqual(['Consultas', 'Vacinas', 'Exames', 'Pessoas da casa']);
+    expect(buttons().filter((title) => /rem[eé]dio/i.test(title))).toEqual([]);
+    act(() => renderer.unmount());
+    open('ana');
+    expect(sections()).toEqual(['Consultas', 'Vacinas', 'Exames']);
+    expect(mockMedications).not.toHaveBeenCalled();
   });
 });

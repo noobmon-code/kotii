@@ -1,9 +1,11 @@
 import { router } from 'expo-router';
+import type { ReactElement } from 'react';
 
 import { useToggleWorkoutLog } from '@/data/health';
-import { addDays, formatShortDate } from '@/domain/dates';
-import { describeVaccineStatus, describeWhen, splitTimestamp } from '@/domain/health';
+import { formatShortDate } from '@/domain/dates';
+import { describeVaccineStatus, describeWhen } from '@/domain/health';
 import { errorMessage } from '@/lib/supabase';
+import type { Appointment } from '@/lib/types';
 import { notify } from '@/ui/dialogs';
 import { IconArt } from '@/ui/iconArt';
 import { Badge, CheckCircle, IconBadge, ListCard, ListRow, Section } from '@/ui/primitives';
@@ -11,141 +13,127 @@ import type { useHealthOverview } from './useHealthOverview';
 
 type Overview = ReturnType<typeof useHealthOverview>;
 
+type WorkoutToday = Overview['workoutsToday'][number];
+type VaccineDue = Overview['vaccinesDue'][number];
+type PlanDraft = Overview['drafts'][number];
+
 /**
- * Treinos de hoje, consultas, vacinas e rascunhos para revisar. `compact`
- * (tela Hoje) mostra só o que é de hoje/amanhã ou está atrasado.
+ * As linhas da saúde (telas Saúde e Hoje), cada uma um `ListRow` para entrar no cartão de linhas de qualquer tela:
+ * o treino do dia (com o "feito"), a consulta, a consulta que passou ("Foi realizada?"), a vacina e o plano que a IA
+ * leu, para revisar.
  */
-export function HealthTodaySections({ overview, today, compact }: { overview: Overview; today: string; compact?: boolean }) {
+export function useHealthRows(overview: Overview, today: string) {
   const toggle = useToggleWorkoutLog();
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
-  const tomorrow = addDays(today, 1);
 
-  const workouts = compact ? overview.workoutsToday.filter((w) => !w.done) : overview.workoutsToday;
-  const upcoming = compact
-    ? overview.upcoming.filter((a) => splitTimestamp(a.starts_at).date <= tomorrow)
-    : overview.upcoming.slice(0, 5);
-  const vaccines = compact ? overview.vaccinesDue.filter((v) => v.status.kind === 'atrasada') : overview.vaccinesDue;
+  return {
+    workout: ({ plan, session, done }: WorkoutToday): ReactElement => (
+      <ListRow
+        key={`${plan.id}-${session.name}`}
+        left={<IconBadge icon="dumbbell" tone={done ? 'primary' : 'info'} />}
+        title={session.name}
+        subtitle={[
+          overview.personName(plan.person_id),
+          `${session.exercises.length} ${session.exercises.length === 1 ? 'exercício' : 'exercícios'}`,
+        ]
+          .filter(Boolean)
+          .join(' · ')}
+        dimmed={done}
+        onPress={() => router.push({ pathname: '/treino/[id]', params: { id: plan.id } })}
+        right={
+          <CheckCircle
+            checked={done}
+            label={`${session.name} feito hoje`}
+            onPress={() => toggle.mutate({ planId: plan.id, sessionName: session.name, date: today, done: !done }, { onError })}
+          />
+        }
+      />
+    ),
+    appointment: (a: Appointment): ReactElement => (
+      <ListRow
+        key={a.id}
+        left={<IconBadge icon="stethoscope" tone="info" />}
+        title={a.title}
+        subtitle={[describeWhen(a.starts_at, today), overview.personName(a.person_id), a.professional].filter(Boolean).join(' · ')}
+        onPress={() => router.push({ pathname: '/consulta/[id]', params: { id: a.id } })}
+      />
+    ),
+    toConfirm: (a: Appointment): ReactElement => (
+      <ListRow
+        key={a.id}
+        left={<IconBadge icon="stethoscope" tone="warning" />}
+        title={a.title}
+        subtitle={[describeWhen(a.starts_at, today), overview.personName(a.person_id)].filter(Boolean).join(' · ')}
+        right={<Badge label="Foi realizada?" tone="warning" />}
+        onPress={() => router.push({ pathname: '/consulta/[id]', params: { id: a.id } })}
+      />
+    ),
+    vaccine: ({ vaccine, status }: VaccineDue): ReactElement => (
+      <ListRow
+        key={vaccine.id}
+        left={<IconArt name="seringa" />}
+        title={[vaccine.name, vaccine.dose].filter(Boolean).join(' · ')}
+        subtitle={[
+          overview.personName(vaccine.person_id),
+          describeVaccineStatus(status),
+          vaccine.next_dose_on ? formatShortDate(vaccine.next_dose_on) : null,
+        ]
+          .filter(Boolean)
+          .join(' · ')}
+        // O desenho da seringa é sempre o mesmo: o atraso aparece no selo.
+        right={status.kind === 'atrasada' ? <Badge label="Atrasada" tone="danger" /> : undefined}
+        onPress={() => router.push({ pathname: '/vacina/[id]', params: { id: vaccine.id } })}
+      />
+    ),
+    draft: ({ kind, plan }: PlanDraft): ReactElement => (
+      <ListRow
+        key={plan.id}
+        left={<IconBadge icon={kind === 'workout' ? 'dumbbell' : 'food-apple-outline'} tone="info" />}
+        title={plan.title}
+        subtitle={[overview.personName(plan.person_id), 'Confira o que a IA leu e ative'].filter(Boolean).join(' · ')}
+        right={<Badge label="Revisar" tone="info" />}
+        onPress={() => router.push({ pathname: kind === 'workout' ? '/treino/[id]' : '/dieta/[id]', params: { id: plan.id } })}
+      />
+    ),
+  };
+}
+
+/**
+ * Tela Saúde: os treinos de hoje, as próximas consultas (e as que passaram sem resposta), as vacinas e os planos
+ * para revisar, cada assunto na sua seção. A tela Hoje usa as mesmas linhas (useHealthRows), nos blocos dela.
+ */
+export function HealthTodaySections({ overview, today }: { overview: Overview; today: string }) {
+  const rows = useHealthRows(overview, today);
+  const upcoming = overview.upcoming.slice(0, 5);
 
   return (
     <>
-      {workouts.length ? (
+      {overview.workoutsToday.length ? (
         <Section title="Treino de hoje">
-          <ListCard>
-            {workouts.map(({ plan, session, done }) => (
-              <ListRow
-                key={`${plan.id}-${session.name}`}
-                left={<IconBadge icon="dumbbell" tone={done ? 'primary' : 'info'} />}
-                title={session.name}
-                subtitle={[
-                  overview.personName(plan.person_id),
-                  `${session.exercises.length} ${session.exercises.length === 1 ? 'exercício' : 'exercícios'}`,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-                dimmed={done}
-                onPress={() => router.push({ pathname: '/treino/[id]', params: { id: plan.id } })}
-                right={
-                  <CheckCircle
-                    checked={done}
-                    label={`${session.name} feito hoje`}
-                    onPress={() =>
-                      toggle.mutate({ planId: plan.id, sessionName: session.name, date: today, done: !done }, { onError })
-                    }
-                  />
-                }
-              />
-            ))}
-          </ListCard>
+          <ListCard>{overview.workoutsToday.map(rows.workout)}</ListCard>
         </Section>
       ) : null}
 
       {upcoming.length || overview.toConfirm.length ? (
         <Section title="Consultas">
           <ListCard>
-            {upcoming.map((a) => (
-              <ListRow
-                key={a.id}
-                left={<IconBadge icon="stethoscope" tone="info" />}
-                title={a.title}
-                subtitle={[describeWhen(a.starts_at, today), overview.personName(a.person_id), a.professional]
-                  .filter(Boolean)
-                  .join(' · ')}
-                onPress={() => router.push({ pathname: '/consulta/[id]', params: { id: a.id } })}
-              />
-            ))}
-            {overview.toConfirm.map((a) => (
-              <ListRow
-                key={a.id}
-                left={<IconBadge icon="stethoscope" tone="warning" />}
-                title={a.title}
-                subtitle={[describeWhen(a.starts_at, today), overview.personName(a.person_id)].filter(Boolean).join(' · ')}
-                right={<Badge label="Foi realizada?" tone="warning" />}
-                onPress={() => router.push({ pathname: '/consulta/[id]', params: { id: a.id } })}
-              />
-            ))}
+            {upcoming.map(rows.appointment)}
+            {overview.toConfirm.map(rows.toConfirm)}
           </ListCard>
         </Section>
       ) : null}
 
-      {vaccines.length ? (
+      {overview.vaccinesDue.length ? (
         <Section title="Vacinas">
-          <ListCard>
-            {vaccines.map(({ vaccine, status }) => (
-              <ListRow
-                key={vaccine.id}
-                left={<IconArt name="seringa" />}
-                title={[vaccine.name, vaccine.dose].filter(Boolean).join(' · ')}
-                subtitle={[
-                  overview.personName(vaccine.person_id),
-                  describeVaccineStatus(status),
-                  vaccine.next_dose_on ? formatShortDate(vaccine.next_dose_on) : null,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-                // O desenho da seringa é sempre o mesmo: o atraso aparece no selo.
-                right={status.kind === 'atrasada' ? <Badge label="Atrasada" tone="danger" /> : undefined}
-                onPress={() => router.push({ pathname: '/vacina/[id]', params: { id: vaccine.id } })}
-              />
-            ))}
-          </ListCard>
+          <ListCard>{overview.vaccinesDue.map(rows.vaccine)}</ListCard>
         </Section>
       ) : null}
 
       {overview.drafts.length ? (
         <Section title="Para revisar">
-          <ListCard>
-            {overview.drafts.map(({ kind, plan }) => (
-              <ListRow
-                key={plan.id}
-                left={<IconBadge icon={kind === 'workout' ? 'dumbbell' : 'food-apple-outline'} tone="info" />}
-                title={plan.title}
-                subtitle={[overview.personName(plan.person_id), 'Confira o que a IA leu e ative'].filter(Boolean).join(' · ')}
-                right={<Badge label="Revisar" tone="info" />}
-                onPress={() =>
-                  router.push({ pathname: kind === 'workout' ? '/treino/[id]' : '/dieta/[id]', params: { id: plan.id } })
-                }
-              />
-            ))}
-          </ListCard>
+          <ListCard>{overview.drafts.map(rows.draft)}</ListCard>
         </Section>
       ) : null}
     </>
   );
-}
-
-/** Há algo de saúde para mostrar na tela Hoje? */
-/** Quantos itens de saúde a tela Hoje mostra (a versão `compact` das seções). */
-export function healthTodayCount(overview: Overview, today: string): number {
-  const tomorrow = addDays(today, 1);
-  return (
-    overview.workoutsToday.filter((w) => !w.done).length +
-    overview.upcoming.filter((a) => splitTimestamp(a.starts_at).date <= tomorrow).length +
-    overview.toConfirm.length +
-    overview.vaccinesDue.filter((v) => v.status.kind === 'atrasada').length +
-    overview.drafts.length
-  );
-}
-
-export function hasHealthToday(overview: Overview, today: string): boolean {
-  return healthTodayCount(overview, today) > 0;
 }

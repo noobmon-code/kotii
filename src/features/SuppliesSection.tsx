@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { type ReactElement, useState } from 'react';
 import { Modal, ScrollView, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -89,14 +89,14 @@ export function SuppliesReminderHint() {
   return (
     <>
       <Text variant="muted">{`Para receber a notificação, ligue “${SUPPLIES_TITLE}” nos avisos ${REMINDER_PLACE}.`}</Text>
-      <Button title="Abrir os avisos" icon="bell-outline" variant="secondary" compact onPress={() => router.push('/familia')} />
+      <Button title="Abrir os avisos" icon="bell-outline" variant="secondary" compact onPress={() => router.push('/avisos')} />
     </>
   );
 }
 
 /**
  * Despensa: o que acaba sem nota fiscal, com a previsão de cada um. Fica acima
- * da despensa e não depende dela: quem põe as duas na tela é a aba Casa. Num
+ * da despensa e não depende dela: quem põe as duas na tela é Compras → Despensa. Num
  * banco ainda sem as tabelas, não aparece.
  */
 export function SuppliesSection() {
@@ -228,38 +228,33 @@ function RefillDateModal({ supply, onClose }: { supply: Supply; onClose: () => v
 }
 
 /**
- * Tela Hoje: uma linha por reposição que está acabando ou passou da data,
- * com o "Troquei" ali mesmo. Sem nenhuma, a seção não aparece.
+ * Tela Hoje: a linha de uma reposição que está acabando ou passou da data (um `ListRow`, para o cartão de linhas
+ * dos blocos da tela), com o "Troquei" ali mesmo.
  */
-export function SuppliesTodaySection({ rows, today }: { rows: SupplyRow<Supply>[]; today: string }) {
+export function useSupplyTodayRows(today: string): (row: SupplyRow<Supply>) => ReactElement {
   const refill = useRefill();
-  if (!rows.length) return null;
-  return (
-    <Section title={SUPPLIES_TITLE}>
-      <ListCard>
-        {rows.map(({ supply, forecast }) => (
-          <ListRow
-            key={supply.id}
-            left={<IconBadge icon={getSupplyKind(supply.kind).icon} tone={iconTone(forecast)} />}
-            title={supply.name}
-            subtitle={describeSupply(forecast, today)}
-            right={
-              <Button
-                title="Troquei"
-                // Com mais de uma linha, o leitor de tela diz de qual é cada botão.
-                accessibilityLabel={`Anotar troca de ${supply.name}`}
-                variant="secondary"
-                compact
-                disabled={refill.isPending}
-                onPress={() => refill.record(supply, today)}
-              />
-            }
-            onPress={() => router.push({ pathname: '/casa', params: { aba: 'despensa' } })}
+  return function supplyRow({ supply, forecast }: SupplyRow<Supply>) {
+    return (
+      <ListRow
+        key={supply.id}
+        left={<IconBadge icon={getSupplyKind(supply.kind).icon} tone={iconTone(forecast)} />}
+        title={supply.name}
+        subtitle={describeSupply(forecast, today)}
+        right={
+          <Button
+            title="Troquei"
+            // Com mais de uma linha, o leitor de tela diz de qual é cada botão.
+            accessibilityLabel={`Anotar troca de ${supply.name}`}
+            variant="secondary"
+            compact
+            disabled={refill.isPending}
+            onPress={() => refill.record(supply, today)}
           />
-        ))}
-      </ListCard>
-    </Section>
-  );
+        }
+        onPress={() => router.push({ pathname: '/compras', params: { aba: 'despensa' } })}
+      />
+    );
+  };
 }
 
 const styles = StyleSheet.create({

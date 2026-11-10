@@ -20,9 +20,9 @@ import {
   type FinanceCategory,
 } from '@/domain/finance';
 import { formatBRL } from '@/domain/money';
-import { BarRow } from '@/features/finance/BarRow';
+import { BarRow } from '@/features/market/BarRow';
 import { BudgetSection } from '@/features/finance/BudgetSection';
-import { MarketMonthLink } from '@/features/finance/MarketMonthLink';
+import { MarketMonthTotal } from '@/features/finance/MarketMonthTotal';
 import { SplitSection } from '@/features/finance/SplitSection';
 import { useHousehold } from '@/lib/auth';
 import {
@@ -90,7 +90,6 @@ export function FinanceSummaryPanel() {
     <Button
       title="Registrar gasto"
       icon="plus"
-      variant="secondary"
       onPress={() => router.push({ pathname: '/gasto/[id]', params: { id: 'novo' } })}
     />
   );
@@ -164,7 +163,7 @@ export function FinanceSummaryPanel() {
             </Card>
           </Section>
 
-          <MarketMonthLink month={month} receipts={marketReceipts.data} entries={entries} />
+          <MarketMonthTotal month={month} receipts={marketReceipts.data} entries={entries} />
 
           {places.length > 1 ? (
             <Section title="Onde mais gastou">

@@ -6,6 +6,7 @@ import { acceptTermsAtSignIn } from '@/data/terms';
 import { TERMS_CONSENT, TERMS_TITLE } from '@/domain/terms';
 import { SESSION_ENDED } from '@/lib/accessErrors';
 import { resendWaitSeconds, translateAuthError } from '@/lib/authErrors';
+import { FEATURES } from '@/lib/features';
 import { clearLinkNotice, linkNotice, useLinkNotice } from '@/lib/linkNotice';
 import { finishRecovery, startRecovery } from '@/lib/passwordRecovery';
 import { useSessionEnded } from '@/lib/session';
@@ -147,7 +148,8 @@ export default function SignInScreen() {
           <NukeLive size={132} hop />
           <Logo size={36} />
           <Text variant="body" style={styles.center}>
-            A casa em ordem, sem esforço: compras, contas, tarefas e saúde da família num lugar só.
+            {/* As contas são de Finanças: sem ela (lib/features), a apresentação não as promete. */}
+            {`A casa em ordem, sem esforço: compras, ${FEATURES.finance ? 'contas, ' : ''}tarefas e saúde da família num lugar só.`}
           </Text>
         </View>
         {sessionEnded ? (

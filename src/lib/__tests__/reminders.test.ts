@@ -342,6 +342,8 @@ describe('no navegador (Web Push)', () => {
           return true;
         },
       }));
+      // Com Finanças (lib/features): os avisos de conta também estão aqui.
+      jest.doMock('../features', () => ({ FEATURES: { finance: true } }));
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       await scenario(require('../reminders'), {
         scheduled,
@@ -560,6 +562,8 @@ describe('house reminders', () => {
   // Agenda em memória que sabe cancelar e listar, como o expo-notifications.
   async function withHouse(
     scenario: (reminders: Reminders, agenda: { live: Map<string, { content: { data: { reminder: string } } }>; storage: Map<string, string> }) => Promise<void>,
+    // A chave de Finanças (lib/features): ligada, como nos testes dos avisos de conta; desligada, nos que dizem isso.
+    { finance = true }: { finance?: boolean } = {},
   ) {
     const live = new Map<string, { content: { data: { reminder: string } } }>();
     const storage = new Map<string, string>();
@@ -585,6 +589,7 @@ describe('house reminders', () => {
         cancelScheduledNotificationAsync: async (id: string) => void live.delete(id),
         getAllScheduledNotificationsAsync: async () => [...live.keys()].map((identifier) => ({ identifier })),
       }));
+      jest.doMock('../features', () => ({ FEATURES: { finance } }));
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       await scenario(require('../reminders'), { live, storage });
     });
@@ -1187,6 +1192,87 @@ describe('house reminders', () => {
       expect(stored.signature).toContain('"key":"eve:amanha:2026-09-28:20:00","kind":"eve"');
       await reminders.syncHouseReminders(loaded, { householdId: 'praia', label: 'Praia', limit: 2, today });
       expect(remindersOf(live)).toEqual(['bills:b1:2026-09-28', 'bills:b1:2026-09-29']);
+    });
+  });
+
+  describe('com Finanças desligada (lib/features)', () => {
+    type Stored = { ids: string[]; kinds: string[]; signature: string; overdue?: unknown[]; warned?: string[] };
+    const scheduledOf = (storage: Map<string, string>, house: string) => JSON.parse(storage.get(`house-reminders:scheduled:${house}`)!) as Stored;
+    // O que uma versão do app com Finanças deixou agendado: na casa aberta, uma conta e um documento; na praia, só
+    // uma conta, e um aviso de atraso de conta que já tocou.
+    function scheduledBefore(live: Map<string, { content: { data: { reminder: string } } }>, storage: Map<string, string>) {
+      const old = (id: string, reminder: string) => live.set(id, { content: { data: { reminder } } });
+      old('c1', 'bills:b1:2026-10-04');
+      old('c2', 'documents:d1:2026-10-05');
+      old('p1', 'bills:b2:2026-10-04');
+      storage.set('house-reminders:kinds', JSON.stringify({ bills: true, documents: true }));
+      storage.set('house-reminders:scheduled:casa', JSON.stringify({ ids: ['c1', 'c2'], kinds: ['bills', 'documents'], signature: 'antes' }));
+      storage.set(
+        'house-reminders:scheduled:praia',
+        JSON.stringify({ ids: ['p1'], kinds: ['bills'], overdue: [{ key: 'b2:2026-09-20', at: '2026-09-26T09:00', kind: 'bills' }], signature: 'antes' }),
+      );
+    }
+
+    it('o aviso de contas conta como desligado, e a escolha guardada fica para quando Finanças voltar', async () => {
+      await withHouse(
+        async (reminders, { live, storage }) => {
+          storage.set('house-reminders:kinds', JSON.stringify({ bills: true }));
+          expect((await reminders.getHouseReminderKinds()).bills).toBe(false);
+          // Só as contas ligadas: para a casa, é como nenhum aviso (nem busca os dados das outras casas).
+          expect(await reminders.anyHouseReminderKind()).toBe(false);
+          await reminders.setHouseReminderKind('documents', true);
+          expect(JSON.parse(storage.get('house-reminders:kinds')!)).toMatchObject({ bills: true, documents: true });
+          expect(await reminders.getHouseReminderKinds()).toMatchObject({ bills: false, documents: true });
+          // Mesmo com contas nos dados, nenhuma é agendada.
+          await reminders.syncHouseReminders(data, { householdId: 'casa', today });
+          expect(kindsOf(live)).toEqual(['documents']);
+        },
+        { finance: false },
+      );
+    });
+
+    it('os de conta já agendados saem de todas as casas, também da que não tem outro aviso; a escolha guardada fica', async () => {
+      await withHouse(
+        async (reminders, { live, storage }) => {
+          scheduledBefore(live, storage);
+          await reminders.dropHiddenHouseReminders();
+          expect([...live.keys()]).toEqual(['c2']);
+          // O documento fica; a assinatura vazia faz a próxima sincronização da casa refazer o resto.
+          expect(scheduledOf(storage, 'casa')).toMatchObject({ ids: ['c2'], kinds: ['documents'], signature: '' });
+          // Como ao desligar o tipo à mão (dropKind): os avisos de atraso saem da agenda, e o que já tocou fica nas marcas.
+          expect(scheduledOf(storage, 'praia')).toMatchObject({ ids: [], kinds: [], overdue: [], warned: ['b2:2026-09-20'] });
+          await reminders.syncHouseReminders(data, { householdId: 'casa', today });
+          expect(kindsOf(live)).toEqual(['documents']);
+          // Nada mais a tirar: a segunda vez não mexe em nada (e a casa não é refeita à toa).
+          const settled = [...storage.entries()];
+          await reminders.dropHiddenHouseReminders();
+          expect([...storage.entries()]).toEqual(settled);
+          expect(JSON.parse(storage.get('house-reminders:kinds')!)).toEqual({ bills: true, documents: true });
+        },
+        { finance: false },
+      );
+    });
+
+    it('a sincronização da casa aberta também tira os de conta, sem esperar a limpeza', async () => {
+      await withHouse(
+        async (reminders, { live, storage }) => {
+          scheduledBefore(live, storage);
+          await reminders.syncHouseReminders(data, { householdId: 'casa', today });
+          expect(live.has('c1')).toBe(false);
+          expect(remindersOf(live).filter((r) => !r.startsWith('bills:b2'))).toEqual(['documents:d1:2026-10-05', 'documents:d1:2026-10-13', 'documents:d1:2026-10-20']);
+        },
+        { finance: false },
+      );
+    });
+
+    it('com Finanças ligada, a limpeza não tira nada', async () => {
+      await withHouse(async (reminders, { live, storage }) => {
+        scheduledBefore(live, storage);
+        const stored = [...storage.entries()];
+        await reminders.dropHiddenHouseReminders();
+        expect([...live.keys()]).toEqual(['c1', 'c2', 'p1']);
+        expect([...storage.entries()]).toEqual(stored);
+      });
     });
   });
 });

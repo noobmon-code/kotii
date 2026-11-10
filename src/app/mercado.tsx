@@ -32,10 +32,11 @@ import {
   type MarketView,
 } from '@/domain/marketSpend';
 import { canRenameStore } from '@/domain/storeName';
-import { BarRow } from '@/features/finance/BarRow';
+import { BarRow } from '@/features/market/BarRow';
 import { MarketTrendChart } from '@/features/market/MarketTrendChart';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { RenameStoreModal } from '@/features/RenameStoreModal';
+import { FEATURES } from '@/lib/features';
 import {
   Button,
   Card,
@@ -204,7 +205,8 @@ export default function MarketMonthScreen() {
           trend={trend}
           categoryTrend={categoryTrend}
           onMonth={goTo}
-          vsSummary={marketVsSummary(month, today, 'mes')}
+          // Sem Finanças (lib/features) não há o Resumo, nem os gastos lançados lá: nada a explicar no pé da tela.
+          vsSummary={FEATURES.finance ? marketVsSummary(month, today, 'mes') : null}
           category={category}
           onCategory={chooseCategory}
           storeMonth={storeMonth}
@@ -270,8 +272,8 @@ function MonthBody({
   categoryTrend: MarketTrend | null;
   /** Abre outro mês; `keepCategory` mantém a categoria escolhida. */
   onMonth: (month: string, keepCategory?: boolean) => void;
-  /** Por que este total não é a barra "Mercado" do Resumo. */
-  vsSummary: string;
+  /** Por que este total não é a barra "Mercado" do Resumo; null sem Finanças, que é onde o Resumo fica. */
+  vsSummary: string | null;
   stale: boolean;
   onRetry: () => void;
   view: MarketView;
@@ -314,7 +316,12 @@ function MonthBody({
           <EmptyState
             icon="receipt-text-outline"
             title={summary.emptyTitle}
-            message="As compras aparecem aqui quando uma nota fiscal é confirmada ou um gasto é lançado como Mercado em Finanças. Fotografe o cupom ou leia o QR code da nota."
+            message={
+              // Sem Finanças (lib/features), os gastos lançados lá não contam aqui: só as notas.
+              FEATURES.finance
+                ? 'As compras aparecem aqui quando uma nota fiscal é confirmada ou um gasto é lançado como Mercado em Finanças. Fotografe o cupom ou leia o QR code da nota.'
+                : 'As compras aparecem aqui quando uma nota fiscal é confirmada. Fotografe o cupom ou leia o QR code da nota.'
+            }
             action={<Button title="Adicionar nota" icon="camera-outline" onPress={onAddReceipt} loading={adding} />}
           />
           {/* Sem total na tela não há o que abrir e fechar: o que espera a revisão e o que ficou de fora já vêm à vista. */}
@@ -424,7 +431,7 @@ function MonthBody({
       )}
 
       {/* No pé da tela, também no mês sem ida: por que este total não é a barra do Resumo. */}
-      <Text variant="small">{vsSummary}</Text>
+      {vsSummary ? <Text variant="small">{vsSummary}</Text> : null}
     </>
   );
 }

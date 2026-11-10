@@ -58,8 +58,29 @@ import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { todayISO } from '@/domain/dates';
 import { brandChoice, genericItem, pendingSameItem, productSuggestions, sameListItem } from '@/domain/genericItem';
 import { listNameKey } from '@/domain/listLinks';
+import {
+  addCardShape,
+  addOptionsLabel,
+  DEFAULT_AMOUNT,
+  emptyListMessage,
+  listMode,
+  showsEmptyList,
+  showsSuggestions,
+  startsExpanded,
+  type ListMenuAction,
+} from '@/domain/listMode';
+import {
+  ALL_IN_CART_MESSAGE,
+  afterReceipt,
+  asksEndTripAfterClear,
+  END_TRIP_AFTER_CLEAR,
+  endTripTitle,
+  FINISH_LABEL,
+  listFooter,
+  type ConfirmedReceipt,
+} from '@/domain/finishPurchase';
 import { cartPurchases } from '@/domain/listQueue';
-import { newDuringTrip, ownLiveTrip } from '@/domain/marketTrips';
+import { newDuringTrip, ownLiveTrip, type MarketTrip } from '@/domain/marketTrips';
 import { formatQuantity, parseDecimal } from '@/domain/money';
 import { fitsList, listExclusion, recentPurchases, type RecentItem } from '@/domain/recentPurchases';
 import { ranOutItems, restockFrom } from '@/domain/restock';
@@ -67,8 +88,10 @@ import { guessCategory, normalizeSearch } from '@/domain/search';
 import { sharedQuotes } from '@/domain/sharedPrices';
 import { CartPantryModal } from '@/features/CartPantryModal';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
+import { useFinishPurchase } from '@/features/FinishPurchase';
 import { ListEstimateCard } from '@/features/ListEstimateCard';
 import { ListItemEditor, type ItemDetails, type PhotoChange } from '@/features/ListItemEditor';
+import { ListMenu, ListMenuButton } from '@/features/ListMenu';
 import { ListShareSheet } from '@/features/ListShareSheet';
 import { MarketTripAction, MarketTripBanner } from '@/features/MarketTrip';
 import { OfflineNotice } from '@/features/OfflineNotice';
@@ -86,7 +109,7 @@ import { chooseStore, restoreStoreChoice, useStoreChoice } from '@/lib/storeChoi
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type Product, type ShoppingListItem, type Unit } from '@/lib/types';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
-import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
+import { afterPaint, askYesNo, confirmAction, notify } from '@/ui/dialogs';
 import {
   Button,
   Card,
@@ -95,6 +118,7 @@ import {
   EmptyState,
   ErrorNotice,
   IconBadge,
+  IconButton,
   ListRow,
   Loading,
   Row,
@@ -107,9 +131,6 @@ import { space } from '@/ui/theme';
 
 /** A lista na tela é a guardada: a busca não chegou ao servidor. */
 const STALE_OFFLINE = 'Sem internet agora. Mostrando a lista como estava da última vez.';
-
-/** Até quanto tempo depois do "Limpar" a resposta ainda traz a pergunta de encerrar a ida. */
-const END_TRIP_ASK_MS = 30_000;
 
 /**
  * O item que a pessoa pôs e que já está para comprar: a tela pergunta se soma a quantidade. `otherName`: digitado
@@ -158,16 +179,19 @@ export default function ShoppingListScreen() {
   const refreshTrips = useRefreshMarketTrips();
 
   const [name, setName] = useState('');
-  const [quantity, setQuantity] = useState('1');
-  const [unit, setUnit] = useState<Unit>('un');
+  const [quantity, setQuantity] = useState(DEFAULT_AMOUNT.quantity);
+  const [unit, setUnit] = useState<Unit>(DEFAULT_AMOUNT.unit);
   const [pickerOpen, setPickerOpen] = useState(false);
   // Guardar na despensa: um item (botão do item) ou o carrinho todo (Limpar),
-  // com o carrinho como estava no toque.
+  // com o carrinho como estava no toque. `finishing`: veio do "Finalizar compra" (sem a nota), e por isso termina
+  // com a pergunta de encerrar a ida; `notice`: o aviso desse caminho (sem internet).
   const [storing, setStoring] = useState<{
     items: ShoppingListItem[];
     rows: CartPantryRow[];
     single: boolean;
     pantryUnknown: boolean;
+    finishing: boolean;
+    notice?: string;
   } | null>(null);
   const [editing, setEditing] = useState<ShoppingListItem | null>(null);
   const [sharing, setSharing] = useState(false);
@@ -177,16 +201,52 @@ export default function ShoppingListScreen() {
   // a pergunta nova monta um menu novo.
   const [repeatedKey, setRepeatedKey] = useState(0);
   const [renaming, setRenaming] = useState(false);
-  // A calculadora de preço (o ícone no canto de cima à direita): só na memória, fechar esquece o que foi digitado.
+  // A calculadora de preço e o menu da lista (renomear, arquivar ou reabrir), no canto de cima à direita. A
+  // calculadora fica só na memória: fechar esquece o que foi digitado. O menu é desenhado pela tela, não pelo
+  // cabeçalho, que só tem os dois botões.
   const [calculating, setCalculating] = useState(false);
-  const calculatorButton = useCallback(
-    ({ tintColor }: { tintColor?: ColorValue }) => <PriceCalculatorButton tintColor={tintColor} onPress={() => setCalculating(true)} />,
+  const [menuOpen, setMenuOpen] = useState(false);
+  const headerButtons = useCallback(
+    ({ tintColor }: { tintColor?: ColorValue }) => (
+      <View style={styles.headerButtons}>
+        <PriceCalculatorButton tintColor={tintColor} onPress={() => setCalculating(true)} />
+        <ListMenuButton tintColor={tintColor} onPress={() => setMenuOpen(true)} />
+      </View>
+    ),
     [],
   );
   // "Onde estou": guardado por lista neste aparelho (lib/storeChoice), também escolhido em "Onde comprar".
   const storeChoice = useStoreChoice(id);
   // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
   const justAdded = useJustListed(items.data);
+
+  // Na ida ao mercado de quem está com o app: o selo "Novo", o modo compra e a pergunta de encerrar no fim do
+  // "Finalizar compra".
+  const myTrip = ownLiveTrip(trips.data ?? [], { listId: id, userId: session?.user.id, now: new Date() });
+  // Montar a lista ou fazer a compra (domain/listMode): com item no carrinho (de qualquer pessoa da casa) ou com a
+  // própria ida nesta lista, o cartão de pôr item recolhe ao campo, e as faixas de sugestão saem da frente.
+  const mode = listMode({
+    archived: Boolean(list.data?.archived_at),
+    inCart: (items.data ?? []).filter((i) => i.checked_at).length,
+    ownTrip: Boolean(myTrip),
+  });
+  // "Mais opções", no modo compra: o cartão inteiro de volta. Ao entrar no modo compra ele recolhe, a menos que a
+  // quantidade ou a unidade já tivessem mudado (o item sairia com o que não se vê); ao sair, esquece.
+  const [moreOptions, setMoreOptions] = useState(false);
+  const [shownMode, setShownMode] = useState(mode);
+  if (mode !== shownMode) {
+    setShownMode(mode);
+    setMoreOptions(mode === 'compra' && startsExpanded(quantity, unit));
+  }
+  const card = addCardShape(mode, moreOptions);
+  /** Recolher volta a quantidade e a unidade às de sempre: só o campo na tela é sempre 1 un. */
+  const toggleMoreOptions = () => {
+    if (moreOptions) {
+      setQuantity(DEFAULT_AMOUNT.quantity);
+      setUnit(DEFAULT_AMOUNT.unit);
+    }
+    setMoreOptions(!moreOptions);
+  };
 
   // Fotos dos itens: as enviadas (links guardados para ver sem internet) e as que esperam internet.
   const photos = {
@@ -240,8 +300,8 @@ export default function ShoppingListScreen() {
 
   function resetForm() {
     setName('');
-    setQuantity('1');
-    setUnit('un');
+    setQuantity(DEFAULT_AMOUNT.quantity);
+    setUnit(DEFAULT_AMOUNT.unit);
   }
 
   /** O campo da quantidade preenchido ou outra unidade escolhida: a pessoa disse quanto quer. */
@@ -537,7 +597,6 @@ export default function ShoppingListScreen() {
     [shared.data, prices.data, stores.data],
   );
   // Na ida ao mercado de quem está com o app, o que a casa pôs depois do aviso ganha o selo "Novo".
-  const myTrip = ownLiveTrip(trips.data ?? [], { listId: id, userId: session?.user.id, now: new Date() });
   const tripStart = myTrip?.created_at ?? null;
   // O que este aparelho pôs nesta lista (também por outras telas e antes de reabrir o app) não ganha o selo.
   const added = useAddedItems(id);
@@ -617,6 +676,74 @@ export default function ShoppingListScreen() {
   // O catálogo marca o item que já está na lista, também com a marca no nome ("Leite IL Desnatado" é "Leite desnatado").
   const pendingNames = new Set(pending.flatMap((i) => [normalizeSearch(i.name), normalizeSearch(genericItem(i.name, i.category).name)]));
 
+  // Despensa não carregada (sem internet e nunca vista neste aparelho) não é
+  // despensa vazia. Sem as ligações da lista também não dá para saber o que a
+  // nota já guardou ("Filtro de café" é o filtro Melitta): a pessoa escolhe.
+  const openStore = async (cart: ShoppingListItem[], single: boolean, { finishing = false, notice }: { finishing?: boolean; notice?: string } = {}) => {
+    const linkIndex = links.data ?? (await loadListLinks(queryClient));
+    const known = pantry.data !== undefined && linkIndex !== null;
+    setStoring({
+      items: cart,
+      rows: cartPantryRows(cart, known ? pantry.data! : null, { single, today, links: linkIndex ?? undefined, learned }),
+      single,
+      pantryUnknown: !known,
+      finishing,
+      notice,
+    });
+  };
+  /** A ida desta lista de quem está com o app, agora. */
+  const myLiveTrip = () => ownLiveTrip(trips.data ?? [], { listId: id, userId: session?.user.id, now: new Date() });
+  /**
+   * "Encerrar a ida?": encerrar é um pedido ao servidor; se der errado, o aviso de sempre do "Encerrar". true quando
+   * a ida acabou.
+   */
+  const askEndTrip = async (trip: MarketTrip, title: string, message: string) => {
+    if (!(await askYesNo(title, message, 'Encerrar', 'Agora não'))) return false;
+    try {
+      await endTrip.mutateAsync(trip.id);
+      return true;
+    } catch (err) {
+      notify('Não deu para encerrar', marketTripErrorMessage(err, 'end'));
+      return false;
+    }
+  };
+  /**
+   * Depois de limpar pelo "Finalizar compra", quem avisou que estava indo às compras desta lista decide se a ida
+   * acabou. Só com internet.
+   */
+  const offerEndTrip = () => {
+    const trip = myLiveTrip();
+    if (trip && tripsOnline()) void askEndTrip(trip, endTripTitle(trip.list.kind), END_TRIP_AFTER_CLEAR);
+  };
+  // "Finalizar compra" (domain/finishPurchase): a nota antes de limpar. Sem a nota, o "Limpar" do carrinho todo, com o
+  // carrinho como está no toque, e a pergunta de encerrar a ida no fim. Com ela, a revisão tira da lista o que casou e
+  // volta para cá: aqui vem o que ela fez e, uma vez, no fim do fluxo, a pergunta de encerrar a ida. O que a nota não
+  // tirou continua no carrinho.
+  const finish = useFinishPurchase(id, {
+    withoutReceipt: (notice) => void openStore(checked, false, { finishing: true, notice }),
+    receiptConfirmed: (receipt: ConfirmedReceipt, now: number) => {
+      const trip = myLiveTrip();
+      const outcome = afterReceipt(receipt, {
+        cart: checked.map((i) => i.id),
+        trip: trip ? { kind: trip.list.kind } : null,
+        online: tripsOnline(),
+        now,
+      });
+      // A nota esvaziou o carrinho: as compras acabaram, como no "Limpar" do carrinho todo, e o mercado de "Onde
+      // estou" não vale para a próxima. Com algo ainda no carrinho a pessoa pode estar no mercado: a escolha fica,
+      // até ela encerrar a ida (ou limpar).
+      if (outcome.cartEmpty) chooseStore(id, null);
+      // Depois de a lista aparecer de novo: o aviso não sai por cima da revisão que está saindo.
+      afterPaint(() => {
+        if (outcome.kind === 'endTrip' && trip) {
+          void askEndTrip(trip, outcome.title, outcome.message).then((ended) => {
+            if (ended) chooseStore(id, null);
+          });
+        } else notify(outcome.title, outcome.message);
+      });
+    },
+  });
+
   // Sem internet e nunca aberta neste aparelho (nem veio com o resumo das listas): a busca fica parada até a
   // conexão voltar, e a tela diz isso em vez de girar sem fim.
   if ((list.isPending && list.fetchStatus === 'paused') || (items.isPending && items.fetchStatus === 'paused')) {
@@ -631,13 +758,13 @@ export default function ShoppingListScreen() {
       </Screen>
     );
   }
-  // O ícone da calculadora é só da lista carregada: o Stack junta as opções, então quem volta a carregar (a casa
-  // trocada zera as buscas) tira o ícone, que aqui não abriria nada.
-  const noCalculator = <Stack.Screen options={{ headerRight: undefined }} />;
+  // A calculadora e o menu são só da lista carregada: o Stack junta as opções, então quem volta a carregar (a casa
+  // trocada zera as buscas) tira os dois ícones, que aqui não abririam nada.
+  const noHeaderButtons = <Stack.Screen options={{ headerRight: undefined }} />;
   if (list.isPending || items.isPending) {
     return (
       <>
-        {noCalculator}
+        {noHeaderButtons}
         <Loading />
       </>
     );
@@ -648,7 +775,7 @@ export default function ShoppingListScreen() {
     const failed = list.data ? items : list;
     return (
       <>
-        {noCalculator}
+        {noHeaderButtons}
         <ErrorNotice error={failed.error} onRetry={() => failed.refetch()} />
       </>
     );
@@ -658,6 +785,7 @@ export default function ShoppingListScreen() {
   const { restock: restockItems, recent: recentItems } = strips;
   // Arquivada (aberta pelas "Listas arquivadas"): só para ver; mexer nela é depois de "Reabrir".
   const archived = Boolean(list.data.archived_at);
+  const footerAction = listFooter({ pending: pending.length, inCart: checked.length, kind: list.data.kind, archived });
 
   const toggleItem = (item: ShoppingListItem) =>
     toggle.mutate(
@@ -671,49 +799,19 @@ export default function ShoppingListScreen() {
       },
       { onError },
     );
-  // Despensa não carregada (sem internet e nunca vista neste aparelho) não é
-  // despensa vazia. Sem as ligações da lista também não dá para saber o que a
-  // nota já guardou ("Filtro de café" é o filtro Melitta): a pessoa escolhe.
-  const openStore = async (cart: ShoppingListItem[], single: boolean) => {
-    const linkIndex = links.data ?? (await loadListLinks(queryClient));
-    const known = pantry.data !== undefined && linkIndex !== null;
-    setStoring({
-      items: cart,
-      rows: cartPantryRows(cart, known ? pantry.data! : null, { single, today, links: linkIndex ?? undefined, learned }),
-      single,
-      pantryUnknown: !known,
-    });
-  };
   /**
-   * Depois de limpar, quem avisou que estava indo às compras desta lista decide se a ida acabou. Só com internet
-   * (encerrar é um pedido ao servidor); se der errado, o aviso de sempre do "Encerrar".
+   * `single`: só um item guardado pela geladeira; o "Limpar" do carrinho todo é que encerra as compras.
+   * `finishing`: o limpar veio do "Finalizar compra", e só então termina com a pergunta de encerrar a ida; o "Limpar"
+   * da seção "No carrinho" só esvazia (domain/finishPurchase, `asksEndTripAfterClear`).
    */
-  const offerEndTrip = async () => {
-    const trip = ownLiveTrip(trips.data ?? [], { listId: id, userId: session?.user.id, now: new Date() });
-    if (!trip || !tripsOnline()) return;
-    const where = trip.list.kind === 'mercado' ? 'ao mercado' : 'às compras';
-    const yes = await askYesNo(
-      `Encerrar a ida ${where}?`,
-      'O carrinho foi limpo. Ao encerrar, a casa deixa de ver o aviso de que você está nas compras.',
-      'Encerrar',
-      'Agora não',
-    );
-    if (!yes) return;
-    try {
-      await endTrip.mutateAsync(trip.id);
-    } catch (err) {
-      notify('Não deu para encerrar', marketTripErrorMessage(err, 'end'));
-    }
-  };
-  /** `single`: só um item guardado pela geladeira; o "Limpar" do carrinho todo é que encerra as compras. */
-  const clearCart = (cart: ShoppingListItem[], toPantry: CartPantryEntry[], single: boolean) => {
+  const clearCart = (cart: ShoppingListItem[], toPantry: CartPantryEntry[], single: boolean, finishing: boolean) => {
     setStoring(null);
     // As compras acabaram: o mercado de "Onde estou" não vale para a próxima (e volta se o limpar falhar).
     const previousStore = storeChoice;
     if (!single) chooseStore(id, null);
     // A pergunta da ida se decide no toque: sem internet o limpar espera na fila, e a resposta que chegasse com a
     // conexão de volta faria a pergunta aparecer do nada. Nem depois de muito tempo, com a fila demorando.
-    const askAfter = !single && tripsOnline();
+    const onlineAtTap = !single && tripsOnline();
     const tappedAt = Date.now();
     clearChecked.mutate(
       {
@@ -726,7 +824,7 @@ export default function ShoppingListScreen() {
       {
         onSuccess: () => {
           emptyPhotoTrash();
-          if (askAfter && Date.now() - tappedAt < END_TRIP_ASK_MS) void offerEndTrip();
+          if (asksEndTripAfterClear({ finishing, onlineAtTap, tappedAt, answeredAt: Date.now() })) offerEndTrip();
         },
         onError: (err) => {
           if (!single) restoreStoreChoice(id, previousStore);
@@ -759,6 +857,19 @@ export default function ShoppingListScreen() {
       router.push({ pathname: '/produto/[id]', params: { id: productId } });
     };
   }
+
+  // Aberta pelas "Arquivadas" do painel das listas: daqui ela também volta (pelo cartão do aviso ou pelo menu).
+  const reopenList = () => reopen.mutate(list.data!.id, { onError });
+  /** O menu do cabeçalho: as mesmas perguntas e avisos dos botões que ficavam no fim da tela. */
+  const onMenuAction = (action: ListMenuAction) => {
+    if (action === 'rename') setRenaming(true);
+    else if (action === 'reopen') reopenList();
+    else {
+      confirmAction('Arquivar lista', 'A lista some das telas, mas as notas e preços continuam.', 'Arquivar', () =>
+        archive.mutate(undefined, { onSuccess: () => router.back(), onError }),
+      );
+    }
+  };
 
   /** Detalhes vão pela fila da lista (valem sem internet); a foto, pela fila de fotos. */
   async function saveDetails(item: ShoppingListItem, details: ItemDetails, photo: PhotoChange) {
@@ -808,8 +919,11 @@ export default function ShoppingListScreen() {
         [items, prices, pantry, links, products, stores, purchases, shared].forEach((query) => void query.refetch());
         refreshTrips();
       }}
+      // Rodapé por contexto: com item no carrinho, "Finalizar compra"; com o carrinho vazio, "Onde comprar mais barato?".
       footer={
-        pending.length && list.data.kind !== 'outros' ? (
+        footerAction === 'finish' ? (
+          <Button title={FINISH_LABEL} icon="receipt-text-check-outline" loading={finish.busy} onPress={finish.start} />
+        ) : footerAction === 'whereToBuy' ? (
           <Button
             title="Onde comprar mais barato?"
             icon="store-search-outline"
@@ -817,7 +931,7 @@ export default function ShoppingListScreen() {
           />
         ) : undefined
       }>
-      <Stack.Screen options={{ title: list.data.name, headerRight: calculatorButton }} />
+      <Stack.Screen options={{ title: list.data.name, headerRight: headerButtons }} />
       <OfflineNotice />
       {staleError ? (
         <StaleNotice
@@ -829,17 +943,27 @@ export default function ShoppingListScreen() {
       <MarketTripBanner listId={list.data.id} />
 
       {archived ? (
-        <Card>
+        // A lista arquivada é só para ver: reabrir fica aqui, à vista, e também no menu do cabeçalho.
+        <Card style={styles.archivedCard}>
           <Row gap={space.md}>
             <IconBadge icon="archive-outline" tone="neutral" />
             <Text variant="body" style={styles.flex}>
               Esta lista está arquivada. Reabra para mexer nela.
             </Text>
           </Row>
+          <Button
+            title="Reabrir lista"
+            variant="secondary"
+            icon="archive-arrow-up-outline"
+            loading={reopen.isPending}
+            onPress={reopenList}
+          />
         </Card>
       ) : (
         <>
           <Card style={styles.addCard}>
+            {/* O campo é o mesmo nos dois jeitos do cartão (o primeiro filho da primeira linha): o modo compra que
+                começa no meio da digitação (alguém pôs no carrinho) não tira o teclado nem o texto. */}
             <Row>
               <View style={styles.flex}>
                 <TextField
@@ -850,15 +974,28 @@ export default function ShoppingListScreen() {
                   onSubmitEditing={() => add()}
                 />
               </View>
-              <View style={styles.qty}>
-                <TextField value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" accessibilityLabel="Quantidade" />
-              </View>
+              {card === 'inteiro' ? (
+                <View style={styles.qty}>
+                  <TextField value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" accessibilityLabel="Quantidade" />
+                </View>
+              ) : null}
+              {mode === 'compra' ? (
+                <IconButton
+                  icon={moreOptions ? 'chevron-up' : 'tune-variant'}
+                  label={addOptionsLabel(barcode.available)}
+                  color="primary"
+                  expanded={moreOptions}
+                  onPress={toggleMoreOptions}
+                />
+              ) : null}
             </Row>
-            <Row style={styles.wrap}>
-              {UNITS.map((u) => (
-                <Chip key={u} label={u} selected={unit === u} onPress={() => setUnit(u)} />
-              ))}
-            </Row>
+            {card === 'inteiro' ? (
+              <Row style={styles.wrap}>
+                {UNITS.map((u) => (
+                  <Chip key={u} label={u} selected={unit === u} onPress={() => setUnit(u)} />
+                ))}
+              </Row>
+            ) : null}
             {suggestions.products.map(({ product, name: itemName }) => (
               <ListRow
                 key={product.id}
@@ -879,7 +1016,7 @@ export default function ShoppingListScreen() {
             ))}
             {name.trim() ? (
               <Button title={`Adicionar "${name.trim()}"`} icon="plus" compact onPress={() => add()} />
-            ) : (
+            ) : card === 'inteiro' ? (
               <>
                 <Button title="Escolher dos itens comuns" icon="playlist-plus" variant="secondary" compact onPress={() => setPickerOpen(true)} />
                 <Button
@@ -890,8 +1027,8 @@ export default function ShoppingListScreen() {
                   onPress={() => setPasting(true)}
                 />
               </>
-            )}
-            {barcode.available ? (
+            ) : null}
+            {barcode.available && card === 'inteiro' ? (
               <Button
                 title="Ler código de barras"
                 icon="barcode-scan"
@@ -903,19 +1040,19 @@ export default function ShoppingListScreen() {
             ) : null}
           </Card>
           {barcode.element}
-    
-          {/* "Acabou" vale também no meio das compras; o resto é para montar a lista. */}
-          {name.trim() ? null : <RestockStrip items={restockItems} onAdd={addRecent} />}
-          {name.trim() || checked.length ? null : <RecentPurchases items={recentItems} onAdd={addRecent} />}
+
+          {/* Para montar a lista; no modo compra (e enquanto se digita) saem da frente, e a lista sobe. */}
+          {showsSuggestions(mode, Boolean(name.trim())) ? (
+            <>
+              <RestockStrip items={restockItems} onAdd={addRecent} />
+              <RecentPurchases items={recentItems} onAdd={addRecent} />
+            </>
+          ) : null}
         </>
       )}
 
-      {pending.length === 0 && checked.length === 0 && (archived || (!recentItems.length && !restockItems.length)) ? (
-        <EmptyState
-          icon="cart-outline"
-          title="Lista vazia"
-          message={archived ? 'Esta lista ficou sem itens.' : 'Digite um item ou escolha do catálogo de itens comuns da casa.'}
-        />
+      {showsEmptyList({ mode, items: pending.length + checked.length, suggestions: recentItems.length + restockItems.length }) ? (
+        <EmptyState icon="cart-outline" title="Lista vazia" message={emptyListMessage(mode)} />
       ) : null}
 
       {list.data.kind !== 'outros' && (pending.length || checked.length) ? (
@@ -958,11 +1095,15 @@ export default function ShoppingListScreen() {
           ))}
         </Section>
       ) : checked.length && !archived ? (
+        // O "Finalizar compra" também aqui, no estado (o do rodapé, o primário, fica no mesmo lugar de sempre).
         <EmptyState
           icon="cart-check"
           title="Tudo no carrinho!"
-          message="Quando guardar as compras, limpe o carrinho."
+          message={ALL_IN_CART_MESSAGE}
           tint="green"
+          action={
+            <Button title={FINISH_LABEL} icon="receipt-text-check-outline" variant="secondary" loading={finish.busy} onPress={finish.start} />
+          }
         />
       ) : null}
 
@@ -1020,8 +1161,9 @@ export default function ShoppingListScreen() {
           rows={storing.rows}
           single={storing.single}
           pantryUnknown={storing.pantryUnknown}
+          notice={storing.notice}
           shelfLifeDays={shelfLifeDays}
-          onConfirm={(toPantry) => clearCart(storing.items, toPantry, storing.single)}
+          onConfirm={(toPantry) => clearCart(storing.items, toPantry, storing.single, storing.finishing)}
           onClose={() => setStoring(null)}
         />
       ) : null}
@@ -1047,30 +1189,16 @@ export default function ShoppingListScreen() {
         onToggle={toggleCommon}
         onClose={() => setPickerOpen(false)}
       />
-      <Button title="Renomear lista" variant="secondary" icon="pencil-outline" onPress={() => setRenaming(true)} />
-      {list.data.archived_at ? (
-        // Aberta pelas "Arquivadas" do painel das listas: daqui ela também volta.
-        <Button
-          title="Reabrir lista"
-          variant="secondary"
-          icon="archive-arrow-up-outline"
-          loading={reopen.isPending}
-          onPress={() => reopen.mutate(list.data!.id, { onError })}
-        />
-      ) : (
-        <Button
-          title="Arquivar lista"
-          variant="danger"
-          icon="archive-outline"
-          onPress={() =>
-            confirmAction('Arquivar lista', 'A lista some das telas, mas as notas e preços continuam.', 'Arquivar', () =>
-              archive.mutate(undefined, { onSuccess: () => router.back(), onError }),
-            )
-          }
-        />
-      )}
+      <ListMenu
+        visible={menuOpen}
+        title={list.data.name}
+        archived={archived}
+        onAction={onMenuAction}
+        onClose={() => setMenuOpen(false)}
+      />
       {renaming ? <RenameListModal listId={list.data.id} name={list.data.name} onClose={() => setRenaming(false)} /> : null}
       {calculating ? <PriceCalculator onClose={() => setCalculating(false)} /> : null}
+      {finish.element}
     </Screen>
   );
 }
@@ -1081,5 +1209,7 @@ const styles = StyleSheet.create({
   wrap: { flexWrap: 'wrap' },
   qty: { width: 72 },
   addCard: { gap: space.md },
+  archivedCard: { gap: space.md },
   aisle: { gap: space.sm },
+  headerButtons: { flexDirection: 'row', alignItems: 'center' },
 });

@@ -195,8 +195,9 @@ describe('o que conta como dinheiro do mercado', () => {
     const four = marketMonth([first, second, third, fourth, confirmed], MONTH, AFTER);
     expect(four.drafts?.label).toBe('4 notas de outubro ainda esperam a revisão. Elas entram nesta conta quando forem confirmadas.');
     expect(four.drafts?.receipts.map((r) => r.key)).toEqual([fourth.id, third.id, second.id]);
-    expect(four.drafts?.more).toBe('e mais 1 em Finanças > Notas');
-    expect(marketMonth([first, second, third, fourth, draft(15), draft(16)], MONTH, AFTER).drafts?.more).toBe('e mais 3 em Finanças > Notas');
+    // O resto está em Compras > Notas, que lista todos os rascunhos (com Finanças ligada ou não: as notas saíram de lá).
+    expect(four.drafts?.more).toBe('e mais 1 em Compras > Notas');
+    expect(marketMonth([first, second, third, fourth, draft(15), draft(16)], MONTH, AFTER).drafts?.more).toBe('e mais 3 em Compras > Notas');
   });
 });
 

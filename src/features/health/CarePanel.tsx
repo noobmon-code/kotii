@@ -2,7 +2,6 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { useMedications } from '@/data/home';
 import { useAppointments, useExamResultOwners, useExams, usePeople, useVaccines } from '@/data/health';
 import { formatBRDate, formatShortDate, todayISO } from '@/domain/dates';
 import { hasExamResults } from '@/domain/examTrends';
@@ -23,13 +22,16 @@ import {
   Text,
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
-import { MedicationList } from './MedicationSections';
-import { openNewPerson, PersonChips } from './PersonChips';
+import { HealthAddButton } from './HealthAddButton';
+import { PersonChips } from './PersonChips';
 import { StaleNotice } from './StaleNotice';
 
 const PAST_LIMIT = 5;
 
-/** Consultas, vacinas, exames, remédios e ficha de cada pessoa da casa. */
+/**
+ * Saúde → Cuidados: consultas, vacinas, exames e a ficha de cada pessoa da casa. Os remédios têm a parte deles
+ * (Saúde → Remédios, MedicationsPanel), com a mesma pessoa escolhida (?pessoa=).
+ */
 export function CarePanel({ personId, onPersonChange }: { personId: string | null; onPersonChange: (id: string | null) => void }) {
   const today = todayISO();
   const people = usePeople();
@@ -37,26 +39,23 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
   const vaccines = useVaccines();
   const exams = useExams();
   const resultOwners = useExamResultOwners();
-  const medications = useMedications();
   const [showAllPast, setShowAllPast] = useState(false);
 
   // Quem tem resultados (resultOwners) só decide para onde vai a entrada da evolução em "Todos". Aí ela entra na
   // espera e no erro como as outras buscas: sem ela, a entrada sumiria calada, sem ter como tentar de novo. Com
   // uma pessoa escolhida a entrada é sempre a dela, e a falha (ou a demora) dessa busca, que lê a casa toda, não
-  // tira da frente as consultas, as vacinas, os exames e os remédios que já chegaram.
+  // tira da frente as consultas, as vacinas e os exames que já chegaram.
   const person = people.data?.find((p) => p.id === personId) ?? null;
-  const queries = person ? [people, appointments, vaccines, exams, medications] : [people, appointments, vaccines, exams, resultOwners, medications];
+  const queries = person ? [people, appointments, vaccines, exams] : [people, appointments, vaccines, exams, resultOwners];
   // O erro inteiro só enquanto falta o dado da busca que falhou. Com tudo já carregado, a atualização em segundo
   // plano que falha não tira o painel da frente: ele fica com o que tinha, e um aviso acima diz isso.
   const failed = queries.filter((q) => q.isError);
   const blocking = failed.find((q) => q.data === undefined);
   if (blocking) return <ErrorNotice error={blocking.error} onRetry={() => queries.forEach((q) => q.refetch())} />;
-  if (!people.data || !appointments.data || !vaccines.data || !exams.data || !medications.data || (!person && !resultOwners.data)) return <Loading />;
+  if (!people.data || !appointments.data || !vaccines.data || !exams.data || (!person && !resultOwners.data)) return <Loading />;
 
   const mine = <T extends { person_id: string | null }>(rows: T[]) => (person ? rows.filter((r) => r.person_id === person.id) : rows);
   const nameOf = (id: string) => (person ? null : people.data.find((p) => p.id === id)?.name ?? null);
-  const add = (pathname: '/consulta/[id]' | '/vacina/[id]' | '/exame/[id]') =>
-    router.push({ pathname, params: { id: 'nova', pessoa: person?.id ?? '' } });
 
   const personAppointments = mine(appointments.data);
   const upcoming = upcomingAppointments(personAppointments, today);
@@ -74,17 +73,16 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
   const hasResults = (p: Person) => owners.has(p.id) || hasExamResults(exams.data.filter((e) => e.person_id === p.id));
   const withResults = person ? [] : people.data.filter(hasResults);
   const trendsPerson = person ?? (withResults.length === 1 ? withResults[0] : null);
-  const personMedications = person
-    ? medications.data.filter((m) => m.person_id === person.id)
-    : medications.data;
 
+  // A lista das fichas, com o cadastro, fica em Configurações (Pessoas e pets sem celular): aqui só se filtra e se
+  // edita, sem "Adicionar" (os formulários com o seletor de pessoa ainda cadastram alguém na hora).
   if (!people.data.length) {
     return (
       <EmptyState
         icon="account-heart-outline"
         title="Cadastre a família"
-        message="Pessoas e pets da casa, cada um com sua ficha: tipo sanguíneo, alergias, plano de saúde."
-        action={<Button title="Adicionar pessoa ou pet" icon="plus" onPress={openNewPerson} />}
+        message="Pessoas e pets da casa, cada um com sua ficha: tipo sanguíneo, alergias, plano de saúde. O cadastro fica em Configurações."
+        action={<Button title="Abrir Configurações" icon="cog-outline" onPress={() => router.navigate('/configuracoes')} />}
       />
     );
   }
@@ -93,11 +91,15 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
     <View style={styles.gap}>
       {failed.length ? <StaleNotice onRetry={() => failed.forEach((q) => void q.refetch())} /> : null}
 
-      <PersonChips people={people.data} value={person?.id ?? null} onChange={onPersonChange} allLabel="Todos" onAdd={openNewPerson} />
+      <PersonChips people={people.data} value={person?.id ?? null} onChange={onPersonChange} allLabel="Todos" />
+
+      {/* A ação principal da parte, primária e no alto (depois do filtro, como em Remédios e Planos): consulta,
+          vacina ou exame, já da pessoa escolhida. As seções abaixo ficam sem o "+" no título. */}
+      <HealthAddButton kinds={['consulta', 'vacina', 'exame']} personId={person?.id ?? ''} personName={person?.name} />
 
       {person ? <PersonCard person={person} today={today} /> : null}
 
-      <Section title="Consultas" action={<Button title="Consulta" icon="plus" variant="ghost" compact onPress={() => add('/consulta/[id]')} />}>
+      <Section title="Consultas">
         {personAppointments.length === 0 ? (
           <Text variant="muted">Nenhuma consulta registrada.</Text>
         ) : (
@@ -129,7 +131,7 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
         )}
       </Section>
 
-      <Section title="Vacinas" action={<Button title="Vacina" icon="plus" variant="ghost" compact onPress={() => add('/vacina/[id]')} />}>
+      <Section title="Vacinas">
         {personVaccines.length === 0 ? (
           <Text variant="muted">Nenhuma vacina registrada.</Text>
         ) : (
@@ -153,7 +155,7 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
         )}
       </Section>
 
-      <Section title="Exames" action={<Button title="Exame" icon="plus" variant="ghost" compact onPress={() => add('/exame/[id]')} />}>
+      <Section title="Exames">
         {trendsPerson ? (
           <Button
             title={hasResults(trendsPerson) ? 'Evolução e resumo para a consulta' : 'Resumo para a consulta'}
@@ -189,10 +191,8 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
         )}
       </Section>
 
-      <MedicationList medications={personMedications} personId={person?.id ?? null} />
-
       {!person ? (
-        <Section title="Pessoas da casa" action={<Button title="Adicionar" icon="plus" variant="ghost" compact onPress={openNewPerson} />}>
+        <Section title="Pessoas da casa">
           <ListCard>
             {people.data.map((p) => (
               <ListRow

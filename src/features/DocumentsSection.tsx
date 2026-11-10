@@ -1,15 +1,18 @@
 import { router } from 'expo-router';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 
 import { usePeople } from '@/data/health';
 import { useDocuments } from '@/data/house';
 import { todayISO } from '@/domain/dates';
 import { describeDocumentStatus, documentStatus, getDocumentKind } from '@/domain/documents';
 import type { HomeDocument } from '@/lib/types';
-import { Badge, Button, EmptyState, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Section, Text } from '@/ui/primitives';
+import { Badge, Button, EmptyState, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
-/** Documentos da família agrupados por dono: cada pessoa e a casa. */
+/**
+ * Casa → Documentos: "Novo documento" no alto (a ação principal da parte, primária, como em todas) e os documentos
+ * da família agrupados por dono: cada pessoa e a casa. Sem o título "Documentos": o seletor das partes já diz.
+ */
 export function DocumentsSection() {
   const today = todayISO();
   const documents = useDocuments();
@@ -32,17 +35,8 @@ export function DocumentsSection() {
   const failed = documents.isError ? documents : people.isError ? people : null;
 
   return (
-    <Section
-      title="Documentos"
-      action={
-        <Button
-          title="Documento"
-          icon="plus"
-          variant="ghost"
-          compact
-          onPress={() => router.push({ pathname: '/documento/[id]', params: { id: 'novo' } })}
-        />
-      }>
+    <View style={styles.gap}>
+      <Button title="Novo documento" icon="plus" onPress={() => router.push({ pathname: '/documento/[id]', params: { id: 'novo' } })} />
       {failed ? <ErrorNotice error={failed.error} onRetry={() => failed.refetch()} /> : null}
       {!failed && (documents.isPending || people.isPending) ? <Loading /> : null}
       {documents.data && !documents.data.length ? (
@@ -74,10 +68,11 @@ export function DocumentsSection() {
           })}
         </ListCard>
       ))}
-    </Section>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  gap: { gap: space.lg },
   groupTitle: { paddingVertical: space.sm },
 });

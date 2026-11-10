@@ -210,6 +210,7 @@ describe('telas sugeridas pelo consultor', () => {
     expect(financeScreenHref('orcamento')).toBe('/orcamento');
     expect(financeScreenHref('financas')).toEqual({ pathname: '/financas', params: { aba: 'resumo' } });
     expect(financeScreenHref('contas')).toEqual({ pathname: '/financas', params: { aba: 'contas' } });
-    expect(financeScreenHref('notas')).toEqual({ pathname: '/financas', params: { aba: 'notas' } });
+    // As notas saíram de Finanças: ficam em Compras → Notas.
+    expect(financeScreenHref('notas')).toEqual({ pathname: '/compras', params: { aba: 'notas' } });
   });
 });

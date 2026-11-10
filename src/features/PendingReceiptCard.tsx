@@ -14,7 +14,7 @@ import type { useReceiptScanner } from './ReceiptScanner';
 /**
  * A nota pendente (a Sefaz pediu o "não sou robô"): abrir a nota na página oficial, o que pôr nos prints, enviar
  * os prints (ou a foto do papel) com a chave do QR, ou descartar. O app não passa pela verificação: a pessoa passa,
- * na página da Sefaz. Na tela do QR e na da nota pendente (Finanças > Notas, tela Hoje).
+ * na página da Sefaz. Na tela do QR e na da nota pendente (Compras > Notas, tela Hoje).
  */
 export function PendingReceiptCard({
   accessKey,
@@ -78,7 +78,7 @@ export function PendingReceiptCard({
       ) : null}
       {/* No iPhone, o Safari e o Kotii da tela de início guardam cada um as suas: no site, "neste app". */}
       <Text variant="small">
-        {`A nota fica guardada ${Platform.OS === 'web' ? 'neste app' : 'neste aparelho'}, em Finanças → Notas e na tela Hoje, até você enviar os prints.`}
+        {`A nota fica guardada ${Platform.OS === 'web' ? 'neste app' : 'neste aparelho'}, em Compras → Notas e na tela Hoje, até você enviar os prints.`}
       </Text>
 
       <View style={styles.steps}>
@@ -118,12 +118,18 @@ export function PendingReceiptCard({
 }
 
 /**
- * A pendente numa lista (Finanças > Notas, tela Hoje): o mercado, quando a casa já conhece o CNPJ da chave, e o
+ * A pendente numa lista (Compras > Notas, tela Hoje): o mercado, quando a casa já conhece o CNPJ da chave, e o
  * mês da compra. Abre a tela da nota pendente.
  */
 export function PendingReceiptRow({ pending, storeNames }: { pending: PendingReceipt; storeNames: Readonly<Record<string, string>> }) {
+  return pendingReceiptListRow(pending, storeNames);
+}
+
+/** A mesma linha como um `ListRow` (o cartão de linhas dos blocos da tela Hoje põe o recuo do divisor pelo ícone dela). */
+export function pendingReceiptListRow(pending: PendingReceipt, storeNames: Readonly<Record<string, string>>) {
   return (
     <ListRow
+      key={pending.accessKey}
       left={<IconBadge icon="timer-sand" tone="warning" />}
       title={storeNames[pendingReceiptCnpj(pending.accessKey)] ?? 'Nota da Sefaz'}
       subtitle={`${pendingReceiptSubtitle(pending.accessKey)} · faltam os prints da Sefaz`}

@@ -8,11 +8,18 @@ import { formatBRL } from '@/domain/money';
 import { receiptsByMonth, receiptsMore } from '@/domain/receiptList';
 import { PendingReceiptRow } from '@/features/PendingReceiptCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
-import { Badge, Button, EmptyState, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Row, Section, Text } from '@/ui/primitives';
+import { FeatureCard } from '@/ui/FeatureCard';
+import { Badge, Button, EmptyState, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
+/** O cartão do Mercado do mês, no alto das notas. */
+export const MARKET_MONTH_CARD = {
+  title: 'Para onde foi o dinheiro do mercado',
+  subtitle: 'Mercado do mês: por item, por categoria e por mercado',
+} as const;
+
 /**
- * Finanças > Notas: os rascunhos para revisar (todos, também os antigos) e o histórico das confirmadas, da mais
+ * A lista das notas (Compras → Notas): os rascunhos para revisar (todos, também os antigos) e o histórico das confirmadas, da mais
  * recente para a mais antiga, separado por mês e em páginas: o que ainda não veio é contado, com o botão de
  * ver mais. Nenhuma nota some calada. Antes delas, as pendentes deste aparelho: a Sefaz pediu o "não sou robô" e a
  * nota espera os prints.
@@ -52,13 +59,14 @@ export function ReceiptsPanel() {
 
   return (
     <View style={styles.gap}>
-      <View style={styles.actions}>
-        <Button title="Adicionar nota" icon="camera-outline" onPress={scanner.open} loading={scanner.busy} />
-        <Row>
-          <Button title="Preços" icon="chart-line" variant="secondary" onPress={() => router.push('/precos')} style={styles.prices} />
-          <Button title="Mercado do mês" icon="cart-outline" variant="secondary" onPress={() => router.push('/mercado')} style={styles.market} />
-        </Row>
-      </View>
+      {/* A entrada do Mercado do mês, que nasce destas notas: é a única (os Preços ficam em Compras → Listas). */}
+      <FeatureCard
+        gradient="salvia"
+        title={MARKET_MONTH_CARD.title}
+        subtitle={MARKET_MONTH_CARD.subtitle}
+        onPress={() => router.push('/mercado')}
+      />
+      <Button title="Adicionar nota" icon="camera-outline" onPress={scanner.open} loading={scanner.busy} />
 
       {drafts.isPending || history.isPending ? <Loading /> : null}
 
@@ -119,10 +127,6 @@ export function ReceiptsPanel() {
 
 const styles = StyleSheet.create({
   gap: { gap: space.lg },
-  actions: { gap: space.sm },
-  // O nome mais comprido leva mais espaço, para os dois caberem numa linha num celular comum (de 360 de largura em diante).
-  prices: { flex: 2 },
-  market: { flex: 3 },
   month: { gap: space.sm },
   more: { gap: space.sm },
 });

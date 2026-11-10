@@ -28,7 +28,9 @@ import { doseKey, dosesForDay } from '@/domain/medications';
 import { refillSummary } from '@/domain/medicationStock';
 import { menuLines } from '@/domain/menu';
 import {
+  actionAvailable,
   buildNukeContext,
+  NUKE_ACTION_UNAVAILABLE,
   NUKE_FEATURES,
   NUKE_LIST_LIMIT,
   parseActions,
@@ -39,6 +41,7 @@ import {
 import { expiryStatus, groupPantry } from '@/domain/pantry';
 import { supplyLines } from '@/domain/supplies';
 import { useHousehold } from '@/lib/auth';
+import { FEATURES } from '@/lib/features';
 import { settledData } from '@/lib/settledData';
 import { supabase, unwrap } from '@/lib/supabase';
 
@@ -78,11 +81,14 @@ export function useNukeContext(today: string): NukeContextState {
   const rotations = useChoreRotations();
   const pantry = usePantry();
   const pending = usePendingListItems();
-  const bills = useBills();
-  const recentPayments = useRecentBillPayments(today);
+  // Contas, gastos e orçamento são de Finanças: com a chave desligada (lib/features), não buscam, não entram no
+  // retrato e ficam fora de `queries` (desligadas, nunca chegam, e o retrato ficaria esperando por elas).
+  const finance = FEATURES.finance;
+  const bills = useBills(finance);
+  const recentPayments = useRecentBillPayments(today, finance);
   const month = today.slice(0, 7);
-  const spending = useSpending(shiftMonth(month, -1), month);
-  const budgets = useBudgets();
+  const spending = useSpending(shiftMonth(month, -1), month, finance);
+  const budgets = useBudgets(finance);
   const appointments = useAppointments();
   const people = usePeople();
   const documents = useDocuments();
@@ -102,10 +108,7 @@ export function useNukeContext(today: string): NukeContextState {
     chores,
     pantry,
     pending,
-    bills,
-    recentPayments,
-    spending,
-    budgets,
+    ...(finance ? [bills, recentPayments, spending, budgets] : []),
     appointments,
     people,
     documents,
@@ -133,12 +136,12 @@ export function useNukeContext(today: string): NukeContextState {
     shopping.set(item.list.name, [...(shopping.get(item.list.name) ?? []), item]);
   }
 
-  const entries = spending.data;
+  const entries = finance ? spending.data : undefined;
   const previous = entries ? previousMonth(entries, month, today) : null;
   const pantryGroups = groupPantry(pantry.data ?? []);
   // Contas com o valor já conhecido acima do normal: o Nuke sabe dizer por que a luz veio alta.
   // Só com os pagamentos em dia: depois de pagar ou desfazer, os de antes diriam o que já não vale.
-  const billsAbove = billsAboveUsual(bills.data ?? [], settledData(recentPayments) ?? [], today);
+  const billsAbove = finance ? billsAboveUsual(bills.data ?? [], settledData(recentPayments) ?? [], today) : new Map();
 
   // Com as doses de hoje já marcadas: o estoque que o Nuke lê é o mesmo das telas.
   const schedules = toSchedules(medications.data ?? [], today, doses.data);
@@ -171,18 +174,20 @@ export function useNukeContext(today: string): NukeContextState {
     supplies: supplies.data ? supplyLines(supplies.data.supplies, today) : undefined,
     shopping: [...shopping].map(([list, items]) => ({ list, items })),
     menu: menuLines(menu.data ?? []),
-    bills: (bills.data ?? [])
-      .filter((b) => b.active && b.next_due_on <= monthAhead)
-      .map((b) => {
-        const above = billsAbove.get(b.id);
-        return {
-          name: b.name,
-          amount: b.amount,
-          next_due_on: b.next_due_on,
-          autopay: b.autopay,
-          aboveUsual: above ? describeAboveForNuke(above) : undefined,
-        };
-      }),
+    bills: finance
+      ? (bills.data ?? [])
+          .filter((b) => b.active && b.next_due_on <= monthAhead)
+          .map((b) => {
+            const above = billsAbove.get(b.id);
+            return {
+              name: b.name,
+              amount: b.amount,
+              next_due_on: b.next_due_on,
+              autopay: b.autopay,
+              aboveUsual: above ? describeAboveForNuke(above) : undefined,
+            };
+          })
+      : undefined,
     spending:
       entries && previous
         ? (() => {
@@ -234,24 +239,27 @@ export function useAskNuke() {
         body: { ...input, features: NUKE_FEATURES },
       });
       if (error || !data) throw new Error(await functionErrorMessage(error, 'Não consegui responder agora. Tente de novo.'));
-      return { reply: String(data.reply ?? ''), actions: parseActions(data.actions) } satisfies NukeAnswer;
+      return { reply: String(data.reply ?? ''), actions: parseActions(data.actions, { finance: FEATURES.finance }) } satisfies NukeAnswer;
     },
   });
 }
 
+// As telas têm os nomes que a função `nuke` conhece (não muda com o app): "compras", "despensa" e "notas" são as
+// partes da aba Compras, e "familia" é a aba Configurações, que juntou a Família e a tela de Configurações. A parte
+// vai sempre no endereço, para abrir nela mesmo com a aba já montada em outra.
 const SCREEN_ROUTES: Record<NukeScreen, () => void> = {
   hoje: () => router.navigate('/'),
-  compras: () => router.navigate({ pathname: '/casa', params: { aba: 'compras' } }),
+  compras: () => router.navigate({ pathname: '/compras', params: { aba: 'listas' } }),
   cardapio: () => router.navigate('/cardapio'),
-  despensa: () => router.navigate({ pathname: '/casa', params: { aba: 'despensa' } }),
+  despensa: () => router.navigate({ pathname: '/compras', params: { aba: 'despensa' } }),
   tarefas: () => router.navigate({ pathname: '/casa', params: { aba: 'tarefas' } }),
   aparelhos: () => router.navigate({ pathname: '/casa', params: { aba: 'aparelhos' } }),
   financas: () => router.navigate({ pathname: '/financas', params: { aba: 'resumo' } }),
   contas: () => router.navigate({ pathname: '/financas', params: { aba: 'contas' } }),
-  notas: () => router.navigate({ pathname: '/financas', params: { aba: 'notas' } }),
+  notas: () => router.navigate({ pathname: '/compras', params: { aba: 'notas' } }),
   precos: () => router.navigate('/precos'),
   saude: () => router.navigate('/saude'),
-  familia: () => router.navigate('/familia'),
+  familia: () => router.navigate('/configuracoes'),
 };
 
 /** Executa a ação que a pessoa confirmou, com as mesmas regras das telas. */
@@ -260,6 +268,9 @@ export function useRunNukeAction() {
   const saveChore = useSaveChore();
   const saveExpense = useSaveExpense();
   return async (action: NukeAction): Promise<string> => {
+    // Segunda guarda, depois da tela: uma ação guardada na conversa de antes da chave de Finanças (lib/features)
+    // não grava nos gastos nem tenta abrir uma tela que não existe.
+    if (!actionAvailable(action, { finance: FEATURES.finance })) throw new Error(NUKE_ACTION_UNAVAILABLE);
     switch (action.type) {
       case 'add_to_list': {
         let added = 0;

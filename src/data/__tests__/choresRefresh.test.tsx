@@ -21,7 +21,6 @@ const mockPeople: Row[] = [
   { id: 'p-carla', name: 'Carla', kind: 'pessoa', member_user_id: 'u-carla' },
   { id: 'p-lia', name: 'Lia', kind: 'pessoa', member_user_id: null },
 ];
-const mockIdle = { data: undefined, isPending: false, isError: false, isRefetching: false, error: null, refetch: jest.fn() };
 // O servidor de mentira: a louça é um rodízio de Beto, Carla e Lia, na vez de Carla. `reads`: as buscas, por tabela.
 const mockServer: { order: string[]; reads: Record<string, number> } = { order: [], reads: {} };
 
@@ -41,13 +40,10 @@ jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn(), confirmAction: jest.fn() }));
 jest.mock('@/lib/auth', () => ({ useHousehold: () => ({ data: { members: mockMembers } }) }));
 jest.mock('@/lib/session', () => ({ endSessionIfGone: async () => false }));
-// As outras abas não entram nesta história.
-jest.mock('@/features/ShoppingListsPanel', () => ({ ShoppingListsPanel: () => null }));
-jest.mock('@/features/PantryPanel', () => ({ PantryPanel: () => null }));
+// As outras partes da aba não entram nesta história.
+jest.mock('@/features/AgendaPanel', () => ({ AgendaPanel: () => null, agendaQueryKeys: () => [] }));
+jest.mock('@/features/DocumentsSection', () => ({ DocumentsSection: () => null }));
 jest.mock('@/features/EquipmentPanel', () => ({ EquipmentPanel: () => null }));
-jest.mock('@/features/SuppliesSection', () => ({ SuppliesSection: () => null }));
-jest.mock('@/data/market', () => ({ useShoppingLists: () => mockIdle }));
-jest.mock('@/data/supplies', () => ({ useSupplies: () => mockIdle }));
 jest.mock('@/lib/supabase', () => {
   // Uma consulta do supabase-js: responde quando alguém espera por ela, pela tabela.
   const query = (table: string) => {

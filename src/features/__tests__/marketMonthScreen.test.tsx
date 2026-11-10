@@ -5,10 +5,11 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import MarketMonthScreen from '@/app/mercado';
 import type { Entry } from '@/domain/finance';
 import type { MarketData, MarketLine, MarketReceipt, MarketSpend, MarketTotalReceipt } from '@/domain/marketSpend';
+import { FEATURES } from '@/lib/features';
 import type { Store } from '@/lib/types';
-import { BarRow } from '@/features/finance/BarRow';
+import { BarRow } from '@/features/market/BarRow';
 import { FinanceSummaryPanel } from '@/features/finance/FinanceSummaryPanel';
-import { MarketMonthLink } from '@/features/finance/MarketMonthLink';
+import { MarketMonthTotal } from '@/features/finance/MarketMonthTotal';
 import { MarketTrendChart } from '@/features/market/MarketTrendChart';
 import { Button, Chip, IconButton, ListRow, Screen, Segmented } from '@/ui/primitives';
 
@@ -291,6 +292,8 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
+  // A chave de Finanças ligada num teste não passa para o seguinte, mesmo quando ele falha no meio.
+  jest.restoreAllMocks();
 });
 
 describe('mês carregado', () => {
@@ -317,7 +320,14 @@ describe('mês carregado', () => {
     expect(text).not.toContain(['Assaí', '1 ida'].join('\n'));
     // O total pago (270) não é a soma dos itens (260): a frase diz sobre o que são as porcentagens.
     expect(text).toContain('As porcentagens são sobre os itens lidos (R$ 260,00).');
-    // No fim da tela, pequeno, por que este total não é a barra do Resumo.
+    // Sem Finanças (lib/features), não há o Resumo: o pé da tela não compara com ele nem fala dos gastos lançados lá.
+    expect(text).not.toContain('Resumo');
+    expect(text).not.toContain('gastos avulsos');
+  });
+
+  it('com Finanças ligada, o fim da tela diz, pequeno, por que este total não é a barra do Resumo', async () => {
+    jest.replaceProperty(FEATURES, 'finance', true);
+    const text = await mount();
     expect(text.split('\n').at(-1)).toBe(NOT_THE_RESUMO);
   });
 
@@ -346,9 +356,9 @@ describe('mês carregado', () => {
     expect(text).toContain(['Outros', 'R$ 0,50', '<1%'].join('\n'));
     expect(text).not.toContain('Medicamentos');
     expect(text).toContain('As porcentagens são sobre os itens lidos (R$ 260,00).');
-    // O topo e a frase do fim continuam.
+    // O topo continua (a frase do fim, sobre a barra do Resumo, só existe com Finanças ligada).
     expect(text).toContain('R$ 270,00 em 2 idas');
-    expect(text.split('\n').at(-1)).toBe(NOT_THE_RESUMO);
+    expect(text).not.toContain('Resumo');
 
     await choose('Idas');
     expect(mockRouter.setParams).toHaveBeenLastCalledWith({ aba: 'idas' });
@@ -500,10 +510,22 @@ describe('como este total fecha', () => {
     await mount();
     await press(`Como este total fecha. ${CLOSING.replace('1 nota que espera', '4 notas que esperam')}`);
     const text = page();
-    expect(text).toContain(['Assaí', '· 14 out', 'Revisar', 'Assaí', '· 13 out', 'Revisar', 'Assaí', '· 12 out', 'Revisar', 'e mais 1 em Finanças > Notas'].join('\n'));
+    // O resto está em Compras > Notas, que lista todos os rascunhos.
+    expect(text).toContain(['Assaí', '· 14 out', 'Revisar', 'Assaí', '· 13 out', 'Revisar', 'Assaí', '· 12 out', 'Revisar', 'e mais 1 em Compras > Notas'].join('\n'));
     expect(text).not.toContain('· 11 out');
+    expect(text).not.toContain('Finanças');
     // O resto é só texto: nada na tela leva para as abas.
-    expect(renderer!.root.findAll((node) => typeof node.props.onPress === 'function' && String(node.props.accessibilityLabel ?? '').includes('Finanças'))).toEqual([]);
+    expect(renderer!.root.findAll((node) => typeof node.props.onPress === 'function' && String(node.props.accessibilityLabel ?? '').includes('Compras'))).toEqual([]);
+  });
+
+  it('com Finanças ligada, o resto dos rascunhos continua em Compras > Notas: as notas saíram de Finanças', async () => {
+    jest.replaceProperty(FEATURES, 'finance', true);
+    const drafts = [11, 12, 13, 14].map((day) => receipt(`r${day}`, at(10, day), [], { status: 'draft' }));
+    mockState.query = loaded([...HOUSE.filter((r) => r.status === 'confirmed'), ...drafts]);
+    await mount();
+    await press(`Como este total fecha. ${CLOSING.replace('1 nota que espera', '4 notas que esperam')}`);
+    expect(page()).toContain('e mais 1 em Compras > Notas');
+    expect(page()).not.toContain('Finanças > Notas');
   });
 
   it('nas notas para abrir, a data nunca encolhe: só o nome do mercado é cortado', async () => {
@@ -722,12 +744,21 @@ describe('sem notas, carregando e com erro', () => {
     mockState.query = loaded([]);
     const text = await mount();
     expect(text).toContain('Nenhuma compra de mercado em outubro');
-    expect(text).toContain('As compras aparecem aqui quando uma nota fiscal é confirmada ou um gasto é lançado como Mercado em Finanças. Fotografe o cupom ou leia o QR code da nota.');
+    // Sem Finanças (lib/features), só as notas contam aqui: o texto não fala de gastos lançados lá.
+    expect(text).toContain('As compras aparecem aqui quando uma nota fiscal é confirmada. Fotografe o cupom ou leia o QR code da nota.');
+    expect(text).not.toContain('Finanças');
     expect(text).not.toContain('em 0 idas');
     expect(text).not.toContain('Como este total fecha');
     expect(renderer!.root.findAllByType(Segmented)).toHaveLength(0);
     await pressButton('Adicionar nota');
     expect(mockScanner.open).toHaveBeenCalledTimes(1);
+  });
+
+  it('com Finanças ligada, o mês vazio lembra que o gasto lançado como Mercado lá também conta', async () => {
+    jest.replaceProperty(FEATURES, 'finance', true);
+    mockState.query = loaded([]);
+    const text = await mount();
+    expect(text).toContain('As compras aparecem aqui quando uma nota fiscal é confirmada ou um gasto é lançado como Mercado em Finanças. Fotografe o cupom ou leia o QR code da nota.');
   });
 
   it('mês corrente com uma nota de data depois de hoje: ela fica de fora do total, e os detalhes dizem e levam à nota', async () => {
@@ -805,51 +836,50 @@ describe('sem notas, carregando e com erro', () => {
   });
 });
 
-describe('a entrada no resumo de gastos', () => {
-  const row = () => renderer!.root.findAllByType(ListRow).find((candidate) => candidate.props.title === 'Para onde foi o dinheiro do mercado')!;
+describe('o total no resumo de gastos (só com Finanças)', () => {
+  const row = () => renderer!.root.findAllByType(ListRow).find((candidate) => candidate.props.title === 'Mercado do mês')!;
 
-  it('faz a conta com as notas que o resumo já leu, sem a busca da tela, e abre a tela no mês', async () => {
-    const text = await mount(<MarketMonthLink month="2026-09" receipts={HOUSE} entries={[]} />);
+  it('faz a conta com as notas que o resumo já leu, sem a busca da tela, e não abre a tela (a entrada é só em Compras > Notas)', async () => {
+    const text = await mount(<MarketMonthTotal month="2026-09" receipts={HOUSE} entries={[]} />);
     // Num mês passado não há nota de data futura, e a frase não fala dela.
     expect(text).toBe(
       [
-        'Para onde foi o dinheiro do mercado',
+        'Mercado do mês',
         'R$ 130,00 em 1 ida',
         'Diferente da barra “Mercado”: no Mercado do mês as notas fiscais entram com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio. Os gastos avulsos e as contas pagas lançados como Mercado também contam lá.',
       ].join('\n'),
     );
     await act(async () => renderer?.unmount());
     // O mesmo total que a tela mostra para outubro.
-    expect(await mount(<MarketMonthLink month="2026-10" receipts={HOUSE} entries={[]} />)).toContain('R$ 270,00 em 2 idas');
+    expect(await mount(<MarketMonthTotal month="2026-10" receipts={HOUSE} entries={[]} />)).toContain('R$ 270,00 em 2 idas');
     expect(mockState.asked).toEqual([]);
-    await act(async () => row().props.onPress());
-    expect(mockRouter.push).toHaveBeenCalledWith({ pathname: '/mercado', params: { mes: '2026-10' } });
+    expect(row().props.onPress).toBeUndefined();
   });
 
-  it('sem nota de mercado no mês, diz isso; sem as notas na mão, continua levando à tela', async () => {
-    expect(await mount(<MarketMonthLink month="2026-10" receipts={[]} entries={[]} />)).toContain('Nenhuma compra de mercado em outubro');
+  it('sem nota de mercado no mês, diz isso; sem as notas na mão, diz onde ver o mês', async () => {
+    expect(await mount(<MarketMonthTotal month="2026-10" receipts={[]} entries={[]} />)).toContain('Nenhuma compra de mercado em outubro');
     await act(async () => renderer?.unmount());
-    expect(await mount(<MarketMonthLink month="2026-10" receipts={undefined} entries={[]} />)).toBe(
+    expect(await mount(<MarketMonthTotal month="2026-10" receipts={undefined} entries={[]} />)).toBe(
       [
-        'Para onde foi o dinheiro do mercado',
-        'Por categoria, por item e por mercado',
+        'Mercado do mês',
+        'Por categoria, por item e por mercado, em Compras > Notas',
         'Diferente da barra “Mercado”: no Mercado do mês as notas fiscais entram com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio. Os gastos avulsos e as contas pagas lançados como Mercado também contam lá, e o que tem data depois de hoje fica de fora.',
       ].join('\n'),
     );
-    expect(row().props.onPress).toBeDefined();
+    expect(row().props.onPress).toBeUndefined();
     expect(mockState.asked).toEqual([]);
   });
 
-  it('no resumo: o total vem das notas do próprio resumo, e a busca da tela não é feita', async () => {
+  it('no resumo: o total vem das notas do próprio resumo, a busca da tela não é feita, e o resumo não leva à tela', async () => {
     mockState.spending.entries = [{ id: 'nota-o2', source: 'nota', refId: 'o2', date: '2026-10-10', amount: 50, category: 'mercado', description: 'Dia' }];
     mockState.spending.receipts = HOUSE.filter((r) => r.status === 'confirmed');
     await mount(<FinanceSummaryPanel />);
-    expect(texts(renderer!.toJSON()).join('\n')).toContain(['Para onde foi o dinheiro do mercado', 'R$ 270,00 em 2 idas'].join('\n'));
+    expect(texts(renderer!.toJSON()).join('\n')).toContain(['Mercado do mês', 'R$ 270,00 em 2 idas'].join('\n'));
     // As notas são as da janela de meses que o resumo já tem na mão.
     expect(mockState.spending.asked.at(-1)).toBe('2026-04 a 2026-10');
     expect(mockState.asked).toEqual([]);
-    await act(async () => row().props.onPress());
-    expect(mockRouter.push).toHaveBeenCalledWith({ pathname: '/mercado', params: { mes: '2026-10' } });
+    expect(row().props.onPress).toBeUndefined();
+    expect(texts(renderer!.toJSON())).not.toContain('Para onde foi o dinheiro do mercado');
   });
 });
 
@@ -1137,7 +1167,20 @@ describe('o mês pela tendência e a frase do pé', () => {
     expect(categoryCard()).toBeUndefined();
   });
 
-  it('a frase do pé aparece também no mês sem ida; num mês passado, sem falar de data depois de hoje', async () => {
+  it('sem Finanças (lib/features), nem o mês sem ida nem um mês passado comparam com o Resumo ou falam dos gastos de lá', async () => {
+    mockState.query = loaded([]);
+    let text = await mount();
+    expect(text).toContain('Nenhuma compra de mercado em outubro');
+    for (const absent of ['Resumo', 'gastos avulsos', 'contas pagas', 'Finanças']) expect(text).not.toContain(absent);
+    await act(async () => renderer?.unmount());
+    mockState.query = loaded(HOUSE);
+    mockState.params = { mes: '2026-09' };
+    text = await mount();
+    for (const absent of ['Resumo', 'gastos avulsos', 'contas pagas', 'Finanças']) expect(text).not.toContain(absent);
+  });
+
+  it('com Finanças ligada, a frase do pé aparece também no mês sem ida; num mês passado, sem falar de data depois de hoje', async () => {
+    jest.replaceProperty(FEATURES, 'finance', true);
     mockState.query = loaded([]);
     let text = await mount();
     expect(text).toContain('Nenhuma compra de mercado em outubro');
@@ -1154,6 +1197,11 @@ describe('o mês pela tendência e a frase do pé', () => {
 });
 
 describe('gastos de mercado lançados sem nota', () => {
+  // Só com Finanças (lib/features) a busca traz esses gastos: sem ela, fetchMarketSpends não devolve nenhum.
+  beforeEach(() => {
+    jest.replaceProperty(FEATURES, 'finance', true);
+  });
+
   /** Um gasto avulso ("gasto:id"), ou o pagamento de uma conta ("conta:id da conta"), lançado como Mercado em Finanças. */
   const spend = (ref: string, date: string, amount: number, name: string): MarketSpend => {
     const [source, refId] = ref.split(':') as ['gasto' | 'conta', string];
@@ -1249,7 +1297,7 @@ describe('gastos de mercado lançados sem nota', () => {
     expect(text).toContain('Os gastos de mercado deste mês foram lançados sem nota, e por isso não têm itens.');
   });
 
-  it('a entrada no Resumo soma os gastos e as contas pagas de Mercado que o Resumo já leu, e só eles', async () => {
+  it('o total no Resumo soma os gastos e as contas pagas de Mercado que o Resumo já leu, e só eles', async () => {
     const entries: Entry[] = [
       { id: 'gasto-e1', source: 'gasto', refId: 'e1', date: '2026-10-12', amount: 25.5, category: 'mercado', description: 'Feira' },
       { id: 'conta-p1', source: 'conta', refId: 'b1', date: '2026-10-08', amount: 80, category: 'mercado', description: 'Cesta do sacolão' },
@@ -1257,12 +1305,12 @@ describe('gastos de mercado lançados sem nota', () => {
       // A nota já entra pelos itens: não conta de novo.
       { id: 'nota-o2', source: 'nota', refId: 'o2', date: '2026-10-10', amount: 50, category: 'mercado', description: 'Dia' },
     ];
-    expect(await mount(<MarketMonthLink month="2026-10" receipts={HOUSE} entries={entries} />)).toContain('R$ 375,50 em 4 idas');
+    expect(await mount(<MarketMonthTotal month="2026-10" receipts={HOUSE} entries={entries} />)).toContain('R$ 375,50 em 4 idas');
     await act(async () => renderer?.unmount());
     mockState.spending.entries = entries;
     mockState.spending.receipts = HOUSE.filter((r) => r.status === 'confirmed');
     await mount(<FinanceSummaryPanel />);
-    expect(page()).toContain(['Para onde foi o dinheiro do mercado', 'R$ 375,50 em 4 idas'].join('\n'));
+    expect(page()).toContain(['Mercado do mês', 'R$ 375,50 em 4 idas'].join('\n'));
     // O mesmo total que a tela mostra.
     await act(async () => renderer?.unmount());
     mockState.query = loaded(HOUSE, [FEIRA, CESTA]);

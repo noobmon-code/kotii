@@ -3,7 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
-import { SHARING_ABOUT, type SharedPrice } from '@/domain/sharedPrices';
+import { SHARING_ABOUT, SHARING_SUMMARY, SHARING_TITLE, type SharedPrice } from '@/domain/sharedPrices';
 import { SharedPricesAbout } from '@/features/SharedPrices';
 import { persistOptions, queryClient as appQueryClient } from '@/lib/queryClient';
 
@@ -26,7 +26,7 @@ jest.mock('expo-network', () => ({
 jest.mock('expo-image-manipulator', () => ({ ImageManipulator: {}, SaveFormat: {} }));
 jest.mock('expo-image-picker', () => ({}));
 jest.mock('@/lib/session', () => ({ endSessionIfGone: async () => false }));
-// O cartão da aba Família de verdade: os desenhos animados (reanimated), o fundo e as imagens não entram aqui.
+// O cartão de Configurações → Sobre o Kotii de verdade: os desenhos animados (reanimated), o fundo e as imagens não entram aqui.
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 jest.mock('@/lib/supabase', () => {
@@ -185,7 +185,7 @@ describe('preços de outras casas', () => {
   });
 });
 
-describe('o compartilhamento existe neste banco? (o cartão da aba Família)', () => {
+describe('o compartilhamento existe neste banco? (o cartão de Configurações → Sobre o Kotii)', () => {
   /** Um banco de mentira que só responde a pergunta e guarda o nome de cada função chamada. */
   function askingDb(answer: { data: unknown; error: unknown }) {
     const asked: string[] = [];
@@ -301,7 +301,7 @@ describe('no cache do app', () => {
     expect(mockRpc.called).toEqual(['shared_prices_available', 'shared_prices_available']);
   });
 
-  it('o cartão da aba Família, sozinho na tela, só pergunta: nunca busca os preços', async () => {
+  it('o cartão de Configurações, sozinho na tela, só pergunta: nunca busca os preços, nem aberto', async () => {
     mockRpc.answer = (name) => (name === 'shared_prices_available' ? { data: true, error: null } : { data: [price(1)], error: null });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
     let renderer: ReactTestRenderer | undefined;
@@ -313,11 +313,15 @@ describe('no cache do app', () => {
       );
     });
     const page = () => JSON.stringify(renderer!.toJSON());
-    for (let turn = 0; turn < 20 && !page().includes(SHARING_ABOUT); turn++) {
+    for (let turn = 0; turn < 20 && !page().includes(SHARING_SUMMARY); turn++) {
       await act(async () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
       });
     }
+    expect(page()).toContain(SHARING_SUMMARY);
+    // Aberto (o texto inteiro vem ao tocar na linha), continua sem buscar os preços.
+    const row = renderer!.root.findAll((node) => node.props.title === SHARING_TITLE && typeof node.props.onPress === 'function')[0];
+    await act(async () => row.props.onPress());
     expect(page()).toContain(SHARING_ABOUT);
     expect(mockRpc.called).toEqual(['shared_prices_available']);
     expect(queryClient.getQueryCache().find({ queryKey: ['sharedPrices'] })).toBeUndefined();

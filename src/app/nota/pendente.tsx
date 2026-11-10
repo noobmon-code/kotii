@@ -12,7 +12,7 @@ import { notify } from '@/ui/dialogs';
 import { Button, EmptyState, Loading, Screen, Text } from '@/ui/primitives';
 
 /**
- * Uma nota pendente (Finanças > Notas, tela Hoje): a Sefaz pediu o "não sou robô" quando o QR foi lido. Daqui a
+ * Uma nota pendente (Compras > Notas, tela Hoje): a Sefaz pediu o "não sou robô" quando o QR foi lido. Daqui a
  * pessoa abre a nota na Sefaz, envia os prints (ligados à chave do QR: a leitura vira a nota, e a pendente some)
  * ou descarta.
  */
@@ -29,7 +29,7 @@ export default function PendingReceiptScreen() {
   // Sem o link do QR (a chave digitada), não há o que tentar.
   const retryUrl = direct && entry?.url && parseNfceQr(entry.url) ? entry.url : null;
 
-  const close = () => (router.canGoBack() ? router.back() : router.replace('/financas'));
+  const close = () => (router.canGoBack() ? router.back() : router.replace({ pathname: '/compras', params: { aba: 'notas' } }));
 
   return (
     <Screen edges={[]}>
@@ -54,7 +54,7 @@ export default function PendingReceiptScreen() {
         <EmptyState
           icon="receipt-text-outline"
           title="Esta nota não está mais pendente"
-          message="Ela já foi lida ou descartada. As notas da casa ficam em Finanças → Notas."
+          message="Ela já foi lida ou descartada. As notas da casa ficam em Compras → Notas."
           action={<Button title="Voltar" variant="secondary" onPress={close} />}
         />
       ) : (

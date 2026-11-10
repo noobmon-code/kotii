@@ -4,7 +4,8 @@ import { useEffect } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { planHouseReminders } from '@/domain/houseReminders';
-import { syncOtherHouses, useHouseReminderData } from '@/features/useReminderSync';
+import { syncOtherHouses, useHouseReminderData, useReminderSync } from '@/features/useReminderSync';
+import { FEATURES } from '@/lib/features';
 import type { HouseReminderData } from '@/lib/reminders';
 import type { Medication, MedicationDose } from '@/lib/types';
 
@@ -19,6 +20,13 @@ const mockState = {
   doses: {} as Record<string, MedicationDose[] | undefined>,
   dosesFail: false,
   synced: [] as { data: HouseReminderData; householdId: string }[],
+  /** As contas da casa no banco, o `enabled` de cada useBills e as casas cujas contas foram buscadas. */
+  bills: [] as { id: string; name: string; amount: number | null; next_due_on: string; active: boolean; autopay: boolean }[],
+  billsEnabled: [] as (boolean | undefined)[],
+  billsRefetched: 0,
+  billsFetchedFor: [] as unknown[],
+  /** O que useReminderSync chama de lib/reminders ao abrir, na ordem. */
+  opened: [] as string[],
 };
 
 const mockQuery = <T,>(data: T) => ({ data, refetch: async () => ({ data }) });
@@ -32,15 +40,36 @@ jest.mock('@/lib/supabase', () => ({ supabase: {}, unwrap: (r: { data: unknown }
 jest.mock('@/lib/auth', () => ({ useHousehold: () => ({ data: undefined }) }));
 jest.mock('@/lib/reminders', () => ({
   anyHouseReminderKind: async () => true,
+  dropHiddenHouseReminders: async () => {
+    mockState.opened.push('dropHiddenHouseReminders');
+  },
   householdsWithMedicationReminders: async () => new Set<string>(),
   pruneHouseholdReminders: async () => undefined,
-  reconcileReminders: async () => undefined,
+  reconcileReminders: async () => {
+    mockState.opened.push('reconcileReminders');
+  },
   syncReminders: async () => undefined,
   syncHouseReminders: async (data: HouseReminderData, target: { householdId: string }) => {
     mockState.synced.push({ data, householdId: target.householdId });
   },
 }));
-jest.mock('@/data/finance', () => ({ useBills: () => mockQuery([]), fetchBills: async () => [] }));
+// Como uma busca do TanStack: desligada, nunca chega (data undefined), e o refetch buscaria assim mesmo.
+jest.mock('@/data/finance', () => ({
+  useBills: (enabled?: boolean) => {
+    mockState.billsEnabled.push(enabled);
+    return {
+      data: enabled === false ? undefined : mockState.bills,
+      refetch: async () => {
+        mockState.billsRefetched += 1;
+        return { data: mockState.bills };
+      },
+    };
+  },
+  fetchBills: async (db: unknown) => {
+    mockState.billsFetchedFor.push(db);
+    return mockState.bills;
+  },
+}));
 jest.mock('@/data/house', () => ({
   useDocuments: () => mockQuery([]),
   useEquipmentList: () => mockQuery([]),
@@ -138,13 +167,25 @@ async function mount() {
 }
 
 beforeEach(() => {
-  Object.assign(mockState, { today: '2026-10-12', medications: undefined, doses: {}, dosesFail: false, synced: [] });
+  Object.assign(mockState, {
+    today: '2026-10-12',
+    medications: undefined,
+    doses: {},
+    dosesFail: false,
+    synced: [],
+    bills: [],
+    billsEnabled: [],
+    billsRefetched: 0,
+    billsFetchedFor: [],
+    opened: [],
+  });
   seen = undefined;
 });
 
 afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
+  jest.restoreAllMocks();
 });
 
 describe('a casa aberta (useHouseReminderData)', () => {
@@ -221,5 +262,65 @@ describe('as outras casas (syncOtherHouses)', () => {
     await syncOtherHouses(queryClient, houses, 'aberta');
     expect(mockState.synced).toHaveLength(1);
     expect(takenToday(mockState.synced[0].data)).toEqual([undefined]);
+  });
+});
+
+describe('as contas e a chave de Finanças (lib/features)', () => {
+  const luz = { id: 'b1', name: 'Luz', amount: 230, next_due_on: '2026-10-13', active: true, autopay: false };
+  const houses = [
+    { id: 'aberta', name: 'Casa' },
+    { id: 'praia', name: 'Praia' },
+  ];
+  const queryClient = { fetchQuery: async () => undefined } as unknown as QueryClient;
+
+  it('desligada: a busca das contas fica desligada, e os avisos saem assim mesmo (sem esperar por ela), sem conta nenhuma', async () => {
+    mockState.bills = [luz];
+    const data = await mount();
+    expect(mockState.billsEnabled.length).toBeGreaterThan(0);
+    expect(mockState.billsEnabled.every((enabled) => enabled === false)).toBe(true);
+    expect(data).not.toBeNull();
+    expect(data?.bills).toEqual([]);
+    // Buscar de novo também não pede as contas.
+    const fresh = await seen?.refetch();
+    expect(fresh?.bills).toEqual([]);
+    expect(mockState.billsRefetched).toBe(0);
+  });
+
+  it('desligada: as outras casas também não buscam as contas', async () => {
+    mockState.bills = [luz];
+    await syncOtherHouses(queryClient, houses, 'aberta');
+    expect(mockState.billsFetchedFor).toEqual([]);
+    expect(mockState.synced.map((s) => [s.householdId, s.data.bills])).toEqual([['praia', []]]);
+  });
+
+  it('ligada: as contas vêm, da casa aberta e das outras', async () => {
+    jest.replaceProperty(FEATURES, 'finance', true);
+    mockState.bills = [luz];
+    const data = await mount();
+    expect(mockState.billsEnabled.every((enabled) => enabled === true)).toBe(true);
+    expect(data?.bills).toEqual([luz]);
+    expect((await seen?.refetch())?.bills).toEqual([luz]);
+    expect(mockState.billsRefetched).toBe(1);
+    await syncOtherHouses(queryClient, houses, 'aberta');
+    expect(mockState.billsFetchedFor).toEqual([{ house: 'praia' }]);
+    expect(mockState.synced[0].data.bills).toEqual([luz]);
+  });
+});
+
+describe('ao abrir o app (useReminderSync)', () => {
+  function Sync() {
+    useReminderSync();
+    return null;
+  }
+
+  it('tira os avisos já agendados dos tipos escondidos (os de contas, sem Finanças) uma vez, antes de arrumar a agenda', async () => {
+    // Numa casa sem nenhum outro aviso ligado, syncOtherHouses nem refaz os avisos: é esta chamada que tira os de contas.
+    await act(async () => {
+      renderer = create(<Sync />);
+    });
+    expect(mockState.opened).toEqual(['dropHiddenHouseReminders', 'reconcileReminders']);
+    // Redesenhar não chama de novo.
+    await act(async () => renderer!.update(<Sync />));
+    expect(mockState.opened).toEqual(['dropHiddenHouseReminders', 'reconcileReminders']);
   });
 });
