@@ -150,7 +150,7 @@ describe('as doses de hoje já marcadas chegam à conta do estoque', () => {
     expect(seen?.rows).toEqual([]);
   });
 
-  it('lista de remédios da aba Cuidados: o selo é o mesmo das outras telas', async () => {
+  it('lista dos remédios em uso (Saúde → Remédios): o selo é o mesmo das outras telas', async () => {
     // Nenhuma dose de hoje marcada, e as marcações carregadas: sem selo, como na tela Hoje.
     const list = () => <MedicationList medications={[course(0)]} personId={null} />;
     mockQueries.doses = [];

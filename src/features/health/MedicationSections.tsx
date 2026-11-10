@@ -61,7 +61,11 @@ export function DoseSubtitle({ parts, late, badge }: { parts: (string | null)[];
   );
 }
 
-export function MedicationsToday({ today }: { today: string }) {
+/**
+ * As doses de hoje (Saúde → Resumo e Remédios), para marcar. Com `personId`, só as dos remédios dessa pessoa: a
+ * pessoa escolhida em Saúde → Remédios.
+ */
+export function MedicationsToday({ today, personId = null }: { today: string; personId?: string | null }) {
   const medications = useMedications();
   const doses = useDoses(today);
   const toggle = useToggleDose(today);
@@ -69,7 +73,8 @@ export function MedicationsToday({ today }: { today: string }) {
 
   if (!medications.data) return null;
   const taken = new Set((doses.data ?? []).map((d) => doseKey(d.medication_id, d.scheduled_on, d.scheduled_time)));
-  const slots = dosesForDay(toSchedules(medications.data, today, doses.data), today, taken);
+  const mine = personId ? medications.data.filter((m) => m.person_id === personId) : medications.data;
+  const slots = dosesForDay(toSchedules(mine, today, doses.data), today, taken);
   if (!slots.length) return null;
   const nowTime = currentTimeHHMM();
 
@@ -210,7 +215,7 @@ export function useRefillRows(): (row: RefillRow) => ReactElement {
   };
 }
 
-/** A seção dos remédios e receitas acabando (tela Saúde): as linhas de useRefillRows. */
+/** A seção dos remédios e receitas acabando (Saúde → Resumo e Remédios): as linhas de useRefillRows. */
 export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
   const refillRow = useRefillRows();
   if (!rows.length) return null;
@@ -221,23 +226,16 @@ export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
   );
 }
 
-/** Tratamentos em andamento (de uma pessoa, ou de todos). */
+/**
+ * Tratamentos em andamento (de uma pessoa, ou de todos), em Saúde → Remédios. Sem botão de criar: o "Novo remédio"
+ * fica no alto da parte.
+ */
 export function MedicationList({ medications, personId }: { medications: Medication[]; personId: string | null }) {
   const today = todayISO();
   // Para o selo ser o mesmo das telas Hoje e Saúde (ver toSchedule).
   const doses = useDoses(today);
   return (
-    <Section
-      title="Remédios"
-      action={
-        <Button
-          title="Remédio"
-          icon="plus"
-          variant="ghost"
-          compact
-          onPress={() => router.push({ pathname: '/remedio/[id]', params: { id: 'novo', pessoa: personId ?? '' } })}
-        />
-      }>
+    <Section title="Em uso">
       {medications.length === 0 ? (
         personId ? (
           <Text variant="muted">Nenhum remédio em uso.</Text>

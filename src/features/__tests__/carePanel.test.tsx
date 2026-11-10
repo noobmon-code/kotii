@@ -4,7 +4,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { CarePanel } from '@/features/health/CarePanel';
 import { StaleNotice } from '@/features/health/StaleNotice';
-import { Button, Chip, ErrorNotice, Loading } from '@/ui/primitives';
+import { Button, Chip, ErrorNotice, Loading, Section } from '@/ui/primitives';
 
 // O painel de verdade, com as buscas trocadas por respostas prontas. O que se confere aqui: a busca de "quem tem
 // resultados de exame" (a casa toda) só segura o painel em "Todos", que é onde ela decide alguma coisa; e uma
@@ -17,7 +17,7 @@ interface Query {
   refetch: jest.Mock;
 }
 
-type Name = 'people' | 'appointments' | 'vaccines' | 'exams' | 'owners' | 'medications';
+type Name = 'people' | 'appointments' | 'vaccines' | 'exams' | 'owners';
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockQueries: Record<Name, Query> = {} as never;
 
@@ -29,9 +29,9 @@ jest.mock('@/data/health', () => ({
   useExams: () => mockQueries.exams,
   useExamResultOwners: () => mockQueries.owners,
 }));
-jest.mock('@/data/home', () => ({ useMedications: () => mockQueries.medications }));
-// A lista de remédios tem as buscas dela (doses do dia), e os desenhos não entram no que se confere aqui.
-jest.mock('@/features/health/MedicationSections', () => ({ MedicationList: () => null }));
+// Os remédios saíram dos Cuidados (têm a parte deles, Saúde → Remédios): o painel não os busca mais.
+const mockMedications = jest.fn();
+jest.mock('@/data/home', () => ({ useMedications: () => mockMedications() }));
 // O ícone carrega a fonte depois de montado, fora do act: aqui ele não desenha nada.
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));
 
@@ -87,7 +87,6 @@ beforeEach(() => {
     vaccines: loaded([]),
     exams: loaded([exam('e1', 'ana')]),
     owners: loaded(['ana']),
-    medications: loaded([]),
   });
 });
 
@@ -114,7 +113,7 @@ describe('painel de cuidados: a busca de quem tem resultados de exame', () => {
     open(null);
     expect(has(ErrorNotice)).toBe(true);
     act(() => renderer.root.findByType(ErrorNotice).props.onRetry());
-    for (const name of ['people', 'appointments', 'vaccines', 'exams', 'owners', 'medications'] as Name[]) {
+    for (const name of ['people', 'appointments', 'vaccines', 'exams', 'owners'] as Name[]) {
       expect([name, mockQueries[name].refetch.mock.calls.length]).toEqual([name, 1]);
     }
   });
@@ -145,7 +144,7 @@ describe('painel de cuidados: a busca de quem tem resultados de exame', () => {
 });
 
 describe('painel de cuidados: a atualização que falha com o dado já carregado', () => {
-  const retried = () => (['people', 'appointments', 'vaccines', 'exams', 'owners', 'medications'] as Name[]).filter((name) => mockQueries[name].refetch.mock.calls.length > 0);
+  const retried = () => (['people', 'appointments', 'vaccines', 'exams', 'owners'] as Name[]).filter((name) => mockQueries[name].refetch.mock.calls.length > 0);
 
   it('em "Todos", a de quem tem resultados não esconde o painel: ele fica, com o aviso e a entrada de antes', () => {
     mockQueries.owners = stale(['ana']);
@@ -209,5 +208,19 @@ describe('painel de cuidados: as fichas nascem em Configurações', () => {
     act(() => renderer.root.findAllByType(Button)[0].props.onPress());
     expect(router.navigate).toHaveBeenCalledWith('/configuracoes');
     expect(router.push).not.toHaveBeenCalled();
+  });
+});
+
+describe('painel de cuidados: consultas, vacinas e exames', () => {
+  const sections = () => renderer.root.findAllByType(Section).map((section) => section.props.title);
+
+  it('os remédios ficam na parte deles (Saúde → Remédios): aqui nem a seção, nem o botão, nem a busca', () => {
+    open(null);
+    expect(sections()).toEqual(['Consultas', 'Vacinas', 'Exames', 'Pessoas da casa']);
+    expect(buttons().filter((title) => /rem[eé]dio/i.test(title))).toEqual([]);
+    act(() => renderer.unmount());
+    open('ana');
+    expect(sections()).toEqual(['Consultas', 'Vacinas', 'Exames']);
+    expect(mockMedications).not.toHaveBeenCalled();
   });
 });

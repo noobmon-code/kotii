@@ -8,7 +8,7 @@ import FinanceScreen from '@/app/(tabs)/financas';
 import HealthScreen from '@/app/(tabs)/saude';
 import { StyleSheet } from 'react-native';
 
-import { CASA_TABS } from '@/domain/tabs';
+import { CASA_TABS, SAUDE_TABS } from '@/domain/tabs';
 import { Screen, Segmented } from '@/ui/primitives';
 import { SCREEN_PADDING, space } from '@/ui/theme';
 
@@ -42,11 +42,16 @@ jest.mock('@/features/health/MedicationSections', () => ({
   MedicationsToday: () => null,
   useRefills: () => ({ rows: [] }),
 }));
+jest.mock('@/features/health/MedicationsPanel', () => ({ MedicationsPanel: () => null }));
 jest.mock('@/features/health/PlansPanel', () => ({ PlansPanel: () => null }));
 jest.mock('@/features/health/useHealthOverview', () => ({
   useHealthOverview: () => ({ loaded: false, workoutsToday: [], upcoming: [], toConfirm: [], vaccinesDue: [], drafts: [] }),
 }));
-jest.mock('expo-router', () => ({ router: { push: jest.fn(), setParams: jest.fn() }, useLocalSearchParams: () => ({}) }));
+jest.mock('expo-router', () => ({
+  router: { push: jest.fn(), setParams: jest.fn() },
+  useLocalSearchParams: () => ({}),
+  useFocusEffect: () => undefined,
+}));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 
@@ -70,7 +75,7 @@ describe('o topo das abas sem o cartão de cabeçalho', () => {
   it.each([
     ['Compras', <ShoppingScreen key="compras" />, 'ListasNotasDespensa'],
     ['Casa', <HouseScreen key="casa" />, 'TarefasAgendaAparelhosDocumentos'],
-    ['Saúde', <HealthScreen key="saude" />, 'ResumoCuidadosTreinoDieta'],
+    ['Saúde', <HealthScreen key="saude" />, 'ResumoRemédiosCuidadosPlanos'],
     ['Finanças', <FinanceScreen key="financas" />, 'ResumoContas'],
   ])('%s começa pelo seletor das partes', async (name, screen, segments) => {
     await mount(screen);
@@ -106,5 +111,19 @@ describe('as partes da Casa num celular de 360', () => {
     expect(content).toBeLessThanOrEqual(room);
     await mount(<HouseScreen />);
     expect(renderer!.root.findByType(Segmented).props.widths).toBe('content');
+  });
+});
+
+describe('as partes da Saúde num celular de 360', () => {
+  // Largura de cada rótulo em Nunito 15 Bold, medida no TTF de @expo-google-fonts/nunito (a soma dos avanços, sem
+  // kerning): Resumo 56,2, Remédios 68,5, Cuidados 64,9 e Planos 47,5.
+  const LABELS: Record<string, number> = { Resumo: 56.2, Remédios: 68.5, Cuidados: 64.9, Planos: 47.5 };
+  const room = 360 - 2 * SCREEN_PADDING - 2 - 2 * 4;
+
+  it('as quatro cabem em partes iguais: o rótulo mais comprido, "Remédios", cabe num quarto', async () => {
+    expect(SAUDE_TABS.map((tab) => tab.label)).toEqual(Object.keys(LABELS));
+    expect(Math.max(...Object.values(LABELS))).toBeLessThanOrEqual(room / SAUDE_TABS.length);
+    await mount(<HealthScreen />);
+    expect(renderer!.root.findByType(Segmented).props.widths).toBeUndefined();
   });
 });
