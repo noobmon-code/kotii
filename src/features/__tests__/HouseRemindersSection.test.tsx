@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Switch } from 'react-native';
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from 'react-test-renderer';
 
+import { FEATURES } from '@/lib/features';
 import { notify } from '@/ui/dialogs';
 
 import { HouseRemindersSection } from '../HouseRemindersSection';
@@ -97,13 +98,37 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => tree.unmount());
   client.clear();
+  jest.restoreAllMocks();
+});
+
+describe('Finanças (lib/features)', () => {
+  const EVE_HINT = 'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, compromissos, aniversários, tarefas, vacinas e documentos.';
+
+  it('desligada: sem a linha "Contas a pagar" (mesmo com ela ligada neste aparelho), e o resumo de amanhã não cita contas', async () => {
+    const texts = await render();
+    expect(texts).not.toContain('Contas a pagar');
+    expect(tree.root.findAllByType(Switch).map((s) => s.props.accessibilityLabel)).not.toContain('Avisos de contas a pagar');
+    // A primeira linha é a dos documentos.
+    expect(tree.root.findAllByType(Switch)[0].props.accessibilityLabel).toBe('Avisos de documentos');
+    expect(texts.join('')).toContain(EVE_HINT);
+  });
+
+  it('ligada: a linha das contas volta, em primeiro, com a escolha guardada', async () => {
+    jest.replaceProperty(FEATURES, 'finance', true);
+    const texts = await render();
+    expect(texts.indexOf('Contas a pagar')).toBeGreaterThanOrEqual(0);
+    expect(texts.indexOf('Contas a pagar')).toBeLessThan(texts.indexOf('Documentos'));
+    const bills = tree.root.findAllByType(Switch).find((s) => s.props.accessibilityLabel === 'Avisos de contas a pagar');
+    expect(bills?.props.value).toBe(true);
+    expect(texts.join('')).toContain('consultas, compromissos, aniversários, contas, tarefas, vacinas e documentos.');
+  });
 });
 
 describe('"Alguém indo ao mercado" nos avisos deste navegador', () => {
   it('no navegador que recebe avisos: aparece com os outros, com o texto de ajuda, ligado como está no servidor', async () => {
     const texts = await render();
     expect(texts).toContain('Avisos neste navegador');
-    expect(texts).toContain('Contas a pagar');
+    expect(texts).toContain('Documentos');
     expect(texts).toContain(LABEL);
     expect(texts.join('')).toContain(HINT);
     // Depois dos avisos da casa, no mesmo cartão.
@@ -124,7 +149,7 @@ describe('"Alguém indo ao mercado" nos avisos deste navegador', () => {
     mockSupplies.available = false;
     const texts = await render();
     expect(texts).not.toContain('Gás, água e ração');
-    expect(texts).toContain('Contas a pagar');
+    expect(texts).toContain('Documentos');
     expect(texts).toContain(LABEL);
   });
 
@@ -138,7 +163,7 @@ describe('"Alguém indo ao mercado" nos avisos deste navegador', () => {
   it('no celular não aparece (lá não há push remoto): só os avisos locais', async () => {
     mockDevice.tripPush = false;
     const texts = await render();
-    expect(texts).toContain('Contas a pagar');
+    expect(texts).toContain('Documentos');
     expect(texts).not.toContain(LABEL);
     expect(tripSwitch()).toBeUndefined();
   });
@@ -148,7 +173,7 @@ describe('"Alguém indo ao mercado" nos avisos deste navegador', () => {
       throw { code: '42703', message: 'column push_subscriptions.market_trips does not exist' };
     };
     const texts = await render();
-    expect(texts).toContain('Contas a pagar');
+    expect(texts).toContain('Documentos');
     expect(texts).not.toContain(LABEL);
     expect(notify).not.toHaveBeenCalled();
   });

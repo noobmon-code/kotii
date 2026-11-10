@@ -25,6 +25,7 @@ import {
 } from '@/domain/providers';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { ProviderContactButtons } from '@/features/providers/ProviderContact';
+import { FEATURES } from '@/lib/features';
 import { goBackOr } from '@/lib/navigation';
 import type { ServiceProvider } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -168,7 +169,7 @@ function ProviderForm({
       if (!mounted.current) return;
       setChecking(false);
     }
-    confirmAction('Excluir prestador', deleteProviderWarning(target.name, count), 'Excluir', () =>
+    confirmAction('Excluir prestador', deleteProviderWarning(target.name, count, FEATURES.finance), 'Excluir', () =>
       // O banco confere o número da pergunta: um serviço registrado depois dela, em outro celular, recusa (e nada sai).
       remove.mutate(
         { id: target.id, expectedJobs: count },

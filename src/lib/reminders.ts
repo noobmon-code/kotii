@@ -17,6 +17,8 @@ import { Platform } from 'react-native';
 
 import { todayISO } from '@/domain/dates';
 import {
+  effectiveHouseReminderKinds,
+  hiddenHouseReminderKinds,
   HOUSE_REMINDER_LIMIT,
   overdueKey,
   planHouseReminders,
@@ -25,6 +27,7 @@ import {
   type HouseReminderKind,
 } from '@/domain/houseReminders';
 import { currentTimeHHMM, planReminders } from '@/domain/medications';
+import { FEATURES } from './features';
 import type { Medication } from './types';
 import type { ScheduleRequest as WebScheduleRequest } from './webPushSchedule';
 
@@ -491,14 +494,22 @@ async function readHouseScheduled(key: string): Promise<StoredHouseReminders | n
   return raw ? (JSON.parse(raw) as StoredHouseReminders) : null;
 }
 
-/** Quais avisos da casa este aparelho recebe. */
-export async function getHouseReminderKinds(): Promise<Record<HouseReminderKind, boolean>> {
+/** A escolha guardada neste aparelho, como a pessoa deixou (também a dos tipos que este app esconde). */
+async function storedHouseReminderKinds(): Promise<Record<HouseReminderKind, boolean>> {
   const raw = await AsyncStorage.getItem(HOUSE_KINDS_KEY).catch(() => null);
   try {
     return { ...NO_HOUSE_KINDS, ...(raw ? (JSON.parse(raw) as Partial<Record<HouseReminderKind, boolean>>) : {}) };
   } catch {
     return NO_HOUSE_KINDS;
   }
+}
+
+/**
+ * Quais avisos da casa este aparelho recebe. Os tipos que o app esconde (o de contas, com Finanças desligada em
+ * lib/features) contam como desligados, sem apagar a escolha guardada: ligando Finanças de novo, ela volta.
+ */
+export async function getHouseReminderKinds(): Promise<Record<HouseReminderKind, boolean>> {
+  return effectiveHouseReminderKinds(await storedHouseReminderKinds(), FEATURES.finance);
 }
 
 /**
@@ -511,7 +522,8 @@ export async function setHouseReminderKind(kind: HouseReminderKind, enabled: boo
   if (enabled && !(await ensurePermission(HOUSE_CHANNEL))) return false;
   // Na fila, para dois toques seguidos não gravarem um por cima do outro.
   await serialized(async () => {
-    const kinds = { ...(await getHouseReminderKinds()), [kind]: enabled };
+    // Sobre a escolha guardada: a dos tipos escondidos fica como estava.
+    const kinds = { ...(await storedHouseReminderKinds()), [kind]: enabled };
     await AsyncStorage.setItem(HOUSE_KINDS_KEY, JSON.stringify(kinds));
     if (enabled) return;
     // Em todas as casas.
@@ -550,6 +562,29 @@ async function dropKind(key: string, kind: HouseReminderKind): Promise<void> {
       signature: '',
     } satisfies StoredHouseReminders),
   );
+}
+
+/**
+ * Tira do aparelho os avisos já agendados dos tipos que este app esconde (os de contas, com Finanças desligada),
+ * em todas as casas: a sincronização de cada casa já não os planeja, mas a de uma casa sem nenhum outro aviso
+ * ligado nem roda (ver syncOtherHouses), e eles tocariam assim mesmo. Só mexe numa casa que tem algum deles; a
+ * próxima sincronização dela refaz o resto (ver dropKind).
+ */
+export async function dropHiddenHouseReminders(): Promise<void> {
+  if (!remindersSupported) return;
+  const hidden = hiddenHouseReminderKinds(FEATURES.finance);
+  if (!hidden.length) return;
+  await serialized(async () => {
+    for (const key of await houseScheduledKeys()) {
+      const scheduled = await readHouseScheduled(key);
+      // Sem o tipo de cada aviso (formato antigo), a sincronização da casa é que refaz tudo.
+      if (!scheduled?.kinds) continue;
+      for (const kind of hidden) {
+        const pending = scheduled.kinds.includes(kind) || (scheduled.overdue ?? []).some((o) => (o.kind ?? 'bills') === kind);
+        if (pending) await dropKind(key, kind);
+      }
+    }
+  });
 }
 
 /** Algum aviso da casa ligado neste aparelho? */

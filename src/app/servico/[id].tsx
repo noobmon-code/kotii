@@ -29,6 +29,7 @@ import {
   validateJob,
   type SourceRead,
 } from '@/domain/providers';
+import { FEATURES } from '@/lib/features';
 import { goBackOr } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import type { Equipment, ServiceJob, ServiceProvider } from '@/lib/types';
@@ -246,8 +247,10 @@ function JobForm({
   const provider = providers.find((p) => p.id === providerId);
   const trade = provider ? getProviderTrade(provider.trade) : null;
   const appliance = equipment.find((e) => e.id === equipmentId);
-  // A mesma leitura de validateJob: "1.500" é mil e quinhentos.
-  const offerExpense = canCopyToExpenses(amount.trim() ? parseMoney(amount) : null);
+  // A mesma leitura de validateJob: "1.500" é mil e quinhentos. Os gastos são de Finanças: com a chave desligada
+  // (lib/features), o cartão não aparece e nada é gravado neles.
+  const finance = FEATURES.finance;
+  const offerExpense = finance && canCopyToExpenses(amount.trim() ? parseMoney(amount) : null);
   // Moradia, ou Transporte quando é do mecânico ou num veículo: a linha do gasto e o gasto usam a mesma.
   const expenseCategory = serviceExpenseCategory(provider?.trade, appliance?.category);
   // O prestador ou o aparelho do serviço que não veio da leitura desta visita (fora das listas daqui, ou nelas só
@@ -279,9 +282,9 @@ function JobForm({
       return notify('Não deu para salvar', providerErrorMessage(err));
     }
     // Cópia de uma vez só: o gasto nasce agora e não fica ligado ao serviço.
-    if (toExpenses && canCopyToExpenses(values.amount) && expenseGap) {
+    if (finance && toExpenses && canCopyToExpenses(values.amount) && expenseGap) {
       notify('O serviço foi salvo, mas o gasto não', expenseCopySkippedNote(expenseGap));
-    } else if (toExpenses && canCopyToExpenses(values.amount)) {
+    } else if (finance && toExpenses && canCopyToExpenses(values.amount)) {
       try {
         await saveExpense.mutateAsync({
           values: {
@@ -409,14 +412,19 @@ function JobForm({
           icon="trash-can-outline"
           disabled={busy}
           onPress={() =>
-            confirmAction('Excluir serviço', `Excluir "${job.description}"? Se ele foi lançado nos gastos, o gasto continua em Finanças.`, 'Excluir', () =>
-              remove.mutate(job.id, {
-                onSuccess: () => {
-                  onDeleted();
-                  goBackOr({ pathname: '/prestador/[id]', params: { id: job.provider_id } });
-                },
-                onError: (err) => notify('Não deu para excluir', providerErrorMessage(err)),
-              }),
+            confirmAction(
+              'Excluir serviço',
+              // Sem Finanças, sem falar dos gastos de lá, que a pessoa não vê.
+              `Excluir "${job.description}"?${finance ? ' Se ele foi lançado nos gastos, o gasto continua em Finanças.' : ''}`,
+              'Excluir',
+              () =>
+                remove.mutate(job.id, {
+                  onSuccess: () => {
+                    onDeleted();
+                    goBackOr({ pathname: '/prestador/[id]', params: { id: job.provider_id } });
+                  },
+                  onError: (err) => notify('Não deu para excluir', providerErrorMessage(err)),
+                }),
             )
           }
         />

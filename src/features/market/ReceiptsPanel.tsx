@@ -12,7 +12,7 @@ import { Badge, Button, EmptyState, ErrorNotice, IconBadge, ListCard, ListRow, L
 import { space } from '@/ui/theme';
 
 /**
- * Finanças > Notas: os rascunhos para revisar (todos, também os antigos) e o histórico das confirmadas, da mais
+ * A lista das notas (a sub-aba Notas): os rascunhos para revisar (todos, também os antigos) e o histórico das confirmadas, da mais
  * recente para a mais antiga, separado por mês e em páginas: o que ainda não veio é contado, com o botão de
  * ver mais. Nenhuma nota some calada. Antes delas, as pendentes deste aparelho: a Sefaz pediu o "não sou robô" e a
  * nota espera os prints.

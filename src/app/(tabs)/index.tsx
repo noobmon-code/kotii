@@ -54,6 +54,7 @@ import { SuppliesTodaySection } from '@/features/SuppliesSection';
 import { TermsNoticeCard } from '@/features/TermsNotice';
 import { TodayGreeting } from '@/features/TodayGreeting';
 import { useHousehold } from '@/lib/auth';
+import { FEATURES } from '@/lib/features';
 import { settledData } from '@/lib/settledData';
 import type { Bill } from '@/lib/types';
 import { errorMessage } from '@/lib/supabase';
@@ -128,14 +129,17 @@ export default function TodayScreen() {
   const health = useHealthOverview(today);
   const documents = useDocuments();
   const equipment = useEquipmentList();
-  const bills = useBills();
-  const budgets = useBudgets();
+  // Contas e orçamento são de Finanças: com a chave desligada (lib/features), nada disso busca nem aparece, e as
+  // buscas ficam fora de `queries` (uma busca desligada nunca fica pronta, e o "Tudo em dia" esperaria para sempre).
+  const finance = FEATURES.finance;
+  const bills = useBills(finance);
+  const budgets = useBudgets(finance);
   const month = today.slice(0, 7);
   // O gasto do mês só importa aqui para o orçamento: sem limites, nem busca.
-  const hasBudgets = Boolean(budgets.data?.length);
+  const hasBudgets = finance && Boolean(budgets.data?.length);
   const spending = useSpending(month, month, hasBudgets);
   // Os pagamentos recentes só servem ao selo "acima do normal": sem conta para mostrar, nem busca.
-  const billsDue = billsDueSoon(bills.data ?? [], today);
+  const billsDue = finance ? billsDueSoon(bills.data ?? [], today) : [];
   const recentPayments = useRecentBillPayments(today, billsDue.length > 0);
   const purchases = usePurchaseRecords();
   const menu = useMenu(today, today);
@@ -156,8 +160,7 @@ export default function TodayScreen() {
     receipts,
     documents,
     equipment,
-    bills,
-    budgets,
+    ...(finance ? [bills, budgets] : []),
     ...(hasBudgets ? [spending] : []),
     purchases,
     menu,
@@ -212,7 +215,7 @@ export default function TodayScreen() {
   const restock = useRestock(lists.isSuccess ? onLists : undefined, purchases.data, restocked.pending, today);
   // Categorias do mês que passaram ou estão perto do limite.
   const budgetAlerts =
-    budgets.data && spending.data
+    finance && budgets.data && spending.data
       ? budgetProgress(budgets.data, summarize(spending.data, monthRange(month)).byCategory).filter((l) => l.status !== 'ok')
       : [];
   // Só afirma "tudo em dia" depois que tudo carregou.
@@ -352,7 +355,11 @@ export default function TodayScreen() {
             icon="check-circle-outline"
             tint="green"
             title="Tudo em dia"
-            message="Nenhum remédio, consulta, tarefa, conta, validade ou documento pedindo atenção agora."
+            message={
+              finance
+                ? 'Nenhum remédio, consulta, tarefa, conta, validade ou documento pedindo atenção agora.'
+                : 'Nenhum remédio, consulta, tarefa, validade ou documento pedindo atenção agora.'
+            }
           />
         </Card>
       ) : null}

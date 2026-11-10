@@ -16,8 +16,10 @@ import { currentTimeHHMM } from '@/domain/medications';
 import { supplyReminders } from '@/domain/supplies';
 import { weatherContext, weatherMornings, type Forecast } from '@/domain/weather';
 import { type HouseholdSummary, useHousehold } from '@/lib/auth';
+import { FEATURES } from '@/lib/features';
 import {
   anyHouseReminderKind,
+  dropHiddenHouseReminders,
   householdsWithMedicationReminders,
   pruneHouseholdReminders,
   reconcileReminders,
@@ -30,6 +32,16 @@ import { householdClient } from '@/lib/supabase';
 import type { MedicationDose } from '@/lib/types';
 
 type Rows<T extends () => { data?: unknown }> = NonNullable<ReturnType<T>['data']>;
+
+/**
+ * As contas com Finanças desligada (lib/features): nenhuma, sem buscar. Uma lista só, sempre a mesma: os avisos
+ * não são refeitos à toa. Com ela no lugar da busca (desligada, a busca nunca responderia), os avisos de
+ * documentos, tarefas e o resto seguem como sempre, e o resumo de amanhã não lista conta.
+ */
+const NO_BILLS: Rows<typeof useBills> = [];
+
+/** As contas para os avisos de outra casa: sem Finanças, nenhuma, sem pedir nada ao banco. */
+const billsOf = (db: Parameters<typeof fetchBills>[0]) => (FEATURES.finance ? fetchBills(db) : Promise.resolve(NO_BILLS));
 
 /**
  * O que o clima precisa: o local da casa (null: ninguém definiu, sem dicas),
@@ -133,7 +145,9 @@ function toHouseReminderData(
  * carrega) e `refetch`, que busca tudo de novo e devolve o resultado.
  */
 export function useHouseReminderData() {
-  const bills = useBills();
+  const finance = FEATURES.finance;
+  const bills = useBills(finance);
+  const billRows = finance ? bills.data : NO_BILLS;
   const documents = useDocuments();
   const chores = useChores();
   const appointments = useAppointments();
@@ -151,9 +165,9 @@ export function useHouseReminderData() {
   // Mesmo objeto enquanto os dados não mudam: não refaz os avisos à toa.
   const data = useMemo<HouseReminderData | null>(
     () =>
-      bills.data && documents.data && chores.data
+      billRows && documents.data && chores.data
         ? toHouseReminderData(
-            bills.data,
+            billRows,
             documents.data,
             chores.data,
             appointments.data,
@@ -167,7 +181,7 @@ export function useHouseReminderData() {
           )
         : null,
     [
-      bills.data,
+      billRows,
       documents.data,
       chores.data,
       appointments.data,
@@ -200,7 +214,8 @@ export function useHouseReminderData() {
   const queryClient = useQueryClient();
   const refetch = useCallback(async (): Promise<HouseReminderData | null> => {
     const [b, d, c, a, v, p, l, e, fe, fd, s, m, t] = await Promise.all([
-      refetchBills(),
+      // Sem Finanças, nada de buscar contas: o refetch busca mesmo com a busca desligada.
+      finance ? refetchBills() : { data: NO_BILLS },
       refetchDocuments(),
       refetchChores(),
       refetchAppointments(),
@@ -234,6 +249,7 @@ export function useHouseReminderData() {
         )
       : null;
   }, [
+    finance,
     refetchBills,
     refetchDocuments,
     refetchChores,
@@ -290,7 +306,7 @@ export async function syncOtherHouses(queryClient: QueryClient, households: Pick
       if (!houseKinds) continue;
       const optional = <T,>(promise: Promise<T>) => promise.catch(() => undefined);
       const [bills, documents, chores, appointments, vaccines, people, location, equipment, events, days, supplies, medications, doses] = await Promise.all([
-        fetchBills(db),
+        billsOf(db),
         fetchDocuments(db),
         fetchChores(db),
         optional(fetchAppointments(db)),
@@ -336,8 +352,11 @@ export function useReminderSync() {
   // Mesma lista enquanto as casas não mudam.
   const housesKey = JSON.stringify(households?.map((h) => [h.id, h.name]) ?? []);
 
-  // No navegador: a agenda do servidor fica só com o que este navegador conhece.
   useEffect(() => {
+    // Os avisos já agendados de um tipo que este app esconde (os de contas, com Finanças desligada) saem de todas
+    // as casas, também das que não têm outro aviso ligado (e que por isso nem são refeitas).
+    dropHiddenHouseReminders().catch(() => undefined);
+    // No navegador: a agenda do servidor fica só com o que este navegador conhece.
     reconcileReminders().catch(() => undefined);
   }, []);
 

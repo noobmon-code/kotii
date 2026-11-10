@@ -11,6 +11,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 
 import { AuthProvider, openedByRecoveryLink, useAuth, useHousehold } from '@/lib/auth';
+import { FEATURES } from '@/lib/features';
 import { clearLinkNotice, useLinkNotice } from '@/lib/linkNotice';
 import { useRecovery } from '@/lib/passwordRecovery';
 import { configureNotifications } from '@/lib/reminders';
@@ -143,7 +144,6 @@ function AppNavigator() {
           <Stack.Screen name="clima" options={{ title: 'Clima da casa' }} />
           <Stack.Screen name="casas" options={{ title: 'Suas casas' }} />
           <Stack.Screen name="pontos" options={{ title: 'Pontos das crianças' }} />
-          <Stack.Screen name="orcamento" options={{ title: 'Orçamento do mês', presentation: 'modal' }} />
           <Stack.Screen name="produto/[id]" options={{ title: 'Produto' }} />
           <Stack.Screen name="despensa/[id]" options={{ title: 'Item da despensa', presentation: 'modal' }} />
           <Stack.Screen name="reposicao/[id]" options={{ title: 'Gás, água e ração', presentation: 'modal' }} />
@@ -162,15 +162,20 @@ function AppNavigator() {
           <Stack.Screen name="prestador/[id]" options={{ title: 'Prestador' }} />
           <Stack.Screen name="servico/[id]" options={{ title: 'Serviço', presentation: 'modal' }} />
           <Stack.Screen name="documento/[id]" options={{ title: 'Documento' }} />
+          <Stack.Screen name="nuke" options={{ headerShown: false, presentation: 'modal' }} />
+          <Stack.Screen name="configuracoes" options={{ title: 'Configurações' }} />
+          <Stack.Screen name="moderacao" options={{ title: 'Nomes dos mercados' }} />
+        </Stack.Protected>
+        {/* As telas de Finanças: só numa casa e com a chave ligada (lib/features). Desligada, nenhuma delas
+            existe no navegador, e nenhum endereço ou botão chega a elas. */}
+        <Stack.Protected guard={inHousehold && FEATURES.finance}>
+          <Stack.Screen name="orcamento" options={{ title: 'Orçamento do mês', presentation: 'modal' }} />
           <Stack.Screen name="conta/[id]" options={{ title: 'Conta', presentation: 'modal' }} />
           <Stack.Screen name="gasto/[id]" options={{ title: 'Gasto', presentation: 'modal' }} />
           <Stack.Screen name="imposto-de-renda" options={{ title: 'Despesas médicas (IR)' }} />
-          <Stack.Screen name="nuke" options={{ headerShown: false, presentation: 'modal' }} />
           <Stack.Screen name="consultor/index" options={{ title: 'Consultor (beta)' }} />
           <Stack.Screen name="consultor/lancamentos" options={{ title: 'Lançamentos do banco' }} />
           <Stack.Screen name="consultor/conversa" options={{ headerShown: false, presentation: 'modal' }} />
-          <Stack.Screen name="configuracoes" options={{ title: 'Configurações' }} />
-          <Stack.Screen name="moderacao" options={{ title: 'Nomes dos mercados' }} />
         </Stack.Protected>
         {/* Sem depender de casa: apagar a conta (de Configurações, aba Família, e da tela de boas-vindas, sem casa
             nenhuma) e o Painel do app (de Configurações ou por /painel; só quem está em app_admins vê os números). */}

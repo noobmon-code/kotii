@@ -4,6 +4,7 @@ import { act, create } from 'react-test-renderer';
 
 import { FEEDBACK_LIMIT, FEEDBACK_SENT } from '@/domain/appFeedback';
 import type { NukeAction } from '@/domain/nuke';
+import { FEATURES } from '@/lib/features';
 
 import { useAskNuke, useRunNukeAction } from '../nuke';
 
@@ -59,7 +60,7 @@ describe('o recado pelo Nuke', () => {
 });
 
 describe('a pergunta ao Nuke', () => {
-  it('diz que este app mostra o cartão do recado: sem isso a função nunca oferece o recado', async () => {
+  function asker() {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
     let ask: ReturnType<typeof useAskNuke> | undefined;
     function Probe() {
@@ -73,10 +74,42 @@ describe('a pergunta ao Nuke', () => {
         </QueryClientProvider>,
       );
     });
-    const input = { messages: [{ role: 'user' as const, text: 'O app trava na lista.' }], context: '', today: '2026-10-24' };
+    return ask!;
+  }
+  const input = { messages: [{ role: 'user' as const, text: 'O app trava na lista.' }], context: '', today: '2026-10-24' };
+
+  it('diz que este app mostra o cartão do recado: sem isso a função nunca oferece o recado', async () => {
+    const ask = asker();
     await act(async () => {
-      await ask!.mutateAsync(input);
+      await ask.mutateAsync(input);
     });
     expect(mockInvoke).toHaveBeenCalledWith('nuke', { body: { ...input, features: ['send_feedback'] } });
+  });
+
+  describe('as ações de Finanças, que a função continua sugerindo', () => {
+    const actions = [
+      { type: 'add_expense', label: 'Registrar', description: 'Feira', amount: 42.5, category: 'mercado', spent_on: '2026-10-24' },
+      { type: 'open_screen', label: 'Ver as contas', screen: 'contas' },
+      { type: 'open_screen', label: 'Ver a despensa', screen: 'despensa' },
+    ];
+    const answerTypes = async () => {
+      mockInvoke.mockResolvedValueOnce({ data: { reply: 'Pronto.', actions }, error: null } as never);
+      const ask = asker();
+      let answer: Awaited<ReturnType<typeof ask.mutateAsync>> | undefined;
+      await act(async () => {
+        answer = await ask.mutateAsync(input);
+      });
+      return answer!.actions.map((a) => (a.type === 'open_screen' ? a.screen : a.type));
+    };
+
+    it('com Finanças desligada (lib/features), ficam de fora da resposta', async () => {
+      expect(await answerTypes()).toEqual(['despensa']);
+    });
+
+    it('com ela ligada, vêm', async () => {
+      const finance = jest.replaceProperty(FEATURES, 'finance', true);
+      expect(await answerTypes()).toEqual(['add_expense', 'contas', 'despensa']);
+      finance.restore();
+    });
   });
 });

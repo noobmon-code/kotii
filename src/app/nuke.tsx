@@ -7,7 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAskNuke, useNukeContext, useRunNukeAction } from '@/data/nuke';
 import { FEEDBACK_DISCLOSURE } from '@/domain/appFeedback';
 import { todayISO } from '@/domain/dates';
-import { describeAction, historyForApi, NUKE_SUGGESTIONS, type NukeAction, type NukeMessage } from '@/domain/nuke';
+import { describeAction, historyForApi, nukeIntro, nukeSuggestions, type NukeAction, type NukeMessage } from '@/domain/nuke';
 import {
   clearConversation,
   conversationEpoch,
@@ -18,6 +18,7 @@ import {
   useNukeConversation,
 } from '@/features/nuke/conversation';
 import { useAuth, useHousehold } from '@/lib/auth';
+import { FEATURES } from '@/lib/features';
 import { errorMessage } from '@/lib/supabase';
 import { Backdrop } from '@/ui/Backdrop';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -176,11 +177,11 @@ export default function NukeScreen() {
                 Oi{name ? `, ${name}` : ''}! Eu sou o Nuke.
               </Text>
               <Text variant="body" style={styles.center} color="textMuted">
-                Sei o que tem na despensa, nas listas, nas contas e na agenda da casa. Pergunte, ou me peça para anotar algo.
+                {nukeIntro(FEATURES.finance)}
               </Text>
               {ready ? (
                 <View style={styles.suggestions}>
-                  {NUKE_SUGGESTIONS.map((s) => (
+                  {nukeSuggestions(FEATURES.finance).map((s) => (
                     <Chip key={s} label={s} onPress={() => send(s)} />
                   ))}
                 </View>

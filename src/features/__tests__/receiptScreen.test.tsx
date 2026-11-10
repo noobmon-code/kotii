@@ -6,6 +6,8 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'rea
 
 import ReceiptScreen from '@/app/nota/[id]';
 import { fetchPantryNear } from '@/data/home';
+import { PayerChips } from '@/features/finance/PayerChips';
+import { FEATURES } from '@/lib/features';
 import { formatBRL } from '@/domain/money';
 import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
@@ -53,6 +55,7 @@ jest.mock('@/ui/dialogs', () => ({ askYesNo: jest.fn(), confirmAction: jest.fn()
 // Os desenhos animados e o fundo não entram no que se confere aqui.
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
+// "Quem pagou" é de Finanças: aqui, só se a tela o mostra.
 jest.mock('@/features/finance/PayerChips', () => ({ PayerChips: () => null }));
 // O renomear tem os testes dele (renameStore.test): aqui, só para qual mercado ele abre.
 jest.mock('@/features/RenameStoreModal', () => {
@@ -376,6 +379,22 @@ afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
   client.clear();
+});
+
+describe('"Quem pagou" e a chave de Finanças (lib/features)', () => {
+  beforeEach(() => seed(receipt(), item('a', 'DETERGENTE YPE', 50)));
+
+  it('desligada: a revisão não pergunta quem pagou', async () => {
+    await open();
+    expect(renderer!.root.findAllByType(PayerChips)).toHaveLength(0);
+  });
+
+  it('ligada: a pergunta fica, com quem a nota tem anotado', async () => {
+    const finance = jest.replaceProperty(FEATURES, 'finance', true);
+    await open();
+    expect(renderer!.root.findAllByType(PayerChips).map((chips) => chips.props.value)).toEqual([null]);
+    finance.restore();
+  });
 });
 
 describe('nota em revisão: um item sem valor e o total da nota', () => {

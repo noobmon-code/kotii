@@ -8,6 +8,7 @@ import { shownHouseReminderKinds, type HouseReminderKind } from '@/domain/houseR
 import { TRIP_PUSH_OPTION } from '@/domain/marketTrips';
 import { syncOtherHouses, useHouseReminderData, useHouseReminderTarget } from '@/features/useReminderSync';
 import { useHousehold } from '@/lib/auth';
+import { FEATURES } from '@/lib/features';
 import {
   getHouseReminderKinds,
   PERMISSION_HINT,
@@ -71,7 +72,8 @@ export function HouseRemindersSection() {
     <Section title={`Avisos ${REMINDER_PLACE}`}>
       {remindersSupported ? (
         <ListCard>
-          {shownHouseReminderKinds(suppliesAvailable).map((kind) => (
+          {/* Sem Finanças (lib/features), sem a linha das contas a pagar. */}
+          {shownHouseReminderKinds(suppliesAvailable, FEATURES.finance).map((kind) => (
             <Row key={kind.key} style={styles.row}>
               <View style={styles.flex}>
                 <Text variant="label">{kind.label}</Text>

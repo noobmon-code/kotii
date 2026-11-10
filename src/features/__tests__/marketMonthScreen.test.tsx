@@ -5,8 +5,9 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import MarketMonthScreen from '@/app/mercado';
 import type { Entry } from '@/domain/finance';
 import type { MarketData, MarketLine, MarketReceipt, MarketSpend, MarketTotalReceipt } from '@/domain/marketSpend';
+import { FEATURES } from '@/lib/features';
 import type { Store } from '@/lib/types';
-import { BarRow } from '@/features/finance/BarRow';
+import { BarRow } from '@/features/market/BarRow';
 import { FinanceSummaryPanel } from '@/features/finance/FinanceSummaryPanel';
 import { MarketMonthLink } from '@/features/finance/MarketMonthLink';
 import { MarketTrendChart } from '@/features/market/MarketTrendChart';
@@ -722,12 +723,22 @@ describe('sem notas, carregando e com erro', () => {
     mockState.query = loaded([]);
     const text = await mount();
     expect(text).toContain('Nenhuma compra de mercado em outubro');
-    expect(text).toContain('As compras aparecem aqui quando uma nota fiscal é confirmada ou um gasto é lançado como Mercado em Finanças. Fotografe o cupom ou leia o QR code da nota.');
+    // Sem Finanças (lib/features), só as notas contam aqui: o texto não fala de gastos lançados lá.
+    expect(text).toContain('As compras aparecem aqui quando uma nota fiscal é confirmada. Fotografe o cupom ou leia o QR code da nota.');
+    expect(text).not.toContain('Finanças');
     expect(text).not.toContain('em 0 idas');
     expect(text).not.toContain('Como este total fecha');
     expect(renderer!.root.findAllByType(Segmented)).toHaveLength(0);
     await pressButton('Adicionar nota');
     expect(mockScanner.open).toHaveBeenCalledTimes(1);
+  });
+
+  it('com Finanças ligada, o mês vazio lembra que o gasto lançado como Mercado lá também conta', async () => {
+    const finance = jest.replaceProperty(FEATURES, 'finance', true);
+    mockState.query = loaded([]);
+    const text = await mount();
+    expect(text).toContain('As compras aparecem aqui quando uma nota fiscal é confirmada ou um gasto é lançado como Mercado em Finanças. Fotografe o cupom ou leia o QR code da nota.');
+    finance.restore();
   });
 
   it('mês corrente com uma nota de data depois de hoje: ela fica de fora do total, e os detalhes dizem e levam à nota', async () => {

@@ -29,7 +29,7 @@ jest.mock('@/features/SuppliesSection', () => ({ SuppliesSection: () => null }))
 jest.mock('@/features/finance/BillsPanel', () => ({ BillsPanel: () => null }));
 jest.mock('@/features/finance/ConsultorCard', () => ({ ConsultorCard: () => null }));
 jest.mock('@/features/finance/FinanceSummaryPanel', () => ({ FinanceSummaryPanel: () => null }));
-jest.mock('@/features/finance/ReceiptsPanel', () => ({ ReceiptsPanel: () => null }));
+jest.mock('@/features/market/ReceiptsPanel', () => ({ ReceiptsPanel: () => null }));
 jest.mock('@/features/health/CarePanel', () => ({ CarePanel: () => null }));
 jest.mock('@/features/health/HealthTodaySections', () => ({ HealthTodaySections: () => null }));
 jest.mock('@/features/health/MedicationSections', () => ({

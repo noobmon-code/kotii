@@ -20,7 +20,7 @@ import {
   type FinanceCategory,
 } from '@/domain/finance';
 import { formatBRL } from '@/domain/money';
-import { BarRow } from '@/features/finance/BarRow';
+import { BarRow } from '@/features/market/BarRow';
 import { BudgetSection } from '@/features/finance/BudgetSection';
 import { MarketMonthLink } from '@/features/finance/MarketMonthLink';
 import { SplitSection } from '@/features/finance/SplitSection';

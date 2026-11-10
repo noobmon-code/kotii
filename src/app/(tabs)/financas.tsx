@@ -6,7 +6,7 @@ import { useBeta } from '@/data/financeBeta';
 import { BillsPanel } from '@/features/finance/BillsPanel';
 import { ConsultorCard } from '@/features/finance/ConsultorCard';
 import { FinanceSummaryPanel } from '@/features/finance/FinanceSummaryPanel';
-import { ReceiptsPanel } from '@/features/finance/ReceiptsPanel';
+import { ReceiptsPanel } from '@/features/market/ReceiptsPanel';
 import { Screen, Segmented } from '@/ui/primitives';
 
 type Tab = 'resumo' | 'contas' | 'notas';

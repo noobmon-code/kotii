@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { fetchReceiptHistoryPage } from '@/data/receipts';
-import { ReceiptsPanel } from '@/features/finance/ReceiptsPanel';
+import { ReceiptsPanel } from '@/features/market/ReceiptsPanel';
 import { Button, ListRow } from '@/ui/primitives';
 
 // Finanças > Notas de verdade, com as buscas de verdade de src/data/receipts.ts e um "servidor" que filtra,

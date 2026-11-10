@@ -5,8 +5,10 @@ import { NO_DAY_CHANGE, type FamilyCalendar, type FamilyEventLike } from '../fam
 import { pendingNextDoses } from '../health';
 import { HOUSE_PLACE_WHERE } from '../housePlace';
 import {
+  effectiveHouseReminderKinds,
   EVE_SUMMARY_TIME,
   eveSummary,
+  hiddenHouseReminderKinds,
   HOUSE_REMINDER_KINDS,
   HOUSE_REMINDER_LIMIT,
   planHouseReminders,
@@ -137,6 +139,36 @@ describe('planHouseReminders', () => {
   });
 });
 
+describe('com Finanças desligada (lib/features)', () => {
+  const keys = (finance: boolean) => shownHouseReminderKinds(true, finance).map((k) => k.key);
+
+  it('a lista dos avisos não oferece "Contas a pagar"; os outros tipos ficam, na mesma ordem', () => {
+    expect(keys(false)).toEqual(['documents', 'chores', 'appointments', 'events', 'vaccines', 'refills', 'weather', 'supplies', 'eve']);
+    expect(keys(true)).toEqual(HOUSE_REMINDER_KINDS.map((k) => k.key));
+    // Junto com a regra das reposições: num banco sem as tabelas delas, saem as duas linhas.
+    expect(shownHouseReminderKinds(false, false).map((k) => k.key)).not.toContain('supplies');
+    expect(hiddenHouseReminderKinds(false)).toEqual(['bills']);
+    expect(hiddenHouseReminderKinds(true)).toEqual([]);
+  });
+
+  it('a dica do resumo de amanhã deixa de citar contas; com Finanças, é a de sempre', () => {
+    const eve = (finance: boolean) => shownHouseReminderKinds(true, finance).find((k) => k.key === 'eve')?.hint;
+    expect(eve(false)).toBe(
+      'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, compromissos, aniversários, tarefas, vacinas e documentos. Só quando há algo fora da rotina (o compromisso de toda semana e a tarefa de todo dia não entram). Com ele ligado, a consulta e o compromisso de amanhã vêm nele, no lugar do aviso das 19h',
+    );
+    expect(eve(true)).toBe(HOUSE_REMINDER_KINDS.find((k) => k.key === 'eve')?.hint);
+  });
+
+  it('o aviso de contas conta como desligado, sem mudar a escolha dos outros; com Finanças, a escolha vale como está', () => {
+    expect(effectiveHouseReminderKinds(all, false)).toEqual({ ...all, bills: false });
+    expect(effectiveHouseReminderKinds(all, true)).toEqual(all);
+    // E o plano sai sem nenhum aviso de conta, nem de atraso.
+    const plan = planHouseReminders({ ...base, kinds: effectiveHouseReminderKinds(all, false), bills: [bill, { ...bill, id: 'b2', next_due_on: '2026-09-20' }], documents: [doc] });
+    expect(plan.map((r) => r.kind)).not.toContain('bills');
+    expect(plan.map((r) => r.kind)).toContain('documents');
+  });
+});
+
 describe('gás, água e ração', () => {
   const supply = (id: string, kind: string, days: string[], typical_days: number | null = null) => ({
     id,
@@ -159,7 +191,7 @@ describe('gás, água e ração', () => {
   });
 
   it('num banco ainda sem as tabelas, a lista dos avisos não oferece o tipo; em qualquer outro caso, oferece', () => {
-    const keys = (available: boolean | undefined) => shownHouseReminderKinds(available).map((k) => k.key);
+    const keys = (available: boolean | undefined) => shownHouseReminderKinds(available, true).map((k) => k.key);
     expect(keys(false)).toEqual(['bills', 'documents', 'chores', 'appointments', 'events', 'vaccines', 'refills', 'weather', 'eve']);
     // Com as tabelas, e também enquanto a busca não respondeu (ou falhou sem internet).
     expect(keys(true)).toEqual(HOUSE_REMINDER_KINDS.map((k) => k.key));

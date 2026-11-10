@@ -12,6 +12,7 @@ import { DELETE_CHECK_MS, fetchServiceProviders, JOBS_KEY, PROVIDER_JOBS_CHANGED
 import { EquipmentPanel } from '@/features/EquipmentPanel';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { EquipmentServices } from '@/features/providers/EquipmentServices';
+import { FEATURES } from '@/lib/features';
 import type { Equipment, ServiceJob, ServiceProvider } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
@@ -287,6 +288,9 @@ beforeEach(() => {
   Object.assign(mockNet, { providers: [ZE], jobs: [], equipment: [], asked: [], held: [] });
   online();
   jest.clearAllMocks();
+  // Com Finanças (lib/features): estas telas também lançam o serviço nos gastos e falam deles. O que muda sem
+  // Finanças está no fim do arquivo.
+  jest.replaceProperty(FEATURES, 'finance', true);
 });
 
 afterEach(async () => {
@@ -294,6 +298,7 @@ afterEach(async () => {
   renderer = undefined;
   queryClient.clear();
   onlineManager.setOnline(true);
+  jest.restoreAllMocks();
 });
 
 describe('o serviço que já existe espera a busca que a tela pediu', () => {
@@ -1592,5 +1597,45 @@ describe('a seção de consertos na tela do aparelho, antes da migração', () =
     });
     await settle();
     expect(page()).not.toContain('Consertos e serviços');
+  });
+});
+
+describe('com Finanças desligada (lib/features)', () => {
+  beforeEach(() => {
+    jest.replaceProperty(FEATURES, 'finance', false);
+    fresh([PROVIDERS_KEY], list([ZE]));
+    fresh(['equipment'], []);
+  });
+
+  it('o serviço com valor não oferece o lançamento nos gastos, e salvar não grava gasto nenhum', async () => {
+    await open(ServiceJobScreen, { id: 'novo', prestador: 'p-ze' });
+    await type(AMOUNT, '250,00');
+    await type(DESCRIPTION, 'Trocou a resistência');
+    expect(copySwitch()).toBeUndefined();
+    expect(page()).not.toContain(COPY);
+    await press('Salvar');
+    expect(asked('service_jobs', 'insert')[0].values).toMatchObject({ amount: 250 });
+    expect(asked('expenses', 'insert')).toHaveLength(0);
+    expect(mockNet.asked.filter((request) => request.table === 'expenses')).toHaveLength(0);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('excluir o serviço não fala dos gastos de Finanças, que a pessoa não vê', async () => {
+    mockNet.jobs = [job()];
+    await open(ServiceJobScreen, { id: 'j1' });
+    await press('Excluir serviço');
+    const [, question] = (confirmAction as jest.Mock).mock.calls.at(-1) as [string, string];
+    expect(question).toMatch(/^Excluir ".+"\?$/);
+    expect(question).not.toContain('Finanças');
+  });
+
+  it('excluir o prestador também não', async () => {
+    mockNet.jobs = [job()];
+    await open(ProviderScreen, { id: 'p-ze' });
+    await press('Excluir prestador');
+    const question = (confirmAction as jest.Mock).mock.calls.at(-1)?.[1] as string;
+    expect(question).toContain('Excluir Zé Eletricista e');
+    expect(question).toContain('Não dá para desfazer.');
+    expect(question).not.toContain('Finanças');
   });
 });

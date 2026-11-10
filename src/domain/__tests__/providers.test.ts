@@ -631,13 +631,19 @@ describe('textos dos serviços', () => {
   });
 
   it('antes de excluir, diz o que vai junto, sem supor quem é a pessoa', () => {
-    expect(deleteProviderWarning('Zé da Luz', 0)).toBe('Excluir Zé da Luz?');
-    expect(deleteProviderWarning('Zé da Luz', 1)).toBe(
+    expect(deleteProviderWarning('Zé da Luz', 0, true)).toBe('Excluir Zé da Luz?');
+    expect(deleteProviderWarning('Zé da Luz', 1, true)).toBe(
       'Excluir Zé da Luz e o serviço registrado? Não dá para desfazer. Os gastos já lançados em Finanças continuam lá.',
     );
-    expect(deleteProviderWarning('Bia Faxina', 12)).toContain('Excluir Bia Faxina e os 12 serviços registrados? Não dá para desfazer.');
+    expect(deleteProviderWarning('Bia Faxina', 12, true)).toContain('Excluir Bia Faxina e os 12 serviços registrados? Não dá para desfazer.');
     // Os serviços não carregaram: o aviso não promete que não há nenhum.
-    expect(deleteProviderWarning('Bia Faxina', null)).toContain('Excluir Bia Faxina e todo o histórico de serviços? Não dá para desfazer.');
+    expect(deleteProviderWarning('Bia Faxina', null, true)).toContain('Excluir Bia Faxina e todo o histórico de serviços? Não dá para desfazer.');
+  });
+
+  it('com Finanças desligada, a pergunta não fala dos gastos de lá, que a pessoa não vê', () => {
+    expect(deleteProviderWarning('Zé da Luz', 0, false)).toBe('Excluir Zé da Luz?');
+    expect(deleteProviderWarning('Zé da Luz', 1, false)).toBe('Excluir Zé da Luz e o serviço registrado? Não dá para desfazer.');
+    expect(deleteProviderWarning('Bia Faxina', null, false)).toBe('Excluir Bia Faxina e todo o histórico de serviços? Não dá para desfazer.');
   });
 
   it('na linha do aparelho: a data curta do último serviço', () => {

@@ -32,10 +32,11 @@ import {
   type MarketView,
 } from '@/domain/marketSpend';
 import { canRenameStore } from '@/domain/storeName';
-import { BarRow } from '@/features/finance/BarRow';
+import { BarRow } from '@/features/market/BarRow';
 import { MarketTrendChart } from '@/features/market/MarketTrendChart';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { RenameStoreModal } from '@/features/RenameStoreModal';
+import { FEATURES } from '@/lib/features';
 import {
   Button,
   Card,
@@ -314,7 +315,12 @@ function MonthBody({
           <EmptyState
             icon="receipt-text-outline"
             title={summary.emptyTitle}
-            message="As compras aparecem aqui quando uma nota fiscal é confirmada ou um gasto é lançado como Mercado em Finanças. Fotografe o cupom ou leia o QR code da nota."
+            message={
+              // Sem Finanças (lib/features), os gastos lançados lá não contam aqui: só as notas.
+              FEATURES.finance
+                ? 'As compras aparecem aqui quando uma nota fiscal é confirmada ou um gasto é lançado como Mercado em Finanças. Fotografe o cupom ou leia o QR code da nota.'
+                : 'As compras aparecem aqui quando uma nota fiscal é confirmada. Fotografe o cupom ou leia o QR code da nota.'
+            }
             action={<Button title="Adicionar nota" icon="camera-outline" onPress={onAddReceipt} loading={adding} />}
           />
           {/* Sem total na tela não há o que abrir e fechar: o que espera a revisão e o que ficou de fora já vêm à vista. */}

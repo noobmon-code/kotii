@@ -1,7 +1,8 @@
 // Mercado do mês: as notas do mês e dos meses antes dele (o anterior para a
 // comparação, e os da tendência), com o mercado e todos os itens, e os gastos
-// avulsos e as contas pagas lançados como Mercado nos mesmos meses. As contas
-// ficam em domain/marketSpend.
+// avulsos e as contas pagas lançados como Mercado nos mesmos meses (esses, só
+// com Finanças ligada: ver fetchMarketSpends). As contas ficam em
+// domain/marketSpend.
 
 import { useQuery } from '@tanstack/react-query';
 
@@ -14,6 +15,7 @@ import {
   type MarketReceipt,
   type MarketSpend,
 } from '@/domain/marketSpend';
+import { FEATURES } from '@/lib/features';
 import { supabase } from '@/lib/supabase';
 
 import { readAll } from './readAll';
@@ -147,8 +149,12 @@ type PaymentRow = { id: string; bill_id: string; paid_on: string; amount: number
  * resumo. Os gastos vêm filtrados pela categoria deles, e os pagamentos pela
  * da conta (o !inner faz o filtro da conta valer para o pagamento). Lidos por
  * inteiro, em páginas.
+ *
+ * Com Finanças desligada (lib/features), nenhum, e sem pedir nada ao banco: os
+ * gastos e as contas são de lá, e o Mercado do mês conta só as notas.
  */
 export async function fetchMarketSpends(fromMonth: string, toMonth: string): Promise<MarketSpend[]> {
+  if (!FEATURES.finance) return [];
   const start = monthRange(fromMonth).start;
   const end = monthRange(toMonth).end;
   const [expenses, payments] = await Promise.all([

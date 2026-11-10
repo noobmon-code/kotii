@@ -7,7 +7,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import NfceQrScreen from '@/app/nota/qrcode';
 import PendingReceiptScreen from '@/app/nota/pendente';
 import { accessKeyCheckDigit } from '@/domain/nfce';
-import { ReceiptsPanel } from '@/features/finance/ReceiptsPanel';
+import { ReceiptsPanel } from '@/features/market/ReceiptsPanel';
 import { openExternal } from '@/lib/openLink';
 import { notify } from '@/ui/dialogs';
 import { Button, ListRow } from '@/ui/primitives';

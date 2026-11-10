@@ -134,6 +134,7 @@ import { StaleNotice } from '@/features/health/StaleNotice';
 import { ReceiptItemEditor } from '@/features/ReceiptItemEditor';
 import { ReceiptListSection } from '@/features/ReceiptListSection';
 import { RenameStoreModal } from '@/features/RenameStoreModal';
+import { FEATURES } from '@/lib/features';
 import { errorMessage } from '@/lib/supabase';
 import type { ReceiptItem } from '@/lib/types';
 import { Backdrop } from '@/ui/Backdrop';
@@ -1148,12 +1149,16 @@ export default function ReceiptScreen() {
             ))}
           </View>
         ) : null}
-        <PayerChips
-          value={receipt.paid_by}
-          onChange={(paidBy) => {
-            if (!refuseStale()) updateReceipt.mutate({ paid_by: paidBy }, { onError });
-          }}
-        />
+        {/* "Quem pagou" só serve à divisão de gastos de Finanças: com a chave desligada (lib/features), uma pergunta
+            a menos na revisão. */}
+        {FEATURES.finance ? (
+          <PayerChips
+            value={receipt.paid_by}
+            onChange={(paidBy) => {
+              if (!refuseStale()) updateReceipt.mutate({ paid_by: paidBy }, { onError });
+            }}
+          />
+        ) : null}
         {isDraft ? null : <Text variant="small">{CONFIRMED_EDIT_NOTE}</Text>}
         {photos.length ? (
           <Button

@@ -11,6 +11,7 @@ import { buildAgenda, monthGrid, type AgendaEvent, type AgendaKind } from '@/dom
 import { todayISO } from '@/domain/dates';
 import { formatTimeRange } from '@/domain/familyEvents';
 import { monthLabel, shiftMonth } from '@/domain/finance';
+import { FEATURES } from '@/lib/features';
 import { Button, Card, ErrorNotice, Icon, IconButton, ListCard, ListRow, Loading, Row, Screen, Text, type IconName } from '@/ui/primitives';
 import { radius, space, useColors, useTint, type Tint } from '@/ui/theme';
 
@@ -67,11 +68,14 @@ export default function AgendaScreen() {
   const appointments = useAppointments();
   const vaccines = useVaccines();
   const people = usePeople();
-  const bills = useBills();
+  // As contas são de Finanças: com a chave desligada (lib/features), não busca, o tipo "Conta" some e a busca fica
+  // fora de `queries` (desligada, ela nunca fica pronta e a agenda ficaria carregando para sempre).
+  const finance = FEATURES.finance;
+  const bills = useBills(finance);
   const chores = useChores();
   const documents = useDocuments();
   const equipment = useEquipmentList();
-  const queries = [appointments, vaccines, people, bills, chores, documents, equipment];
+  const queries = [appointments, vaccines, people, ...(finance ? [bills] : []), chores, documents, equipment];
   // Fora de `queries`: os compromissos nunca viram tela de erro (sem eles, a agenda é a de sempre).
   const family = useFamilyCalendar();
 
@@ -87,7 +91,7 @@ export default function AgendaScreen() {
     today,
     appointments: (appointments.data ?? []).map((a) => ({ ...a, person: personName(a.person_id) })),
     vaccines: (vaccines.data ?? []).map((v) => ({ ...v, person: personName(v.person_id) })),
-    bills: bills.data ?? [],
+    bills: finance ? (bills.data ?? []) : [],
     chores: chores.data ?? [],
     documents: documents.data ?? [],
     equipment: equipment.data ?? [],
@@ -204,7 +208,9 @@ export default function AgendaScreen() {
         onPress={() => router.push({ pathname: '/compromisso/[id]', params: { id: 'novo', dia: selected } })}
       />
       <Text variant="small" style={[styles.center, { color: c.textMuted }]}>
-        Contas e tarefas que se repetem aparecem apagadas nas próximas datas: é a previsão.
+        {finance
+          ? 'Contas e tarefas que se repetem aparecem apagadas nas próximas datas: é a previsão.'
+          : 'Tarefas que se repetem aparecem apagadas nas próximas datas: é a previsão.'}
       </Text>
     </Screen>
   );
