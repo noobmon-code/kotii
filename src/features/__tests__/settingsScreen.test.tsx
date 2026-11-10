@@ -13,6 +13,7 @@ import ProfileScreen from '@/app/perfil';
 import FeedbackScreen from '@/app/recado';
 import { APP_DASHBOARD_TITLE } from '@/domain/appDashboard';
 import { HOUSE_PLACE_ROW_HINT, HOUSE_PLACE_ROW_UNKNOWN, HOUSE_PLACE_TITLE } from '@/domain/housePlace';
+import { DocumentsSection } from '@/features/DocumentsSection';
 import {
   FEEDBACK_DISCLOSURE,
   FEEDBACK_FORM_INTRO,
@@ -268,7 +269,11 @@ describe('Configurações: a aba', () => {
     expect(renderer!.root.findAll((node) => node.props.label === 'Nome' || node.props.label === 'Recado')).toHaveLength(0);
     expect(renderer!.root.findAll((node) => node.props.accessibilityRole === 'switch')).toHaveLength(0);
     expect(text).not.toContain('Limite da casa para não passar do custo combinado.');
-    // Os documentos foram para Casa → Documentos.
+    // Os documentos foram para Casa → Documentos. A parte não tem mais título "Documentos" (o seletor das partes já
+    // diz), então a guarda procura o próprio componente e o que ele desenha, com ou sem documentos.
+    expect(renderer!.root.findAllByType(DocumentsSection)).toHaveLength(0);
+    expect(text).not.toContain('Novo documento');
+    expect(text).not.toContain('Nenhum documento');
     expect(text).not.toContain('Documentos');
   });
 

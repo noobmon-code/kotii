@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { AccessibilityInfo, Platform, View } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { productCategoryNote } from '@/domain/productCategory';
@@ -6,7 +7,7 @@ import { MARKET_MONTH_CARD, ReceiptsPanel } from '@/features/market/ReceiptsPane
 import { ShoppingListsPanel } from '@/features/ShoppingListsPanel';
 import { PickerModal } from '@/ui/PickerModal';
 import { FeatureCard } from '@/ui/FeatureCard';
-import { Button, Tile } from '@/ui/primitives';
+import { Button, TextField, Tile } from '@/ui/primitives';
 
 // Os caminhos até o dinheiro do mercado e o aviso da categoria: Compras > Notas leva ao Mercado do mês (a única
 // entrada dele), Compras > Listas leva aos Preços, e o seletor de categoria diz, antes da escolha, que a categoria
@@ -112,6 +113,42 @@ describe('Compras > Listas', () => {
     expect(button('Criar')).toBeDefined();
     await act(async () => button('Cancelar').props.onPress());
     expect(button('Nova lista')).toBeDefined();
+  });
+
+  // O botão tocado sai da tela quando o formulário abre (e o "Cancelar" sai quando fecha): o foco não pode ficar
+  // sem lugar. No Jest a View é de mentira (uma classe com os métodos nativos de mentira): a referência do botão é a
+  // instância dela, comparada por identidade (o objeto tem laços com a árvore e não se compara por conteúdo).
+  const nextFrame = () => act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  const viewOf = (title: string) => button(title).findAllByType(View)[0].instance as { focus: jest.Mock };
+
+  it('ao abrir, o campo do nome recebe o foco; "Cancelar" devolve o foco do leitor de tela ao botão "Nova lista"', async () => {
+    const send = jest.mocked(AccessibilityInfo.sendAccessibilityEvent);
+    send.mockClear();
+    await act(async () => {
+      renderer = create(<ShoppingListsPanel />);
+    });
+    await act(async () => button('Nova lista').props.onPress());
+    expect(renderer!.root.findByType(TextField).props.autoFocus).toBe(true);
+    await act(async () => button('Cancelar').props.onPress());
+    await nextFrame();
+    expect(send.mock.calls).toHaveLength(1);
+    expect(send.mock.calls[0][0]).toBe(viewOf('Nova lista'));
+    expect(send.mock.calls[0][1]).toBe('focus');
+  });
+
+  it('na web, "Cancelar" devolve o foco do teclado ao botão "Nova lista"', async () => {
+    jest.replaceProperty(Platform, 'OS', 'web');
+    await act(async () => {
+      renderer = create(<ShoppingListsPanel />);
+    });
+    await act(async () => button('Nova lista').props.onPress());
+    const focus = viewOf('Criar').focus;
+    focus.mockClear();
+    await act(async () => button('Cancelar').props.onPress());
+    await nextFrame();
+    // O método de mentira é um só para todas as Views: quem o recebeu é o `this` da chamada.
+    expect(focus.mock.contexts).toHaveLength(1);
+    expect(focus.mock.contexts[0]).toBe(viewOf('Nova lista'));
   });
 });
 
