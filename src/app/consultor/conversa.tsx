@@ -22,6 +22,7 @@ import {
   updateFinanceConversation,
   useFinanceConversation,
 } from '@/features/finance/advisorConversation';
+import { useNukeGaze } from '@/features/nuke/useNukeGaze';
 import { useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { Backdrop } from '@/ui/Backdrop';
@@ -90,11 +91,13 @@ function Conversation() {
   const runAction = useRunFinanceAction();
   const [draft, setDraft] = useState('');
   const [running, setRunning] = useState<string | null>(null);
-  // Reação do Nuke no topo: mexe a boca ao responder, se espanta com erro.
+  // Reação do Nuke no topo: quica ao responder, murcha com erro, pula quando uma ação dá certo.
   const [reaction, setReaction] = useState<'talk' | 'joy' | 'oops' | null>(null);
   const reactionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mounted = useRef(true);
   const scroll = useRef<ScrollView>(null);
+  const newest = messages[messages.length - 1];
+  const { nukeRef, messageRef, gaze } = useNukeGaze(newest);
 
   useEffect(() => {
     mounted.current = true;
@@ -180,7 +183,10 @@ function Conversation() {
       <View style={[styles.header, { borderBottomColor: c.glassBorder }]}>
         <IconButton icon="close" label="Fechar" onPress={() => router.back()} />
         <Row style={styles.headerTitle}>
-          <NukeLive size={30} state={busy ? 'think' : (reaction ?? 'idle')} />
+          {/* Ele vira os olhos para a mensagem que acabou de entrar (useNukeGaze). */}
+          <View ref={nukeRef} collapsable={false}>
+            <NukeLive size={44} state={busy ? 'think' : (reaction ?? 'idle')} gaze={gaze} />
+          </View>
           <View>
             <Text variant="heading">Nuke consultor</Text>
             <Text variant="small">finanças · beta</Text>
@@ -225,7 +231,11 @@ function Conversation() {
 
         {messages.map((message) =>
           message.role === 'user' ? (
-            <View key={message.id} style={[styles.bubble, styles.mine, { backgroundColor: c.primary }]}>
+            <View
+              key={message.id}
+              ref={message.id === newest?.id ? messageRef : undefined}
+              collapsable={false}
+              style={[styles.bubble, styles.mine, { backgroundColor: c.primary }]}>
               <Text variant="body" color="onPrimary">
                 {message.text}
               </Text>
@@ -235,6 +245,8 @@ function Conversation() {
               <NukeAvatar size={28} mood={message.error ? 'oops' : 'idle'} />
               <View style={styles.theirsColumn}>
                 <View
+                  ref={message.id === newest?.id ? messageRef : undefined}
+                  collapsable={false}
                   style={[
                     styles.bubble,
                     styles.theirs,

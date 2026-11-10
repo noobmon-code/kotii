@@ -2,12 +2,14 @@
 // mostra os avisos que chegam por Web Push (a agenda fica no servidor; ver
 // src/lib/webPush.ts e a função send-push).
 // - Páginas: rede primeiro; sem rede, a última index.html guardada (sempre com os bundles dela).
-// - /_expo/static, /assets e /icons: arquivos com hash no nome, guardados já
+// - /_expo/static e /assets: arquivos com hash no nome, guardados já
 //   na instalação (e na primeira vez que aparecem) e servidos do cache depois.
 // - O resto (Supabase, outros domínios) passa direto: os dados ficam com o app.
+//   Os ícones de /icons também: o nome deles não tem hash, então do cache o
+//   ícone antigo nunca sairia quando o desenho muda.
 const VERSION = 'kotii-v1';
 const SHELL = '/index.html';
-const STATIC = ['/_expo/static/', '/assets/', '/icons/'];
+const STATIC = ['/_expo/static/', '/assets/'];
 
 const cacheable = (url) => url.origin === self.location.origin && STATIC.some((prefix) => url.pathname.startsWith(prefix));
 

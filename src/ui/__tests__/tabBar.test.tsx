@@ -3,13 +3,24 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { createBottomTabNavigator } from 'expo-router/build/react-navigation/bottom-tabs';
 import { NavigationContainer, PlatformPressable } from 'expo-router/react-navigation';
-import { Platform, Text as RNText } from 'react-native';
+import { Platform, Text as RNText, StyleSheet } from 'react-native';
 import { Path, Svg } from 'react-native-svg';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
-import { TAB_BAR_PADDING, TAB_ICONS, TAB_LABEL_MAX_SCALE, TAB_LABEL_MIN_SCALE, TAB_PILL_PADDING, TabBar, TabIcon } from '../TabBar';
+import {
+  TAB_ACTIVE_SIZE,
+  TAB_ACTIVE_TINT,
+  TAB_BAR_HEIGHT,
+  TAB_BAR_PADDING,
+  TAB_ICONS,
+  TAB_LABEL_MAX_SCALE,
+  TAB_LABEL_MIN_SCALE,
+  TAB_PILL_PADDING,
+  TabBar,
+  TabIcon,
+} from '../TabBar';
 import { TAB_ICON_BOX, TAB_STROKE_GRID, TAB_STROKE_ICONS, TAB_STROKE_WIDTH } from '../tabIcons';
-import { space } from '../theme';
+import { PALETTES, shadows, space, withAlpha } from '../theme';
 
 // A barra de abas de verdade, num navegador de abas de verdade (com os endereços de cada aba): o rótulo cabe no
 // celular estreito, cada aba é um link na web e o clique com tecla (abrir em outra aba do navegador) fica com o
@@ -195,6 +206,41 @@ describe('a barra de abas', () => {
     const { root } = await renderTabs();
     expect(tabs(root).map((tab) => tab.props.href)).toEqual(['/', '/compras', '/casa', '/saude', '/configuracoes']);
     expect(tabs(root).map(hostRole)).toEqual(Array(5).fill('tab'));
+  });
+
+  it('a aba aberta fica num círculo de vidro de 55, como no kit, e só ela', async () => {
+    const { root } = await renderTabs();
+    const marks = tabs(root).map((tab) => tab.findAll((node) => typeof node.type === 'string' && node.props.testID === 'tab-active'));
+    expect(marks.map((found) => found.length)).toEqual([1, 0, 0, 0, 0]);
+    const style = StyleSheet.flatten(marks[0][0].props.style);
+    // Redondo sempre (não estica com o rótulo), no meio da aba e fora da conta do espaço do ícone e do rótulo.
+    expect(style).toMatchObject({
+      position: 'absolute',
+      width: TAB_ACTIVE_SIZE,
+      height: TAB_ACTIVE_SIZE,
+      borderRadius: TAB_ACTIVE_SIZE / 2,
+      left: '50%',
+      top: '50%',
+      marginLeft: -TAB_ACTIVE_SIZE / 2,
+      marginTop: -TAB_ACTIVE_SIZE / 2,
+      backgroundColor: withAlpha(PALETTES.light.primary, TAB_ACTIVE_TINT),
+    });
+    expect(style.overflow).toBeUndefined();
+    // O vidro: a sombra por dentro do kit (1, 1, desfoque 3, preto a 10%) e um fio de luz do outro lado.
+    expect(shadows.inset).toBe('inset 1px 1px 3px rgba(0, 0, 0, 0.1)');
+    expect(style.boxShadow).toBe(`${shadows.inset}, inset -1px -1px 1px ${PALETTES.light.glassEdge}`);
+    expect(TAB_ACTIVE_SIZE).toBe(55);
+    expect(TAB_ACTIVE_TINT).toBe(0.12);
+    // Cabe na altura da barra, e o rótulo mais largo passa um pouco do círculo sem sair da aba (63,6 num 360).
+    expect(TAB_ACTIVE_SIZE).toBeLessThan(TAB_BAR_HEIGHT - 2);
+    expect(LONGEST_LABEL).toBeGreaterThan(TAB_ACTIVE_SIZE - 2 * TAB_PILL_PADDING);
+    expect(LONGEST_LABEL).toBeLessThanOrEqual(labelRoom(360));
+
+    // Trocar de aba leva o círculo junto.
+    await act(async () => press(tabs(root)[2], click()));
+    expect(tabs(root).map((tab) => tab.findAll((node) => typeof node.type === 'string' && node.props.testID === 'tab-active').length)).toEqual([
+      0, 0, 1, 0, 0,
+    ]);
   });
 
   it('o rótulo encolhe com a fonte grande em vez de cortar', async () => {

@@ -25,6 +25,7 @@ import {
   updateConversation,
   useNukeConversation,
 } from '@/features/nuke/conversation';
+import { useNukeGaze } from '@/features/nuke/useNukeGaze';
 import { useAuth, useHousehold } from '@/lib/auth';
 import { FEATURES } from '@/lib/features';
 import { errorMessage } from '@/lib/supabase';
@@ -74,11 +75,13 @@ export default function NukeScreen() {
   const runAction = useRunNukeAction();
   const [draft, setDraft] = useState('');
   const [running, setRunning] = useState<string | null>(null);
-  // Reação do Nuke no topo: mexe a boca ao responder, se espanta com erro.
+  // Reação do Nuke no topo: quica ao responder, murcha com erro, pula quando uma ação dá certo.
   const [reaction, setReaction] = useState<'talk' | 'joy' | 'oops' | null>(null);
   const reactionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mounted = useRef(true);
   const scroll = useRef<ScrollView>(null);
+  const newest = messages[messages.length - 1];
+  const { nukeRef, messageRef, gaze } = useNukeGaze(newest);
 
   useEffect(() => {
     mounted.current = true;
@@ -164,7 +167,10 @@ export default function NukeScreen() {
         <View style={[styles.header, { borderBottomColor: c.glassBorder }]}>
           <IconButton icon="close" label="Fechar" onPress={() => router.back()} />
           <Row style={styles.headerTitle}>
-            <NukeLive size={30} state={busy ? 'think' : (reaction ?? 'idle')} />
+            {/* Ele vira os olhos para a mensagem que acabou de entrar (useNukeGaze). */}
+            <View ref={nukeRef} collapsable={false}>
+              <NukeLive size={44} state={busy ? 'think' : (reaction ?? 'idle')} gaze={gaze} />
+            </View>
             <View>
               <Text variant="heading">Nuke</Text>
               <Text variant="small">assistente da casa</Text>
@@ -208,7 +214,11 @@ export default function NukeScreen() {
 
           {messages.map((message) =>
             message.role === 'user' ? (
-              <View key={message.id} style={[styles.bubble, styles.mine, { backgroundColor: c.primary }]}>
+              <View
+                key={message.id}
+                ref={message.id === newest?.id ? messageRef : undefined}
+                collapsable={false}
+                style={[styles.bubble, styles.mine, { backgroundColor: c.primary }]}>
                 <Text variant="body" color="onPrimary">
                   {message.text}
                 </Text>
@@ -218,6 +228,8 @@ export default function NukeScreen() {
                 <NukeAvatar size={28} mood={message.error ? 'oops' : 'idle'} />
                 <View style={styles.theirsColumn}>
                   <View
+                    ref={message.id === newest?.id ? messageRef : undefined}
+                    collapsable={false}
                     style={[
                       styles.bubble,
                       styles.theirs,

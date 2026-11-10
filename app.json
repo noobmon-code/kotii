@@ -13,7 +13,7 @@
     "android": {
       "package": "com.noobmon.kotii",
       "adaptiveIcon": {
-        "backgroundColor": "#FF7D18",
+        "backgroundColor": "#FF5A00",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"

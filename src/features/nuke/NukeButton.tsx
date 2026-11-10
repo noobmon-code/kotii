@@ -20,7 +20,8 @@ export function NukeButton({ style }: { style?: StyleProp<ViewStyle> }) {
         pressed && styles.pressed,
         style,
       ]}>
-      <NukeLive size={44} paused={!focused} />
+      {/* Sob o dedo o Nuke também reage: encolhe e fecha os olhos. */}
+      {({ pressed }) => <NukeLive size={44} paused={!focused} pressed={pressed} />}
     </Pressable>
   );
 }
