@@ -1,21 +1,14 @@
+import { onlineManager } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
-import {
-  toSchedules,
-  useChoreRotations,
-  useChores,
-  useCompleteChore,
-  useDoses,
-  useMedications,
-  usePantry,
-  useToggleDose,
-} from '@/data/home';
+import { toSchedules, useChoreRotations, useChores, useDoses, useMedications, usePantry } from '@/data/home';
 import { useFamilyCalendar } from '@/data/family';
 import { useBills, useBudgets, useRecentBillPayments, useSpending } from '@/data/finance';
+import { usePeople } from '@/data/health';
 import { useDocuments, useEquipmentList } from '@/data/house';
-import { useAddItemsToList, usePurchaseRecords, useShoppingLists } from '@/data/market';
+import { useAddItemsToList, useOpenMarketList, usePurchaseRecords, useShoppingLists } from '@/data/market';
 import { useRefreshMarketTrips } from '@/data/marketTrips';
 import { useMenu } from '@/data/menu';
 import { useForecast, useHouseholdLocation, useRefreshWeather } from '@/data/weather';
@@ -23,35 +16,39 @@ import { usePendingReceipts } from '@/data/pendingReceipts';
 import { useDraftReceipts } from '@/data/receipts';
 import { useSupplies } from '@/data/supplies';
 import { billsAboveUsual } from '@/domain/billUsual';
-import { choreTurnLabel, rotationOf, rotationPeople } from '@/domain/choreRotation';
-import { choreStatus, describeChoreStatus } from '@/domain/chores';
+import { budgetProgress } from '@/domain/budget';
 import { todayISO } from '@/domain/dates';
-import { describeDocumentStatus, documentsNeedingAttention, getDocumentKind } from '@/domain/documents';
-import { budgetProgress, describeBudget } from '@/domain/budget';
-import { billsDueSoon, getFinanceCategory, monthRange, summarize } from '@/domain/finance';
-import { describeWarranty, getEquipmentCategory, warrantyStatus } from '@/domain/equipment';
+import { billsDueSoon, monthRange, summarize } from '@/domain/finance';
 import { todayEntries } from '@/domain/familyEvents';
+import type { FirstStepKey } from '@/domain/firstSteps';
 import { currentTimeHHMM, doseKey, dosesForDay } from '@/domain/medications';
-import { MEALS } from '@/domain/menu';
-import { describeExpiry, expiryStatus } from '@/domain/pantry';
 import { listExclusion, type PurchaseRecord } from '@/domain/recentPurchases';
-import { describeRestock, restockSuggestions, type RestockItem } from '@/domain/restock';
+import { restockSuggestions, type RestockItem } from '@/domain/restock';
 import { currentSky, defaultSky } from '@/domain/sky';
-import { suppliesNeedingAttention } from '@/domain/supplies';
-import { announceCompletion } from '@/features/ChoresPanel';
-import { BillRow } from '@/features/finance/BillsPanel';
+import {
+  ALL_CLEAR_TITLE,
+  allClearMessage,
+  arrangeToday,
+  MARKET_LIST_OFFLINE,
+  MARKET_LIST_SHORTCUT,
+  marketListShortcut,
+  nothingPending,
+  TODAY_BLOCK_TITLES,
+  todayAttention,
+  todayItems,
+  todaySummary,
+} from '@/domain/today';
+import { FirstStepsCard, useFirstSteps } from '@/features/FirstStepsCard';
 import { PayBillModal } from '@/features/finance/PayBillModal';
-import { hasHealthToday, healthTodayCount, HealthTodaySections } from '@/features/health/HealthTodaySections';
-import { DoseSubtitle, MedicationRefills, useRefills } from '@/features/health/MedicationSections';
+import { useRefills } from '@/features/health/MedicationSections';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
 import { MarketTripBanner } from '@/features/MarketTrip';
-import { PendingReceiptRow } from '@/features/PendingReceiptCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useJustListed } from '@/features/RecentPurchases';
 import { SkyHeader } from '@/features/SkyHeader';
-import { SuppliesTodaySection } from '@/features/SuppliesSection';
 import { TermsNoticeCard } from '@/features/TermsNotice';
+import { TodayBlock, TodaySuggestions, useTodayRow } from '@/features/TodayBlocks';
 import { TodayGreeting } from '@/features/TodayGreeting';
 import { useHousehold } from '@/lib/auth';
 import { FEATURES } from '@/lib/features';
@@ -59,25 +56,7 @@ import { settledData } from '@/lib/settledData';
 import type { Bill } from '@/lib/types';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
-import { IconArt } from '@/ui/iconArt';
-import {
-  AddCircle,
-  Badge,
-  Button,
-  Card,
-  CategoryIcon,
-  CheckCircle,
-  EmptyState,
-  Icon,
-  IconBadge,
-  LinkButton,
-  ListCard,
-  ListRow,
-  Screen,
-  Section,
-  Text,
-  Tile,
-} from '@/ui/primitives';
+import { Card, EmptyState, Icon, Screen, Text, Tile } from '@/ui/primitives';
 import { fonts, radius, shadows, space, useColors, WASHES } from '@/ui/theme';
 
 const capitalizeFirst = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
@@ -123,10 +102,10 @@ export default function TodayScreen() {
   const receipts = useDraftReceipts();
   // As notas pendentes deste aparelho (a Sefaz pediu o "não sou robô"): ficam fora de `queries`, como o clima.
   const pendingReceipts = usePendingReceipts();
-  const toggleDose = useToggleDose(today);
-  const completeChore = useCompleteChore();
   const scanner = useReceiptScanner();
   const health = useHealthOverview(today);
+  // As fichas (a mesma busca da saúde): os primeiros passos contam as pessoas e os pets sem celular.
+  const people = usePeople();
   const documents = useDocuments();
   const equipment = useEquipmentList();
   // Contas e orçamento são de Finanças: com a chave desligada (lib/features), nada disso busca nem aparece, e as
@@ -146,10 +125,18 @@ export default function TodayScreen() {
   // Gás, água, ração: num banco ainda sem as tabelas a busca devolve vazio, sem erro.
   const supplies = useSupplies();
   const addToList = useAddItemsToList();
+  const openMarketList = useOpenMarketList();
   const [paying, setPaying] = useState<Bill | null>(null);
   // Itens de todas as listas abertas; os postos agora há pouco somem já no toque.
   const onLists = useMemo(() => (lists.data ?? []).flatMap((l) => l.items), [lists.data]);
   const restocked = useJustListed(lists.data ? onLists : undefined);
+  const firstSteps = useFirstSteps({
+    householdId: household.data?.household.id,
+    members: household.data?.members.length,
+    openLists: lists.data,
+    drafts: receipts.data,
+    people: people.data,
+  });
 
   const queries = [
     medications,
@@ -179,87 +166,72 @@ export default function TodayScreen() {
     refreshWeather();
     refreshTrips();
     family.refetch();
+    firstSteps.refresh();
     if (billsDue.length) recentPayments.refetch();
   };
 
+  const nowTime = currentTimeHHMM(now);
   const taken = new Set((doses.data ?? []).map((d) => doseKey(d.medication_id, d.scheduled_on, d.scheduled_time)));
   const pendingDoses = dosesForDay(toSchedules(medications.data ?? [], today, doses.data), today, taken).filter(
     (d) => !taken.has(doseKey(d.medicationId, d.date, d.time)),
   );
-
   // Remédios com a caixa acabando (pelas contas do app) ou a receita vencendo: só os que pedem
   // atenção (o que está parado há mais de duas semanas fica na tela Saúde e no remédio).
   const refills = useRefills(today).attention;
-  const dueChores = (chores.data ?? []).filter((c) => choreStatus(c.due_on, today).kind !== 'proxima');
-  const expiring = (pantry.data ?? []).filter((p) => {
-    const kind = expiryStatus(p.expires_on, today).kind;
-    return kind === 'vencido' || kind === 'vence_logo';
-  });
-  // O que está acabando ou passou da data prevista (pelas trocas anotadas).
-  const suppliesDue = suppliesNeedingAttention(supplies.data?.supplies ?? [], today);
-  const drafts = receipts.data ?? [];
-  const pendingNotes = pendingReceipts.pending;
-  const documentsDue = documentsNeedingAttention(documents.data ?? [], today);
   // Sem os pagamentos recentes em dia (carregando, buscando de novo ou com erro), nenhuma conta ganha o selo.
   const billsAbove = billsAboveUsual(billsDue, settledData(recentPayments) ?? [], today);
-  const warrantiesEnding = (equipment.data ?? [])
-    .map((item) => ({ item, status: warrantyStatus(item.warranty_until, today) }))
-    .filter(({ status }) => status.kind === 'acabando');
-  const equipmentName = (id: string | null) => (id ? equipment.data?.find((e) => e.id === id)?.name : undefined);
+  // Categorias do mês que passaram ou estão perto do limite.
+  const budgetLines =
+    finance && budgets.data && spending.data ? budgetProgress(budgets.data, summarize(spending.data, monthRange(month)).byCategory) : [];
+  // Cada coisa no bloco que o estado dela diz (domain/today): "Agora" (atrasado ou de hoje) e "Em breve".
+  const items = todayItems({
+    today,
+    nowTime,
+    doses: pendingDoses,
+    refills,
+    appointments: health.upcoming,
+    overdueAppointments: health.toConfirm,
+    vaccines: health.vaccinesDue,
+    workouts: health.workoutsToday,
+    planDrafts: health.drafts,
+    // Compromissos da família e aniversários de hoje e de amanhã: entram nos blocos, mas não são pendência (com
+    // uma rotina, haveria um quase todo dia), por isso não contam no "tudo em dia" nem na frase do topo.
+    events: todayEntries(family.calendar, today),
+    chores: chores.data ?? [],
+    bills: billsDue,
+    budgets: budgetLines,
+    pantry: pantry.data ?? [],
+    supplies: supplies.data?.supplies ?? [],
+    documents: documents.data ?? [],
+    equipment: equipment.data ?? [],
+    pendingReceipts: pendingReceipts.pending,
+    drafts: receipts.data ?? [],
+  });
+  const blocks = arrangeToday(items);
+  const attention = todayAttention(items);
+  // Só afirma "tudo em dia" depois que tudo carregou.
+  const loaded = queries.every((q) => q.isSuccess);
+  const allClear = nothingPending(loaded, attention);
+  const summary = todaySummary(loaded, attention);
+  const row = useTodayRow({
+    today,
+    health,
+    members: household.data?.members ?? [],
+    rotations: rotations.data,
+    equipment: equipment.data ?? [],
+    storeNames: pendingReceipts.storeNames ?? {},
+    billsAbove,
+    onPay: setPaying,
+  });
   const activeLists = (lists.data ?? []).filter((l) => l.pending > 0);
-  // Compromissos da família e aniversários de hoje e de amanhã: têm a seção
-  // deles e não são pendência (com uma rotina, haveria um quase todo dia), por
-  // isso não entram no "tudo em dia" nem na frase do topo.
-  const familyToday = todayEntries(family.calendar, today);
   // "Acho que acabou": do mercado, menos o que já está em alguma lista aberta.
   const restock = useRestock(lists.isSuccess ? onLists : undefined, purchases.data, restocked.pending, today);
-  // Categorias do mês que passaram ou estão perto do limite.
-  const budgetAlerts =
-    finance && budgets.data && spending.data
-      ? budgetProgress(budgets.data, summarize(spending.data, monthRange(month)).byCategory).filter((l) => l.status !== 'ok')
-      : [];
-  // Só afirma "tudo em dia" depois que tudo carregou.
-  const nothingPending =
-    queries.every((q) => q.isSuccess) &&
-    !pendingDoses.length &&
-    !refills.length &&
-    !dueChores.length &&
-    !billsDue.length &&
-    !expiring.length &&
-    !suppliesDue.length &&
-    !drafts.length &&
-    !pendingNotes.length &&
-    !documentsDue.length &&
-    !warrantiesEnding.length &&
-    !budgetAlerts.length &&
-    !restock.length &&
-    !hasHealthToday(health, today);
   const dateLabel = capitalizeFirst(now.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }));
   // O céu de agora (do clima da casa) é o fundo do topo; sem bairro ou sem previsão, o céu de sempre da hora.
   const colors = useColors();
   const location = useHouseholdLocation();
   const forecast = useForecast(location.data);
   const sky = currentSky(forecast.data, now) ?? defaultSky(now);
-  const attention =
-    pendingDoses.length +
-    refills.length +
-    dueChores.length +
-    billsDue.length +
-    expiring.length +
-    suppliesDue.length +
-    documentsDue.length +
-    warrantiesEnding.length +
-    budgetAlerts.length +
-    drafts.length +
-    pendingNotes.length +
-    healthTodayCount(health, today);
-  const summary = nothingPending
-    ? 'Tudo em dia por aqui.'
-    : attention > 0
-      ? `${attention} ${attention === 1 ? 'coisa pede' : 'coisas pedem'} sua atenção.`
-      : 'Veja o que tem para hoje.';
-  const nowTime = currentTimeHHMM(now);
-  const members = household.data?.members ?? [];
   // Com mais de uma casa, o topo diz qual está aberta e troca com um toque.
   const houses = household.data?.households ?? [];
 
@@ -268,10 +240,10 @@ export default function TodayScreen() {
   // Uma inclusão por vez (os botões ficam desativados enquanto isso): sem lista
   // de mercado aberta, dois pedidos ao mesmo tempo criariam duas "Mercado".
   const addingRestock = useRef(false);
-  async function addRestock(items: RestockItem[], open: boolean) {
+  async function addRestock(restockItems: RestockItem[], open: boolean) {
     if (addingRestock.current) return;
     addingRestock.current = true;
-    const names = items.map((i) => i.name);
+    const names = restockItems.map((i) => i.name);
     // Some já no toque; volta quando as listas carregadas trouxerem o item e
     // ele sair delas depois (useJustListed). A tela Hoje fica montada o tempo todo.
     restocked.add(names);
@@ -282,7 +254,7 @@ export default function TodayScreen() {
         // criada pelo toque anterior e ainda não ter chegado.
         newListName: 'Mercado',
         reuseMarketList: true,
-        items: items.map(({ name, category, productId, quantity, unit }) => ({ name, category, productId, quantity, unit })),
+        items: restockItems.map(({ name, category, productId, quantity, unit }) => ({ name, category, productId, quantity, unit })),
       });
       if (open) router.push({ pathname: '/lista/[id]', params: { id } });
     } catch (err) {
@@ -293,7 +265,37 @@ export default function TodayScreen() {
     }
   }
 
+  // "Lista de mercado": abre a lista de mercado aberta mais recente, ou cria uma (domain/today). Um pedido por vez:
+  // dois toques seguidos, sem lista aberta, não criam duas.
+  const openingList = useRef(false);
+  async function openMarket() {
+    if (openingList.current) return;
+    const target = marketListShortcut(onlineManager.isOnline(), lists.data);
+    if (target.kind === 'offline') {
+      notify(MARKET_LIST_SHORTCUT, MARKET_LIST_OFFLINE);
+      return;
+    }
+    if (target.kind === 'open') {
+      router.push({ pathname: '/lista/[id]', params: { id: target.id } });
+      return;
+    }
+    openingList.current = true;
+    try {
+      const { id } = await openMarketList.mutateAsync();
+      router.push({ pathname: '/lista/[id]', params: { id } });
+    } catch (err) {
+      onError(err);
+    } finally {
+      openingList.current = false;
+    }
+  }
 
+  // Cada passo leva aonde ele se faz: o convite e as fichas ficam em Configurações (Casa).
+  function openStep(step: FirstStepKey) {
+    if (step === 'lista') void openMarket();
+    else if (step === 'nota') scanner.open();
+    else router.push('/configuracoes');
+  }
 
   return (
     <Screen fab edges={[]} refreshing={refreshing} onRefresh={refresh}>
@@ -335,12 +337,7 @@ export default function TodayScreen() {
 
       <View style={styles.quickActions}>
         <Tile art="camera" wash={WASHES.yellow} label="Escanear nota" onPress={scanner.open} />
-        <Tile
-          art="carrinho"
-          wash={WASHES.blue}
-          label="Listas de compras"
-          onPress={() => router.push({ pathname: '/compras', params: { aba: 'listas' } })}
-        />
+        <Tile art="carrinho" wash={WASHES.blue} label={MARKET_LIST_SHORTCUT} onPress={() => void openMarket()} />
         <Tile
           art="tarefa"
           wash={WASHES.green}
@@ -349,270 +346,25 @@ export default function TodayScreen() {
         />
       </View>
 
-      {nothingPending ? (
+      {/* Com os primeiros passos na tela, o cartão deles fica no lugar deste (o topo já diz "Tudo em dia por aqui."). */}
+      {allClear && !firstSteps.shown && !firstSteps.deciding ? (
         <Card>
-          <EmptyState
-            icon="check-circle-outline"
-            tint="green"
-            title="Tudo em dia"
-            message={
-              finance
-                ? 'Nenhum remédio, consulta, tarefa, conta, validade ou documento pedindo atenção agora.'
-                : 'Nenhum remédio, consulta, tarefa, validade ou documento pedindo atenção agora.'
-            }
-          />
+          <EmptyState icon="check-circle-outline" tint="green" title={ALL_CLEAR_TITLE} message={allClearMessage(finance)} />
         </Card>
       ) : null}
 
-      {pendingDoses.length ? (
-        <Section title="Remédios de hoje">
-          <ListCard>
-            {pendingDoses.map((d) => (
-              <ListRow
-                key={doseKey(d.medicationId, d.date, d.time)}
-                left={<IconArt name="capsula" />}
-                title={`${d.time} · ${d.name}`}
-                // Sem o selo de caixa acabando: a seção logo abaixo já diz, uma vez por remédio.
-                subtitle={<DoseSubtitle parts={[d.personName, d.dosage]} late={d.time < nowTime} />}
-                right={
-                  <CheckCircle
-                    checked={false}
-                    label={`Marcar ${d.name} das ${d.time} como tomado`}
-                    onPress={() => toggleDose.mutate({ medicationId: d.medicationId, time: d.time, taken: true }, { onError })}
-                  />
-                }
-              />
-            ))}
-          </ListCard>
-        </Section>
-      ) : null}
+      <TodayBlock title={TODAY_BLOCK_TITLES.agora} block={blocks.agora} row={row} />
+      <TodayBlock title={TODAY_BLOCK_TITLES.emBreve} block={blocks.emBreve} row={row} />
 
-      <MedicationRefills rows={refills} />
+      {firstSteps.shown ? <FirstStepsCard steps={firstSteps.shown} onStep={openStep} onDismiss={firstSteps.dismiss} /> : null}
 
-      <HealthTodaySections overview={health} today={today} compact />
-
-      {familyToday.length ? (
-        <Section title="Compromissos">
-          <ListCard>
-            {familyToday.map((entry) => (
-              <ListRow
-                key={entry.key}
-                left={<IconBadge icon={entry.kind === 'aniversario' ? 'cake-variant-outline' : 'calendar-star'} tone="info" />}
-                title={entry.title}
-                subtitle={entry.subtitle}
-                onPress={() =>
-                  router.push(
-                    entry.kind === 'aniversario'
-                      ? { pathname: '/pessoa/[id]', params: { id: entry.id } }
-                      : { pathname: '/compromisso/[id]', params: { id: entry.id, dia: entry.date } },
-                  )
-                }
-              />
-            ))}
-          </ListCard>
-        </Section>
-      ) : null}
-
-      {dueChores.length ? (
-        <Section title="Tarefas">
-          <ListCard>
-            {dueChores.map((chore) => {
-              const status = choreStatus(chore.due_on, today);
-              const assignee = choreTurnLabel(chore, rotationOf(rotations.data, chore.id), members, health.people);
-              return (
-                <ListRow
-                  key={chore.id}
-                  left={<IconBadge icon="broom" tone={status.kind === 'atrasada' ? 'danger' : 'primary'} />}
-                  title={chore.title}
-                  subtitle={[describeChoreStatus(status), equipmentName(chore.equipment_id), assignee].filter(Boolean).join(' · ')}
-                  onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: chore.id } })}
-                  right={
-                    <CheckCircle
-                      checked={false}
-                      label={`Concluir ${chore.title}`}
-                      onPress={() =>
-                        completeChore.mutate(
-                          { id: chore.id, today, dueOn: chore.due_on },
-                          { onSuccess: (result) => announceCompletion(result, rotationPeople(members, health.people), chore), onError },
-                        )
-                      }
-                    />
-                  }
-                />
-              );
-            })}
-          </ListCard>
-        </Section>
-      ) : null}
-
-      {billsDue.length ? (
-        <Section title="Contas">
-          <ListCard>
-            {billsDue.map((bill) => (
-              <BillRow key={bill.id} bill={bill} today={today} onPay={setPaying} aboveUsual={billsAbove.has(bill.id)} />
-            ))}
-          </ListCard>
-        </Section>
-      ) : null}
-
-      {budgetAlerts.length ? (
-        <Section title="Orçamento do mês">
-          <ListCard>
-            {budgetAlerts.map((line) => (
-              <ListRow
-                key={line.category}
-                left={<IconBadge icon={getFinanceCategory(line.category).icon} tone={line.status === 'estourou' ? 'danger' : 'warning'} />}
-                title={`${getFinanceCategory(line.category).label}: ${line.status === 'estourou' ? 'passou do limite' : 'perto do limite'}`}
-                subtitle={describeBudget(line)}
-                onPress={() => router.push({ pathname: '/financas', params: { aba: 'resumo' } })}
-              />
-            ))}
-          </ListCard>
-        </Section>
-      ) : null}
-
-      {expiring.length ? (
-        <Section title="Despensa">
-          <ListCard>
-            {expiring.slice(0, 6).map((item) => {
-              const status = expiryStatus(item.expires_on, today);
-              return (
-                <ListRow
-                  key={item.id}
-                  left={<CategoryIcon category={item.category} name={item.name} />}
-                  title={item.name}
-                  right={<Badge label={describeExpiry(status)} tone={status.kind === 'vencido' ? 'danger' : 'warning'} />}
-                  onPress={() => router.push({ pathname: '/despensa/[id]', params: { id: item.id } })}
-                />
-              );
-            })}
-            {expiring.length > 6 ? (
-              <Button
-                title={`Ver todos (${expiring.length})`}
-                variant="ghost"
-                onPress={() => router.push({ pathname: '/compras', params: { aba: 'despensa' } })}
-              />
-            ) : null}
-          </ListCard>
-        </Section>
-      ) : null}
-
-      <SuppliesTodaySection rows={suppliesDue} today={today} />
-
-      {documentsDue.length ? (
-        <Section title="Documentos">
-          <ListCard>
-            {documentsDue.map(({ document, status }) => (
-              <ListRow
-                key={document.id}
-                left={<IconBadge icon={getDocumentKind(document.kind).icon} tone={status.kind === 'vencido' ? 'danger' : 'warning'} />}
-                title={document.title}
-                subtitle={describeDocumentStatus(status, document.expires_on)}
-                right={<Badge label={status.kind === 'vencido' ? 'Vencido' : 'Renovar'} tone={status.kind === 'vencido' ? 'danger' : 'warning'} />}
-                onPress={() => router.push({ pathname: '/documento/[id]', params: { id: document.id } })}
-              />
-            ))}
-          </ListCard>
-        </Section>
-      ) : null}
-
-      {warrantiesEnding.length ? (
-        <Section title="Garantias acabando">
-          <ListCard>
-            {warrantiesEnding.map(({ item, status }) => (
-              <ListRow
-                key={item.id}
-                left={<IconBadge icon={getEquipmentCategory(item.category).icon} tone="warning" />}
-                title={item.name}
-                subtitle={`${describeWarranty(status)} · teste tudo e acione a assistência se precisar`}
-                onPress={() => router.push({ pathname: '/aparelho/[id]', params: { id: item.id } })}
-              />
-            ))}
-          </ListCard>
-        </Section>
-      ) : null}
-
-      {drafts.length || pendingNotes.length ? (
-        <Section title="Notas para revisar">
-          <ListCard>
-            {pendingNotes.map((p) => (
-              <PendingReceiptRow key={p.accessKey} pending={p} storeNames={pendingReceipts.storeNames} />
-            ))}
-            {drafts.map((r) => (
-              <ListRow
-                key={r.id}
-                left={<IconBadge icon="receipt-text-outline" tone="info" />}
-                title={r.store?.name ?? 'Nota sem mercado'}
-                subtitle="Confira os itens para entrar no comparativo"
-                right={<Badge label="Revisar" tone="info" />}
-                onPress={() => router.push({ pathname: '/nota/[id]', params: { id: r.id } })}
-              />
-            ))}
-          </ListCard>
-        </Section>
-      ) : null}
-
-      {menu.data?.length ? (
-        <Section title="Cardápio de hoje">
-          <ListCard>
-            {MEALS.flatMap(({ key, label }) => {
-              const item = menu.data.find((i) => i.meal === key);
-              return item
-                ? [
-                    <ListRow
-                      key={key}
-                      left={<IconBadge icon="silverware-fork-knife" tone="info" />}
-                      title={item.dish}
-                      subtitle={label}
-                      onPress={() => router.push('/cardapio')}
-                    />,
-                  ]
-                : [];
-            })}
-          </ListCard>
-        </Section>
-      ) : null}
-
-      {restock.length ? (
-        <Section
-          title="Acho que acabou"
-          action={<LinkButton title="Pôr tudo na lista" disabled={addToList.isPending} onPress={() => addRestock(restock, true)} />}>
-          <ListCard>
-            {restock.map((item) => (
-              <ListRow
-                key={item.name}
-                left={<CategoryIcon category={item.category} name={item.name} />}
-                title={item.name}
-                subtitle={describeRestock(item)}
-                right={
-                  <AddCircle
-                    label={`Pôr ${item.name} na lista`}
-                    disabled={addToList.isPending}
-                    onPress={() => addRestock([item], false)}
-                  />
-                }
-                onPress={addToList.isPending ? undefined : () => addRestock([item], false)}
-              />
-            ))}
-          </ListCard>
-        </Section>
-      ) : null}
-
-      {activeLists.length ? (
-        <Section title="Listas de compras">
-          <ListCard>
-            {activeLists.map((l) => (
-              <ListRow
-                key={l.id}
-                left={<IconBadge icon={l.kind === 'farmacia' ? 'pill' : 'cart-outline'} tone="primary" />}
-                title={l.name}
-                subtitle={`${l.pending} ${l.pending === 1 ? 'item pendente' : 'itens pendentes'}`}
-                onPress={() => router.push({ pathname: '/lista/[id]', params: { id: l.id } })}
-              />
-            ))}
-          </ListCard>
-        </Section>
-      ) : null}
+      <TodaySuggestions
+        restock={restock}
+        adding={addToList.isPending}
+        onRestock={(restockItems, open) => void addRestock(restockItems, open)}
+        menu={menu.data ?? []}
+        lists={activeLists}
+      />
 
       {scanner.element}
       {paying ? <PayBillModal bill={paying} onClose={() => setPaying(null)} /> : null}

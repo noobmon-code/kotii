@@ -2,13 +2,14 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { StyleSheet } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
-import { HealthTodaySections } from '@/features/health/HealthTodaySections';
+import { todayItems, type TodayInput } from '@/domain/today';
+import { HealthTodaySections, useHealthRows } from '@/features/health/HealthTodaySections';
 import { DoseSubtitle } from '@/features/health/MedicationSections';
 import { Badge, ListRow } from '@/ui/primitives';
 import { PALETTES } from '@/ui/theme';
 
-// O que está atrasado aparece em cor: a vacina atrasada ganha o selo "Atrasada" (telas Saúde e Hoje) e a dose
-// atrasada, o "atrasada" na cor de aviso. O que não está atrasado fica sem nada disso.
+// O que está atrasado aparece em cor: a vacina atrasada ganha o selo "Atrasada" (telas Saúde e Hoje, onde só ela
+// entra) e a dose atrasada, o "atrasada" na cor de aviso. O que não está atrasado fica sem nada disso.
 
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 jest.mock('@/data/health', () => ({ useToggleWorkoutLog: () => ({ mutate: jest.fn() }) }));
@@ -45,14 +46,46 @@ afterEach(async () => {
 const rowOf = (title: string) => renderer!.root.findAllByType(ListRow).find((row) => row.props.title === title)!;
 const badges = (node: ReactTestInstance) => node.findAllByType(Badge).map((badge) => [badge.props.label, badge.props.tone]);
 
+/** As vacinas como a tela Hoje as põe nos blocos (domain/today), com as linhas da saúde. */
+function TodayVaccines({ today }: { today: string }) {
+  const rows = useHealthRows(overview, today);
+  const empty: Omit<TodayInput, 'today' | 'nowTime' | 'vaccines'> = {
+    doses: [],
+    refills: [],
+    appointments: [],
+    overdueAppointments: [],
+    workouts: [],
+    planDrafts: [],
+    events: [],
+    chores: [],
+    bills: [],
+    budgets: [],
+    pantry: [],
+    supplies: [],
+    documents: [],
+    equipment: [],
+    pendingReceipts: [],
+    drafts: [],
+  };
+  const items = todayItems({ ...empty, today, nowTime: '12:00', vaccines: overview.vaccinesDue });
+  return <>{items.flatMap((item) => (item.kind === 'vaccine' ? [rows.vaccine(item.data)] : []))}</>;
+}
+
 describe('a vacina atrasada', () => {
-  it.each([false, true])('ganha o selo "Atrasada", e só ela (Hoje: %s)', async (compact) => {
+  it('ganha o selo "Atrasada", e só ela (Saúde)', async () => {
     await act(async () => {
-      renderer = create(<HealthTodaySections overview={overview} today="2026-10-21" compact={compact} />);
+      renderer = create(<HealthTodaySections overview={overview} today="2026-10-21" />);
     });
     expect(badges(rowOf('Febre amarela'))).toEqual([['Atrasada', 'danger']]);
-    if (compact) expect(renderer!.root.findAllByType(ListRow).map((row) => row.props.title)).toEqual(['Febre amarela']);
-    else expect(badges(rowOf('Gripe'))).toEqual([]);
+    expect(badges(rowOf('Gripe'))).toEqual([]);
+  });
+
+  it('na tela Hoje, só ela entra, com o selo', async () => {
+    await act(async () => {
+      renderer = create(<TodayVaccines today="2026-10-21" />);
+    });
+    expect(renderer!.root.findAllByType(ListRow).map((row) => row.props.title)).toEqual(['Febre amarela']);
+    expect(badges(rowOf('Febre amarela'))).toEqual([['Atrasada', 'danger']]);
   });
 });
 

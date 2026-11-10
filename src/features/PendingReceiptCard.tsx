@@ -122,8 +122,14 @@ export function PendingReceiptCard({
  * mês da compra. Abre a tela da nota pendente.
  */
 export function PendingReceiptRow({ pending, storeNames }: { pending: PendingReceipt; storeNames: Readonly<Record<string, string>> }) {
+  return pendingReceiptListRow(pending, storeNames);
+}
+
+/** A mesma linha como um `ListRow` (o cartão de linhas dos blocos da tela Hoje põe o recuo do divisor pelo ícone dela). */
+export function pendingReceiptListRow(pending: PendingReceipt, storeNames: Readonly<Record<string, string>>) {
   return (
     <ListRow
+      key={pending.accessKey}
       left={<IconBadge icon="timer-sand" tone="warning" />}
       title={storeNames[pendingReceiptCnpj(pending.accessKey)] ?? 'Nota da Sefaz'}
       subtitle={`${pendingReceiptSubtitle(pending.accessKey)} · faltam os prints da Sefaz`}

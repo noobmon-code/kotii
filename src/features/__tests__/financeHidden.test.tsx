@@ -90,6 +90,7 @@ jest.mock('@/data/house', () => ({ useDocuments: () => mockQuery(), useEquipment
 jest.mock('@/data/market', () => ({
   useAddItemsToList: () => ({ mutateAsync: jest.fn() }),
   useAddToMarketList: () => ({ mutateAsync: jest.fn() }),
+  useOpenMarketList: () => ({ mutateAsync: jest.fn() }),
   usePurchaseRecords: () => mockQuery(),
   useShoppingLists: () => mockQuery(),
 }));
@@ -108,13 +109,11 @@ jest.mock('@/features/finance/BillsPanel', () => {
 });
 jest.mock('@/features/finance/PayBillModal', () => ({ PayBillModal: () => null }));
 jest.mock('@/features/health/HealthTodaySections', () => ({
-  hasHealthToday: () => false,
-  healthTodayCount: () => 0,
-  HealthTodaySections: () => null,
+  useHealthRows: () => ({ workout: () => null, appointment: () => null, toConfirm: () => null, vaccine: () => null, draft: () => null }),
 }));
 jest.mock('@/features/health/MedicationSections', () => ({
   DoseSubtitle: () => null,
-  MedicationRefills: () => null,
+  useRefillRows: () => () => null,
   useRefills: () => ({ rows: [], attention: [] }),
 }));
 jest.mock('@/features/health/useHealthOverview', () => ({
@@ -122,12 +121,14 @@ jest.mock('@/features/health/useHealthOverview', () => ({
 }));
 jest.mock('@/features/InstallAppCard', () => ({ InstallAppCard: () => null }));
 jest.mock('@/features/MarketTrip', () => ({ MarketTripBanner: () => null }));
-jest.mock('@/features/PendingReceiptCard', () => ({ PendingReceiptRow: () => null }));
+jest.mock('@/features/PendingReceiptCard', () => ({ pendingReceiptListRow: () => null }));
 jest.mock('@/features/ReceiptScanner', () => ({ useReceiptScanner: () => ({ open: jest.fn(), busy: false, element: null }) }));
 jest.mock('@/features/RecentPurchases', () => ({
   useJustListed: () => ({ pending: new Set<string>(), add: jest.fn(), drop: jest.fn() }),
 }));
-jest.mock('@/features/SuppliesSection', () => ({ SuppliesTodaySection: () => null }));
+jest.mock('@/features/SuppliesSection', () => ({ useSupplyTodayRows: () => () => null }));
+// Os primeiros passos ficam dispensados nesta casa: o cartão deles tomaria o lugar do "Tudo em dia" (todayBlocks.test).
+jest.mock('@/lib/firstSteps', () => ({ useFirstStepsDismissed: () => true, dismissFirstSteps: jest.fn() }));
 jest.mock('@/features/TermsNotice', () => ({ TermsNoticeCard: () => null }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
 jest.mock('@/ui/iconArt', () => ({ IconArt: () => null }));
@@ -193,12 +194,11 @@ afterEach(async () => {
 });
 
 describe('Hoje', () => {
-  it('desligada: nenhum pedido a Finanças, sem "Contas" nem "Orçamento do mês", e o "Tudo em dia" chega, sem citar conta', async () => {
+  it('desligada: nenhum pedido a Finanças, nenhuma conta, e o "Tudo em dia" chega, sem citar conta', async () => {
     await mount(<TodayScreen />);
     expect(financeAsked()).toEqual([]);
     const texts = page();
-    expect(texts).not.toContain('Contas');
-    expect(texts).not.toContain('Orçamento do mês');
+    expect(texts).not.toContain('Agora');
     expect(texts).not.toContain('Luz');
     expect(texts).toContain('Tudo em dia');
     expect(texts).toContain('Tudo em dia por aqui.');
@@ -212,13 +212,14 @@ describe('Hoje', () => {
     expect(financeAsked()).toEqual([]);
   });
 
-  it('ligada: as contas são buscadas e a que vence hoje aparece em "Contas"', async () => {
+  it('ligada: as contas são buscadas e a que vence hoje aparece em "Agora"', async () => {
     jest.replaceProperty(FEATURES, 'finance', true);
     await mount(<TodayScreen />);
     expect(financeAsked()).toEqual(expect.arrayContaining(['bills', 'budgets', 'bill_payments']));
     const texts = page();
-    expect(texts).toContain('Contas');
+    expect(texts).toContain('Agora');
     expect(texts).toContain('Luz');
+    expect(texts).toContain('1 coisa pede sua atenção.');
     expect(texts).not.toContain('Tudo em dia');
   });
 

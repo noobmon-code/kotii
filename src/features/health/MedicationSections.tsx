@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { type ReactNode, useMemo, useRef } from 'react';
+import { type ReactElement, type ReactNode, useMemo, useRef } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { toSchedule, toSchedules, useDoses, useMedications, useToggleDose } from '@/data/home';
@@ -108,14 +108,13 @@ export function MedicationsToday({ today }: { today: string }) {
 }
 
 /**
- * Uma linha por remédio que está acabando ou com a receita vencendo (telas
- * Hoje e Saúde). Com a caixa acabando ou acabada, o atalho para a lista da
- * farmácia (o que já está para comprar numa lista de farmácia aberta aparece
- * como "Na lista da farmácia"); a linha só da receita não tem esse atalho.
- * Com a caixa acabada pelas contas, a primeira ação é "Atualizar estoque": o
- * mais provável é a pessoa já ter comprado e não ter dito ao app.
+ * As linhas dos remédios que estão acabando ou com a receita vencendo (telas Hoje e Saúde): um desenho de linha por
+ * remédio (`ListRow`, para entrar no cartão de linhas de qualquer tela). Com a caixa acabando ou acabada, o atalho
+ * para a lista da farmácia (o que já está para comprar numa lista de farmácia aberta aparece como "Na lista da
+ * farmácia"); a linha só da receita não tem esse atalho. Com a caixa acabada pelas contas, a primeira ação é
+ * "Atualizar estoque": o mais provável é a pessoa já ter comprado e não ter dito ao app.
  */
-export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
+export function useRefillRows(): (row: RefillRow) => ReactElement {
   const lists = useShoppingLists();
   const addToList = useAddToPharmacyList();
   // O botão fica dentro de uma linha que abre o remédio: desativado, o toque
@@ -133,7 +132,6 @@ export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
       ),
     [lists.data],
   );
-  if (!rows.length) return null;
 
   function add(row: RefillRow) {
     if (adding.current.has(row.itemName)) return;
@@ -165,53 +163,60 @@ export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
       });
   }
 
+  return function refillRow(row: RefillRow) {
+    return (
+      <ListRow
+        key={row.id}
+        left={<IconBadge icon="pill" tone={row.alerts[0].tone} />}
+        title={row.title}
+        subtitle={
+          <View style={styles.refill}>
+            <Row style={styles.wrap}>
+              {row.alerts.map((alert) => (
+                <Badge key={alert.about} label={alert.label} tone={alert.tone} />
+              ))}
+            </Row>
+            {row.stock ? (
+              <Row gap={space.md} style={styles.wrap}>
+                {row.stock === 'low' ? null : (
+                  <Button
+                    title="Atualizar estoque"
+                    icon="pencil-outline"
+                    variant="ghost"
+                    compact
+                    onPress={() => router.push({ pathname: '/remedio/[id]', params: { id: row.id, estoque: '1' } })}
+                    style={styles.refillAction}
+                  />
+                )}
+                {onPharmacyList(row, listed) ? (
+                  <Badge label="Na lista da farmácia" tone="primary" />
+                ) : (
+                  <Button
+                    title="Pôr na lista da farmácia"
+                    icon="cart-plus"
+                    variant="ghost"
+                    compact
+                    onPress={() => add(row)}
+                    style={styles.refillAction}
+                  />
+                )}
+              </Row>
+            ) : null}
+          </View>
+        }
+        onPress={() => router.push({ pathname: '/remedio/[id]', params: { id: row.id } })}
+      />
+    );
+  };
+}
+
+/** A seção dos remédios e receitas acabando (tela Saúde): as linhas de useRefillRows. */
+export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
+  const refillRow = useRefillRows();
+  if (!rows.length) return null;
   return (
     <Section title="Remédios e receitas acabando">
-      <ListCard>
-        {rows.map((row) => (
-          <ListRow
-            key={row.id}
-            left={<IconBadge icon="pill" tone={row.alerts[0].tone} />}
-            title={row.title}
-            subtitle={
-              <View style={styles.refill}>
-                <Row style={styles.wrap}>
-                  {row.alerts.map((alert) => (
-                    <Badge key={alert.about} label={alert.label} tone={alert.tone} />
-                  ))}
-                </Row>
-                {row.stock ? (
-                  <Row gap={space.md} style={styles.wrap}>
-                    {row.stock === 'low' ? null : (
-                      <Button
-                        title="Atualizar estoque"
-                        icon="pencil-outline"
-                        variant="ghost"
-                        compact
-                        onPress={() => router.push({ pathname: '/remedio/[id]', params: { id: row.id, estoque: '1' } })}
-                        style={styles.refillAction}
-                      />
-                    )}
-                    {onPharmacyList(row, listed) ? (
-                      <Badge label="Na lista da farmácia" tone="primary" />
-                    ) : (
-                      <Button
-                        title="Pôr na lista da farmácia"
-                        icon="cart-plus"
-                        variant="ghost"
-                        compact
-                        onPress={() => add(row)}
-                        style={styles.refillAction}
-                      />
-                    )}
-                  </Row>
-                ) : null}
-              </View>
-            }
-            onPress={() => router.push({ pathname: '/remedio/[id]', params: { id: row.id } })}
-          />
-        ))}
-      </ListCard>
+      <ListCard>{rows.map(refillRow)}</ListCard>
     </Section>
   );
 }
