@@ -16,9 +16,9 @@ import { space } from '@/ui/theme';
 
 /**
  * Compras: o ciclo do que entra na casa. Listas (as abertas e as arquivadas, Preços e Cardápio), Notas (as notas
- * fiscais, com o Mercado do mês no alto) e Despensa (com "Gás, água e ração"). A parte vive na URL (?aba=): os
- * atalhos da tela Hoje e o Nuke abrem direto nela, e os endereços antigos da Casa e de Finanças chegam aqui
- * (domain/tabs).
+ * fiscais, com o Mercado do mês no alto) e Despensa (com "Gás, água e ração"). A parte vive na URL (?aba=): o "Ver
+ * todos da despensa" e as linhas do gás da tela Hoje, as telas da nota sem para onde voltar e o Nuke abrem direto
+ * nela, e os endereços antigos da Casa e de Finanças chegam aqui (domain/tabs).
  */
 export default function ShoppingScreen() {
   const { aba } = useLocalSearchParams<{ aba?: string }>();

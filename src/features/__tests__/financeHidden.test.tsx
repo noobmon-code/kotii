@@ -129,6 +129,10 @@ jest.mock('@/features/RecentPurchases', () => ({
 jest.mock('@/features/SuppliesSection', () => ({ useSupplyTodayRows: () => () => null }));
 // Os primeiros passos ficam dispensados nesta casa: o cartão deles tomaria o lugar do "Tudo em dia" (todayBlocks.test).
 jest.mock('@/lib/firstSteps', () => ({ useFirstStepsDismissed: () => true, dismissFirstSteps: jest.fn() }));
+// A casa aberta do aparelho (os primeiros passos a conferem) guarda a escolha no AsyncStorage.
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
+);
 jest.mock('@/features/TermsNotice', () => ({ TermsNoticeCard: () => null }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
 jest.mock('@/ui/iconArt', () => ({ IconArt: () => null }));

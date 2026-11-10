@@ -9,13 +9,14 @@ import TodayScreen from '@/app/(tabs)/index';
 import { toTimestamp } from '@/domain/health';
 import { FIRST_STEPS_TITLE } from '@/domain/firstSteps';
 import { ALL_CLEAR_TITLE, PANTRY_SHOWN, TODAY_BLOCK_TITLES } from '@/domain/today';
+import type { PurchaseRecord } from '@/domain/recentPurchases';
 import type { Chore, Equipment, HomeDocument, Medication, PantryItem, Supply } from '@/lib/types';
 import { Button, LinkButton, ListRow, Section } from '@/ui/primitives';
 
 // A tela Hoje por urgência, com as linhas de verdade e as buscas trocadas por respostas prontas: "Agora" (o atrasado
 // antes do que é de hoje), "Em breve" (o mais perto antes) e "Sugestões" (que não contam nem seguram o "Tudo em
 // dia"); a frase do topo com a mesma conta das linhas; e os "Primeiros passos", que se marcam pelo que a casa tem,
-// esperam saber os quatro para aparecer e somem dispensados (no aparelho, por casa) ou com os quatro feitos.
+// esperam saber os quatro para aparecer e somem de vez dispensados ou com os quatro feitos (no aparelho, por casa).
 
 // O relógio parado no meio do dia (só a data: os tempos de espera continuam de verdade): a dose das 8h passou, a
 // das 20h não.
@@ -23,6 +24,11 @@ const NOW = new Date(2026, 10, 10, 12, 0);
 const TODAY = '2026-11-10';
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
+type StepAnswer = { data: boolean | undefined; status: 'pending' | 'error' | 'success'; fetchStatus: 'fetching' | 'paused' | 'idle' };
+/** A resposta que chegou de uma busca que terminou bem. */
+function answered(data: boolean): StepAnswer {
+  return { data, status: 'success', fetchStatus: 'idle' };
+}
 const mockQuery = (data: unknown = []) => ({ data, isSuccess: true, isError: false, isPending: false, isRefetching: false, refetch: jest.fn() });
 const mockData = {
   medications: [] as Medication[],
@@ -34,16 +40,21 @@ const mockData = {
   drafts: [] as unknown[],
   lists: [] as unknown[],
   menu: [] as unknown[],
+  purchases: [] as PurchaseRecord[],
   people: [] as { id: string; name: string; kind: 'pessoa' | 'pet'; birth_date: string | null; member_user_id: string | null }[],
   members: 1,
   householdId: 'casa',
-  // As duas perguntas dos primeiros passos: a resposta e com que `enabled` a tela as fez.
-  anyList: { data: false as boolean | undefined, fetchStatus: 'idle' },
-  anyReceipt: { data: false as boolean | undefined, fetchStatus: 'idle' },
+  // A casa aberta neste aparelho (lib/activeHousehold): no meio de uma troca, ainda não é a da tela.
+  activeId: 'casa' as string | null,
+  // As duas perguntas dos primeiros passos: a resposta, e com que `enabled` e com que "já viu" a tela as fez.
+  anyList: answered(false),
+  anyReceipt: answered(false),
   asked: { list: [] as boolean[], receipt: [] as boolean[] },
+  seen: { list: [] as boolean[], receipt: [] as boolean[] },
   overview: {} as Record<string, unknown>,
 };
 const mockScanner = { open: jest.fn() };
+const mockAddItems = jest.fn(async (_: unknown) => ({ id: 'mercado' }));
 const mockOpenList = jest.fn(async () => ({ id: 'mercado', name: 'Mercado' }));
 
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
@@ -104,22 +115,28 @@ jest.mock('@/data/house', () => ({
   useEquipmentList: () => mockQuery(mockData.equipment),
 }));
 jest.mock('@/data/market', () => ({
-  useAddItemsToList: () => ({ mutateAsync: jest.fn(), isPending: false }),
+  useAddItemsToList: () => ({ mutateAsync: mockAddItems, isPending: false }),
   useAddToMarketList: () => ({ mutateAsync: jest.fn(), isPending: false }),
   useAddToPharmacyList: () => ({ mutateAsync: jest.fn() }),
   useOpenMarketList: () => ({ mutateAsync: mockOpenList }),
-  usePurchaseRecords: () => mockQuery(),
+  usePurchaseRecords: () => mockQuery(mockData.purchases),
   useShoppingLists: () => mockQuery(mockData.lists),
 }));
 jest.mock('@/data/firstSteps', () => ({
-  useAnyList: (enabled: boolean) => {
+  useAnyList: (enabled: boolean, seen = false) => {
     mockData.asked.list.push(enabled);
+    mockData.seen.list.push(seen);
     return { ...mockData.anyList, refetch: jest.fn() };
   },
-  useAnyReceipt: (enabled: boolean) => {
+  useAnyReceipt: (enabled: boolean, seen = false) => {
     mockData.asked.receipt.push(enabled);
+    mockData.seen.receipt.push(seen);
     return { ...mockData.anyReceipt, refetch: jest.fn() };
   },
+}));
+jest.mock('@/lib/activeHousehold', () => ({
+  ...jest.requireActual<typeof import('@/lib/activeHousehold')>('@/lib/activeHousehold'),
+  useActiveHouseholdId: () => mockData.activeId,
 }));
 jest.mock('@/data/marketTrips', () => ({ useRefreshMarketTrips: () => () => undefined }));
 jest.mock('@/data/menu', () => ({ useMenu: () => mockQuery(mockData.menu) }));
@@ -284,17 +301,21 @@ beforeEach(async () => {
     drafts: [],
     lists: [],
     menu: [],
+    purchases: [],
     people: [],
     members: 1,
     householdId: `casa-${house}`,
-    anyList: { data: false, fetchStatus: 'idle' },
-    anyReceipt: { data: false, fetchStatus: 'idle' },
+    activeId: `casa-${house}`,
+    anyList: answered(false),
+    anyReceipt: answered(false),
     asked: { list: [], receipt: [] },
+    seen: { list: [], receipt: [] },
     overview: overview(),
   });
   jest.mocked(router.push).mockClear();
   mockScanner.open.mockClear();
   mockOpenList.mockClear();
+  mockAddItems.mockClear();
 });
 
 afterEach(async () => {
@@ -307,7 +328,7 @@ afterEach(async () => {
 function settledHouse() {
   mockData.members = 2;
   mockData.lists = [list('Mercado')];
-  mockData.anyReceipt = { data: true, fetchStatus: 'idle' };
+  mockData.anyReceipt = answered(true);
   mockData.people = [{ id: 'p1', name: 'Rex', kind: 'pet', birth_date: null, member_user_id: null }];
 }
 
@@ -371,7 +392,7 @@ describe('os blocos por urgência', () => {
     expect(router.push).toHaveBeenCalledWith({ pathname: '/tarefa/[id]', params: { id: 'Tirar o lixo' } });
   });
 
-  it('a despensa mostra até seis por bloco, e o "Ver todos" leva a Compras → Despensa', async () => {
+  it('a despensa mostra até seis nos dois blocos juntos, e o "Ver todos" leva a Compras → Despensa', async () => {
     settledHouse();
     mockData.pantry = Array.from({ length: PANTRY_SHOWN + 2 }, (_, i) => pantry(`Vencido ${i + 1}`, '2026-11-05'));
     await mount();
@@ -381,6 +402,22 @@ describe('os blocos por urgência', () => {
     expect(router.push).toHaveBeenCalledWith({ pathname: '/compras', params: { aba: 'despensa' } });
     // O que ficou no "Ver todos" também conta.
     expect(page()).toContain(`${PANTRY_SHOWN + 2} coisas pedem sua atenção.`);
+  });
+
+  it('vencidos e perto de vencer dividem as seis, "Agora" primeiro; o "Ver todos" conta todos e fica no bloco da última linha', async () => {
+    settledHouse();
+    mockData.pantry = [
+      pantry('Iogurte', '2026-11-08'),
+      pantry('Queijo', '2026-11-09'),
+      ...Array.from({ length: 5 }, (_, i) => pantry(`Leite ${i + 1}`, '2026-11-12')),
+    ];
+    await mount();
+    expect(rowsOf(TODAY_BLOCK_TITLES.agora)).toEqual(['Iogurte', 'Queijo']);
+    expect(rowsOf(TODAY_BLOCK_TITLES.emBreve)).toEqual(['Leite 1', 'Leite 2', 'Leite 3', 'Leite 4']);
+    const seeAllIn = (title: string) => section(title)!.findAllByType(Button).map((b) => b.props.title as string);
+    expect(seeAllIn(TODAY_BLOCK_TITLES.agora)).toEqual([]);
+    expect(seeAllIn(TODAY_BLOCK_TITLES.emBreve)).toEqual(['Ver todos da despensa (7)']);
+    expect(page()).toContain('7 coisas pedem sua atenção.');
   });
 
   it('só compromissos: aparecem em "Agora", mas a casa está em dia', async () => {
@@ -406,6 +443,52 @@ describe('os blocos por urgência', () => {
     expect(rawText(suggestions)).toContain('3 itens pendentes');
     expect(section(TODAY_BLOCK_TITLES.agora)).toBeUndefined();
     expect(section(TODAY_BLOCK_TITLES.emBreve)).toBeUndefined();
+  });
+
+  it('"Acho que acabou" fica nas sugestões, não segura o "Tudo em dia" e põe na lista de mercado pelo servidor', async () => {
+    settledHouse();
+    // Café de dez em dez dias, o último há doze: acabou. O arroz, comprado uma vez só, não diz nada.
+    const bought = (name: string, at: string, category = 'cafe_cha'): PurchaseRecord => ({
+      name,
+      category,
+      productId: null,
+      quantity: 1,
+      unit: 'un',
+      at: `${at}T10:00:00.000Z`,
+      source: 'receipt',
+    });
+    mockData.purchases = [
+      bought('Café', '2026-10-09'),
+      bought('Café', '2026-10-19'),
+      bought('Café', '2026-10-29'),
+      bought('Arroz', '2026-10-29', 'graos'),
+    ];
+    await mount();
+    // Não é pendência: a casa continua em dia, com o cartão e a frase do topo.
+    expect(page()).toContain('Tudo em dia por aqui.');
+    expect(page()).toContain(ALL_CLEAR_TITLE);
+    const suggestions = section(TODAY_BLOCK_TITLES.sugestoes)!;
+    expect(rawText(suggestions)).toContain('Acho que acabou');
+    const cafe = suggestions.findAllByType(ListRow).find((row) => row.props.title === 'Café')!;
+    expect(cafe.props.subtitle).toBe('Costuma comprar a cada 10 dias · última há 12 dias');
+    expect(suggestions.findAllByType(ListRow).map((row) => row.props.title)).toEqual(['Café']);
+
+    // Um item: vai para a lista de mercado aberta mais recente (ou uma nova), e a tela fica.
+    await act(async () => cafe.props.onPress());
+    expect(mockAddItems).toHaveBeenCalledTimes(1);
+    expect(mockAddItems).toHaveBeenLastCalledWith({
+      newListName: 'Mercado',
+      reuseMarketList: true,
+      items: [{ name: 'Café', category: 'cafe_cha', productId: null, quantity: 1, unit: 'un' }],
+    });
+    expect(router.push).not.toHaveBeenCalled();
+
+    // "Pôr tudo na lista": o mesmo pedido, e abre a lista.
+    const all = suggestions.findAllByType(LinkButton).find((b) => b.props.title === 'Pôr tudo na lista')!;
+    await act(async () => all.props.onPress());
+    expect(mockAddItems).toHaveBeenCalledTimes(2);
+    expect(mockAddItems.mock.calls[1][0]).toMatchObject({ newListName: 'Mercado', reuseMarketList: true });
+    expect(router.push).toHaveBeenLastCalledWith({ pathname: '/lista/[id]', params: { id: 'mercado' } });
   });
 
   it('antes de tudo carregar, nada de "Tudo em dia"', async () => {
@@ -434,7 +517,7 @@ describe('os primeiros passos', () => {
 
   it('cada passo se marca pelo que a casa já tem, e com os quatro feitos o cartão some', async () => {
     mockData.members = 2;
-    mockData.anyList = { data: true, fetchStatus: 'idle' };
+    mockData.anyList = answered(true);
     await mount();
     const steps = () => section(FIRST_STEPS_TITLE)!.findAllByType(ListRow).map((row) => [row.props.title, row.props.subtitle]);
     expect(steps()).toEqual([
@@ -444,7 +527,7 @@ describe('os primeiros passos', () => {
       ['Escanear a primeira nota', 'O QR code da nota fiscal guarda os preços'],
       ['Cadastrar pessoas e pets', 'Crianças, idosos e pets que não usam o app'],
     ]);
-    mockData.anyReceipt = { data: true, fetchStatus: 'idle' };
+    mockData.anyReceipt = answered(true);
     // Uma ficha de quem usa o app não conta; a de um pet sim.
     mockData.people = [{ id: 'p0', name: 'Ana', kind: 'pessoa', birth_date: null, member_user_id: 'u0' }];
     await rerender();
@@ -453,6 +536,26 @@ describe('os primeiros passos', () => {
     await rerender();
     expect(section(FIRST_STEPS_TITLE)).toBeUndefined();
     expect(page()).toContain(ALL_CLEAR_TITLE);
+    // Os quatro feitos fecham o cartão de vez neste aparelho: se a outra pessoa sai da casa e a ficha do pet é
+    // apagada, ele não volta.
+    expect(await AsyncStorage.getItem(`kotii:first-steps-dismissed:${mockData.householdId}`)).toBe('1');
+    mockData.members = 1;
+    mockData.people = [];
+    await rerender();
+    expect(section(FIRST_STEPS_TITLE)).toBeUndefined();
+    expect(page()).toContain(ALL_CLEAR_TITLE);
+  });
+
+  it('no meio de uma troca de casa (a aberta ainda não é a da tela), os quatro feitos não fecham o cartão', async () => {
+    settledHouse();
+    mockData.activeId = 'casa-seguinte';
+    await mount();
+    expect(section(FIRST_STEPS_TITLE)).toBeUndefined();
+    expect(await AsyncStorage.getItem(`kotii:first-steps-dismissed:${mockData.householdId}`)).toBeNull();
+    // A casa nova chegou e é a aberta: agora sim.
+    mockData.activeId = mockData.householdId;
+    await rerender();
+    expect(await AsyncStorage.getItem(`kotii:first-steps-dismissed:${mockData.householdId}`)).toBe('1');
   });
 
   it('só pergunta ao banco o que a tela não sabe: com uma lista aberta e um rascunho, nada', async () => {
@@ -466,22 +569,61 @@ describe('os primeiros passos', () => {
   });
 
   it('sem nenhuma lista aberta nem rascunho, pergunta; enquanto a resposta vem, nem o cartão nem o "Tudo em dia" (sem piscar)', async () => {
-    mockData.anyList = { data: undefined, fetchStatus: 'fetching' };
+    mockData.anyList = { data: undefined, status: 'pending', fetchStatus: 'fetching' };
     await mount();
     expect(mockData.asked.list).toContain(true);
     expect(mockData.asked.receipt).toContain(true);
     expect(section(FIRST_STEPS_TITLE)).toBeUndefined();
     expect(page()).not.toContain(ALL_CLEAR_TITLE);
-    mockData.anyList = { data: false, fetchStatus: 'idle' };
+    mockData.anyList = answered(false);
     await rerender();
     expect(section(FIRST_STEPS_TITLE)).toBeDefined();
   });
 
   it('sem internet (a pergunta parada) ou com ela falhando, o cartão não aparece, e o "Tudo em dia" sim', async () => {
-    mockData.anyReceipt = { data: undefined, fetchStatus: 'paused' };
+    mockData.anyReceipt = { data: undefined, status: 'pending', fetchStatus: 'paused' };
     await mount();
     expect(section(FIRST_STEPS_TITLE)).toBeUndefined();
     expect(page()).toContain(ALL_CLEAR_TITLE);
+  });
+
+  it('um "não" guardado não marca o passo por fazer enquanto é buscado de novo, nem depois de a busca falhar', async () => {
+    mockData.members = 2;
+    mockData.anyList = answered(true);
+    mockData.people = [{ id: 'p1', name: 'Rex', kind: 'pet', birth_date: null, member_user_id: null }];
+    // O rascunho foi confirmado em outro celular: a pergunta volta, com o "não" de antes guardado, e busca de novo.
+    mockData.anyReceipt = { data: false, status: 'success', fetchStatus: 'fetching' };
+    await mount();
+    expect(mockData.asked.receipt).toContain(true);
+    expect(section(FIRST_STEPS_TITLE)).toBeUndefined();
+    // A resposta está a caminho: o "Tudo em dia" espera, sem piscar.
+    expect(page()).not.toContain(ALL_CLEAR_TITLE);
+    // A busca falhou (sinal ruim): o "não" velho continua sem valer, e a tela segue sem o cartão.
+    mockData.anyReceipt = { data: false, status: 'error', fetchStatus: 'idle' };
+    await rerender();
+    expect(section(FIRST_STEPS_TITLE)).toBeUndefined();
+    expect(page()).toContain(ALL_CLEAR_TITLE);
+    // Sem internet, com o "não" guardado (a busca parada): o mesmo.
+    mockData.anyReceipt = { data: false, status: 'success', fetchStatus: 'paused' };
+    await rerender();
+    expect(section(FIRST_STEPS_TITLE)).toBeUndefined();
+    // Um "sim" guardado vale enquanto busca: o passo está feito.
+    mockData.anyReceipt = { data: true, status: 'success', fetchStatus: 'fetching' };
+    mockData.people = [];
+    await rerender();
+    const steps = section(FIRST_STEPS_TITLE)!.findAllByType(ListRow).map((row) => [row.props.title, row.props.subtitle]);
+    expect(steps[2]).toEqual(['Escanear a primeira nota', 'Feito']);
+  });
+
+  it('o que a tela vê (uma lista aberta, um rascunho) fica como "sim" na resposta guardada', async () => {
+    mockData.lists = [list('Mercado')];
+    await mount();
+    const last = (calls: boolean[]) => calls[calls.length - 1];
+    expect(last(mockData.seen.list)).toBe(true);
+    expect(last(mockData.seen.receipt)).toBe(false);
+    mockData.drafts = [{ id: 'n1', store: null }];
+    await rerender();
+    expect(last(mockData.seen.receipt)).toBe(true);
   });
 
   it('cada passo leva aonde ele se faz', async () => {

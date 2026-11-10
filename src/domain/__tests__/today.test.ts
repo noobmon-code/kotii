@@ -176,15 +176,37 @@ describe('os dois blocos', () => {
     ]);
   });
 
-  it('a despensa mostra até PANTRY_SHOWN por bloco, e o bloco diz quantos ela tinha', () => {
+  it('a despensa mostra até PANTRY_SHOWN nos dois blocos juntos, "Agora" primeiro, e o "Ver todos" conta os dois', () => {
     const many = Array.from({ length: PANTRY_SHOWN + 3 }, (_, i) => item('pantry', LATE, `vencido ${i}`));
     const { agora, emBreve } = arrangeToday([...many, item('chore', LATE, 'tarefa'), item('pantry', soon(2), 'vence logo')]);
     expect(agora.items).toHaveLength(PANTRY_SHOWN + 1);
     expect(names(agora.items)).toContain('tarefa');
     expect(names(agora.items)).not.toContain(`vencido ${PANTRY_SHOWN}`);
-    expect(agora.cut).toEqual([{ kind: 'pantry', total: PANTRY_SHOWN + 3 }]);
-    expect(seeAllLabel(agora.cut[0])).toBe(`Ver todos da despensa (${PANTRY_SHOWN + 3})`);
+    // "Agora" usou as seis: o que vence logo fica no "Ver todos", no bloco da última linha mostrada.
+    expect(emBreve.items).toEqual([]);
+    expect(agora.cut).toEqual([{ kind: 'pantry', total: PANTRY_SHOWN + 4 }]);
+    expect(seeAllLabel(agora.cut[0])).toBe(`Ver todos da despensa (${PANTRY_SHOWN + 4})`);
     expect(emBreve.cut).toEqual([]);
+  });
+
+  it('com poucos vencidos, "Em breve" fica com o resto das seis, e o "Ver todos" vai com ele', () => {
+    const late = Array.from({ length: 2 }, (_, i) => item('pantry', LATE, `vencido ${i}`));
+    const later = Array.from({ length: PANTRY_SHOWN }, (_, i) => item('pantry', soon(i + 1), `vence em ${i + 1}`));
+    const { agora, emBreve } = arrangeToday([...later, ...late, item('document', soon(3), 'CNH')]);
+    expect(names(agora.items)).toEqual(['vencido 0', 'vencido 1']);
+    expect(names(emBreve.items)).toEqual(['vence em 1', 'vence em 2', 'vence em 3', 'CNH', 'vence em 4']);
+    expect(agora.cut).toEqual([]);
+    expect(emBreve.cut).toEqual([{ kind: 'pantry', total: PANTRY_SHOWN + 2 }]);
+  });
+
+  it('até seis, nos dois blocos, nada de "Ver todos"', () => {
+    const { agora, emBreve } = arrangeToday([
+      ...Array.from({ length: 3 }, (_, i) => item('pantry', LATE, `vencido ${i}`)),
+      ...Array.from({ length: PANTRY_SHOWN - 3 }, (_, i) => item('pantry', soon(1), `amanhã ${i}`)),
+    ]);
+    expect(agora.items).toHaveLength(3);
+    expect(emBreve.items).toHaveLength(PANTRY_SHOWN - 3);
+    expect([...agora.cut, ...emBreve.cut]).toEqual([]);
   });
 
   it('cada assunto tem o seu lugar na ordem', () => {

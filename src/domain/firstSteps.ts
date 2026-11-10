@@ -1,8 +1,8 @@
 // "Primeiros passos" da tela Hoje: quatro coisas que fazem a casa nova andar (convidar alguém, a primeira lista, a
 // primeira nota, as pessoas e os pets sem celular). Cada passo se marca pelo que a casa já tem, sem tabela nova; o
-// cartão some quando os quatro estão feitos, ou quando a pessoa dispensa (guardado no aparelho, por casa:
-// lib/firstSteps). Enquanto falta saber algum dos quatro, o cartão não aparece: um passo dado não pode aparecer como
-// por fazer.
+// cartão some quando os quatro estão feitos, ou quando a pessoa dispensa, e nos dois casos não volta (guardado no
+// aparelho, por casa: lib/firstSteps). Enquanto falta saber algum dos quatro, o cartão não aparece: um passo dado
+// não pode aparecer como por fazer.
 
 export type FirstStepKey = 'convidar' | 'lista' | 'nota' | 'pessoas';
 

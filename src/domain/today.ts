@@ -290,30 +290,40 @@ export interface Placed {
 
 export interface TodayBlockContent<T> {
   items: T[];
-  /** O assunto que passou do teto no bloco (só a despensa tem) e quantos ele tinha: o "Ver todos" diz. */
+  /** O assunto que passou do teto (só a despensa tem) e quantos ele tinha nos dois blocos: o "Ver todos" diz. */
   cut: { kind: TodayKind; total: number }[];
 }
 
-/** Quantos itens da despensa cada bloco mostra; o resto fica no "Ver todos" (depois de uma compra grande, seriam muitos). */
+/**
+ * Quantos itens da despensa a tela Hoje mostra, somando os dois blocos ("Agora" primeiro); o resto fica no "Ver
+ * todos" (depois de uma compra grande, seriam muitos, e a tela ficaria comprida, como era antes dos blocos).
+ */
 export const PANTRY_SHOWN = 6;
 
 const LIMITS: Partial<Record<TodayKind, number>> = { pantry: PANTRY_SHOWN };
 
 const rank = (kind: TodayKind) => TODAY_KIND_ORDER.indexOf(kind);
 
-function limit<T extends Placed>(sorted: T[]): TodayBlockContent<T> {
+/**
+ * O teto de cada assunto vale para os dois blocos juntos: "Agora" usa primeiro, "Em breve" fica com o que sobrar.
+ * O "Ver todos" (com o total dos dois) vai no fim do bloco da última linha mostrada daquele assunto.
+ */
+function limitBoth<T extends Placed>(agora: T[], emBreve: T[]): { agora: TodayBlockContent<T>; emBreve: TodayBlockContent<T> } {
   const seen = new Map<TodayKind, number>();
-  const items = sorted.filter((item) => {
+  const keep = (item: T) => {
     const count = (seen.get(item.kind) ?? 0) + 1;
     seen.set(item.kind, count);
     const max = LIMITS[item.kind];
     return max === undefined || count <= max;
-  });
-  const cut = [...seen].flatMap(([kind, total]) => {
+  };
+  const shown = { agora: agora.filter(keep), emBreve: emBreve.filter(keep) };
+  const cut = { agora: [] as TodayBlockContent<T>['cut'], emBreve: [] as TodayBlockContent<T>['cut'] };
+  for (const [kind, total] of seen) {
     const max = LIMITS[kind];
-    return max !== undefined && total > max ? [{ kind, total }] : [];
-  });
-  return { items, cut };
+    if (max === undefined || total <= max) continue;
+    cut[shown.emBreve.some((item) => item.kind === kind) ? 'emBreve' : 'agora'].push({ kind, total });
+  }
+  return { agora: { items: shown.agora, cut: cut.agora }, emBreve: { items: shown.emBreve, cut: cut.emBreve } };
 }
 
 /**
@@ -338,7 +348,10 @@ export function arrangeToday<T extends Placed>(items: readonly T[]): { agora: To
       // Infinity - Infinity é NaN: dois sem data empatam aqui.
       return (Number.isNaN(days) ? 0 : days) || rank(a.item.kind) - rank(b.item.kind) || a.index - b.index;
     });
-  return { agora: limit(agora.map(({ item }) => item)), emBreve: limit(emBreve.map(({ item }) => item)) };
+  return limitBoth(
+    agora.map(({ item }) => item),
+    emBreve.map(({ item }) => item),
+  );
 }
 
 /** O "Ver todos" do assunto cortado no bloco: "Ver todos da despensa (9)". */

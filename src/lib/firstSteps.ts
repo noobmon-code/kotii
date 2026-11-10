@@ -1,6 +1,7 @@
 // A dispensa dos "Primeiros passos" da tela Hoje, por casa, guardada neste aparelho (no navegador, o AsyncStorage
-// usa o localStorage). Não vai para o banco: é só um cartão de orientação, e cada aparelho dispensa o seu. Sem
-// armazenamento (modo privado, cota cheia), a dispensa dura enquanto o app está aberto.
+// usa o localStorage): pelo "Dispensar", ou com os quatro passos feitos (o cartão não volta para uma casa que já
+// andou). Não vai para o banco: é só um cartão de orientação, e cada aparelho dispensa o seu. Sem armazenamento
+// (modo privado, cota cheia), a dispensa dura enquanto o app está aberto.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useEffect, useSyncExternalStore } from 'react';
@@ -35,7 +36,7 @@ async function load(householdId: string) {
   emit();
 }
 
-/** Dispensa os primeiros passos da casa: some já, e fica guardado no aparelho. */
+/** Dispensa os primeiros passos da casa (o toque, ou os quatro feitos): some já, e fica guardado no aparelho. */
 export function dismissFirstSteps(householdId: string) {
   known.set(householdId, true);
   emit();
