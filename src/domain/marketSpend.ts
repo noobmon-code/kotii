@@ -279,7 +279,10 @@ export interface MarketMonth {
   /** "Farmácia, fora desta conta: R$ 42,00": o que foi pago nos itens de farmácia. */
   pharmacy: string | null;
   pharmacyCents: number;
-  /** Rascunhos do mês, que ainda não contam: a frase, os mais recentes para abrir e "e mais 2 em Finanças > Notas". */
+  /**
+   * Rascunhos do mês, que ainda não contam: a frase, os mais recentes para abrir e "e mais 2 na tela Hoje" ("em
+   * Finanças > Notas" com Finanças ligada).
+   */
   drafts: { label: string; receipts: MarketReceiptRef[]; more: string | null } | null;
   /**
    * "O que mudou": por que os itens custaram mais ou menos que na janela do mês anterior (a do cabeçalho), em
@@ -739,9 +742,17 @@ const spendStoreKey = (spend: MarketSpend) => `avulso:${listNameKey(spend.name) 
 
 /**
  * Tudo o que a tela "Mercado do mês" mostra, a partir das notas do mês e do mês anterior (com mercado e itens) e
- * dos gastos sem nota lançados como Mercado (`spends`). `today` diz se o mês é o corrente.
+ * dos gastos sem nota lançados como Mercado (`spends`). `today` diz se o mês é o corrente. `finance`: Finanças
+ * ligada (a chave de lib/features; sem a opção, desligada, como no app): só com ela os rascunhos que não cabem na
+ * tela são mandados para Finanças > Notas; sem ela, para a tela Hoje, que lista todos.
  */
-export function marketMonth(receipts: MarketReceipt[], month: string, today: string, spends: MarketSpend[] = []): MarketMonth {
+export function marketMonth(
+  receipts: MarketReceipt[],
+  month: string,
+  today: string,
+  spends: MarketSpend[] = [],
+  { finance = false }: { finance?: boolean } = {},
+): MarketMonth {
   const range = monthRange(month);
   // O total e as idas do cabeçalho: a mesma conta da entrada no resumo de gastos.
   const end = periodEnd(month, today);
@@ -1047,7 +1058,7 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
                 accessibilityLabel: `${storeName}, ${shortDate(date)}. Abrir a nota para revisar`,
               };
             }),
-            more: draftCount > DRAFTS_SHOWN ? `e mais ${draftCount - DRAFTS_SHOWN} em Finanças > Notas` : null,
+            more: draftCount > DRAFTS_SHOWN ? `e mais ${draftCount - DRAFTS_SHOWN} ${finance ? 'em Finanças > Notas' : 'na tela Hoje'}` : null,
           },
     change,
     emptyTitle: total.emptyTitle,

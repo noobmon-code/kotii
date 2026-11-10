@@ -4,13 +4,16 @@ import { aiUsageRows } from '../aiUsage';
 
 describe('aiUsageRows', () => {
   it('rotula cada uso e avisa quando está perto ou acabou', () => {
-    const rows = aiUsageRows([
-      { kind: 'chat', used: 12, lim: 300 },
-      { kind: 'photo', used: 85, lim: 100 },
-      { kind: 'menu', used: 20, lim: 20 },
-      { kind: 'nfce', used: 3, lim: 200 },
-      { kind: 'video', used: 1, lim: 1 },
-    ]);
+    const rows = aiUsageRows(
+      [
+        { kind: 'chat', used: 12, lim: 300 },
+        { kind: 'photo', used: 85, lim: 100 },
+        { kind: 'menu', used: 20, lim: 20 },
+        { kind: 'nfce', used: 3, lim: 200 },
+        { kind: 'video', used: 1, lim: 1 },
+      ],
+      { finance: true },
+    );
     expect(rows.map((r) => [r.label, r.level, r.ratio])).toEqual([
       ['Mensagens com o Nuke', 'ok', 0.04],
       ['Leituras de foto (notas e saúde)', 'perto', 0.85],
@@ -19,14 +22,20 @@ describe('aiUsageRows', () => {
     ]);
   });
 
-  it('mostra o consultor financeiro quando o servidor manda a linha (beta)', () => {
-    const rows = aiUsageRows([
-      { kind: 'chat', used: 0, lim: 300 },
-      { kind: 'finance', used: 85, lim: 100 },
-    ]);
+  const withAdvisor = [
+    { kind: 'chat', used: 0, lim: 300 },
+    { kind: 'finance', used: 85, lim: 100 },
+  ];
+
+  it('com Finanças ligada (lib/features), mostra o consultor financeiro quando o servidor manda a linha (beta)', () => {
+    const rows = aiUsageRows(withAdvisor, { finance: true });
     expect(rows.map((r) => [r.kind, r.label, r.used, r.limit, r.level])).toEqual([
       ['chat', 'Mensagens com o Nuke', 0, 300, 'ok'],
       ['finance', 'Mensagens com o consultor financeiro', 85, 100, 'perto'],
     ]);
+  });
+
+  it('com Finanças desligada, a linha do consultor não aparece, mesmo vindo do servidor: ele está atrás da chave', () => {
+    expect(aiUsageRows(withAdvisor, { finance: false }).map((r) => r.kind)).toEqual(['chat']);
   });
 });

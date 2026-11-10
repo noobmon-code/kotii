@@ -263,6 +263,8 @@ describe('nota da Sefaz com "não sou robô"', () => {
     await open(<PendingReceiptScreen />, client);
     expect(page()).toContain('Leia esta nota pelos prints da Sefaz');
     expect(page()).not.toContain('Esta nota não está mais pendente');
+    // Sem Finanças (lib/features), a lista de notas de lá não existe: a nota guardada aparece na tela Hoje.
+    expect(page()).toContain('A nota fica guardada neste aparelho, na tela Hoje, até você enviar os prints.');
     await press('Abrir a nota na Sefaz');
     expect(openExternal).toHaveBeenCalledWith(expect.stringContaining(`www.sefaz.pb.gov.br/nfce?p=${KEY}`));
 

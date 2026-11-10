@@ -1,9 +1,10 @@
-import { describe, expect, it, jest } from '@jest/globals';
+import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { router } from 'expo-router';
 import { act, create } from 'react-test-renderer';
 
 import { FEEDBACK_LIMIT, FEEDBACK_SENT } from '@/domain/appFeedback';
-import type { NukeAction } from '@/domain/nuke';
+import { NUKE_ACTION_UNAVAILABLE, type NukeAction } from '@/domain/nuke';
 import { FEATURES } from '@/lib/features';
 
 import { useAskNuke, useRunNukeAction } from '../nuke';
@@ -16,7 +17,8 @@ jest.mock('@/data/appFeedback', () => ({ sendAppFeedback: (input: { kind: string
 // As outras ações e o retrato da casa não entram aqui.
 jest.mock('@/data/market', () => ({ useAddToMarketList: () => ({ mutateAsync: jest.fn() }) }));
 jest.mock('@/data/home', () => ({ useSaveChore: () => ({ mutateAsync: jest.fn() }) }));
-jest.mock('@/data/finance', () => ({ useSaveExpense: () => ({ mutateAsync: jest.fn() }) }));
+const mockSaveExpense = jest.fn(async (_input: unknown) => undefined);
+jest.mock('@/data/finance', () => ({ useSaveExpense: () => ({ mutateAsync: (input: unknown) => mockSaveExpense(input) }) }));
 jest.mock('@/data/family', () => ({}));
 jest.mock('@/data/house', () => ({}));
 jest.mock('@/data/health', () => ({}));
@@ -32,6 +34,14 @@ jest.mock('@/lib/supabase', () => ({
   supabase: { functions: { invoke: (name: string, options: { body: Record<string, unknown> }) => mockInvoke(name, options) } },
 }));
 jest.mock('expo-router', () => ({ router: { back: jest.fn(), navigate: jest.fn() } }));
+
+afterEach(() => {
+  // A chave de Finanças ligada num teste não passa para o seguinte, mesmo quando ele falha no meio.
+  jest.restoreAllMocks();
+  jest.mocked(router.navigate).mockClear();
+  jest.mocked(router.back).mockClear();
+  mockSaveExpense.mockClear();
+});
 
 function runner() {
   let run: ((action: NukeAction) => Promise<string>) | undefined;
@@ -107,9 +117,47 @@ describe('a pergunta ao Nuke', () => {
     });
 
     it('com ela ligada, vêm', async () => {
-      const finance = jest.replaceProperty(FEATURES, 'finance', true);
+      jest.replaceProperty(FEATURES, 'finance', true);
       expect(await answerTypes()).toEqual(['add_expense', 'contas', 'despensa']);
-      finance.restore();
     });
+  });
+});
+
+describe('as ações de Finanças guardadas na conversa (de antes da chave)', () => {
+  const expense: NukeAction = { type: 'add_expense', label: 'Registrar', description: 'Feira', amount: 42.5, category: 'mercado', spent_on: '2026-10-24' };
+
+  it('com Finanças desligada (lib/features), a execução recusa: nada vai para os gastos, e nenhuma tela de Finanças se abre', async () => {
+    await expect(runner()(expense)).rejects.toThrow(NUKE_ACTION_UNAVAILABLE);
+    expect(mockSaveExpense).not.toHaveBeenCalled();
+    for (const screen of ['contas', 'financas'] as const) {
+      await expect(runner()({ type: 'open_screen', label: 'Ver', screen })).rejects.toThrow(NUKE_ACTION_UNAVAILABLE);
+    }
+    // Nem fecha a conversa: a pessoa fica onde estava, com o aviso.
+    expect(router.back).not.toHaveBeenCalled();
+    expect(router.navigate).not.toHaveBeenCalled();
+  });
+
+  it('com ela ligada, o gasto é lançado como antes', async () => {
+    jest.replaceProperty(FEATURES, 'finance', true);
+    await expect(runner()(expense)).resolves.toBe('Gasto registrado.');
+    expect(mockSaveExpense).toHaveBeenCalledWith({
+      values: { description: 'Feira', amount: 42.5, spent_on: '2026-10-24', category: 'mercado', notes: null },
+    });
+  });
+});
+
+describe('"Ver notas" do Nuke', () => {
+  const notas: NukeAction = { type: 'open_screen', label: 'Ver notas', screen: 'notas' };
+
+  it('com Finanças desligada (lib/features), abre o Mercado do mês: as notas de Finanças não existem', async () => {
+    await runner()(notas);
+    expect(router.back).toHaveBeenCalledTimes(1);
+    expect(router.navigate).toHaveBeenCalledWith('/mercado');
+  });
+
+  it('com ela ligada, abre Finanças → Notas', async () => {
+    jest.replaceProperty(FEATURES, 'finance', true);
+    await runner()(notas);
+    expect(router.navigate).toHaveBeenCalledWith({ pathname: '/financas', params: { aba: 'notas' } });
   });
 });

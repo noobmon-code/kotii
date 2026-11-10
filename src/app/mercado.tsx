@@ -100,7 +100,7 @@ export default function MarketMonthScreen() {
   /** A altura em que o card "O que mudou" está, no mesmo espaço da chave. */
   const changesY = useRef(0);
   const summary = useMemo(
-    () => (market.data ? marketMonth(market.data.receipts, month, today, market.data.spends) : null),
+    () => (market.data ? marketMonth(market.data.receipts, month, today, market.data.spends, { finance: FEATURES.finance }) : null),
     [market.data, month, today],
   );
   const trend = useMemo(
@@ -205,7 +205,8 @@ export default function MarketMonthScreen() {
           trend={trend}
           categoryTrend={categoryTrend}
           onMonth={goTo}
-          vsSummary={marketVsSummary(month, today, 'mes')}
+          // Sem Finanças (lib/features) não há o Resumo, nem os gastos lançados lá: nada a explicar no pé da tela.
+          vsSummary={FEATURES.finance ? marketVsSummary(month, today, 'mes') : null}
           category={category}
           onCategory={chooseCategory}
           storeMonth={storeMonth}
@@ -271,8 +272,8 @@ function MonthBody({
   categoryTrend: MarketTrend | null;
   /** Abre outro mês; `keepCategory` mantém a categoria escolhida. */
   onMonth: (month: string, keepCategory?: boolean) => void;
-  /** Por que este total não é a barra "Mercado" do Resumo. */
-  vsSummary: string;
+  /** Por que este total não é a barra "Mercado" do Resumo; null sem Finanças, que é onde o Resumo fica. */
+  vsSummary: string | null;
   stale: boolean;
   onRetry: () => void;
   view: MarketView;
@@ -430,7 +431,7 @@ function MonthBody({
       )}
 
       {/* No pé da tela, também no mês sem ida: por que este total não é a barra do Resumo. */}
-      <Text variant="small">{vsSummary}</Text>
+      {vsSummary ? <Text variant="small">{vsSummary}</Text> : null}
     </>
   );
 }

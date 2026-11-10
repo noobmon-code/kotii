@@ -28,7 +28,9 @@ import { doseKey, dosesForDay } from '@/domain/medications';
 import { refillSummary } from '@/domain/medicationStock';
 import { menuLines } from '@/domain/menu';
 import {
+  actionAvailable,
   buildNukeContext,
+  NUKE_ACTION_UNAVAILABLE,
   NUKE_FEATURES,
   NUKE_LIST_LIMIT,
   parseActions,
@@ -264,6 +266,9 @@ export function useRunNukeAction() {
   const saveChore = useSaveChore();
   const saveExpense = useSaveExpense();
   return async (action: NukeAction): Promise<string> => {
+    // Segunda guarda, depois da tela: uma ação guardada na conversa de antes da chave de Finanças (lib/features)
+    // não grava nos gastos nem tenta abrir uma tela que não existe.
+    if (!actionAvailable(action, { finance: FEATURES.finance })) throw new Error(NUKE_ACTION_UNAVAILABLE);
     switch (action.type) {
       case 'add_to_list': {
         let added = 0;

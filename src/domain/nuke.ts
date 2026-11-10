@@ -197,15 +197,31 @@ const isDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{
 const isText = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 
 /**
+ * Se este app oferece a ação. Sem Finanças (`finance` false, a chave de lib/features), não oferece lançar um gasto
+ * nem abrir Finanças ou as contas: a ação gravaria nos gastos, ou abriria uma tela que não existe. Vale para a
+ * resposta que chega (parseActions) e também para as ações guardadas na conversa do aparelho, que voltam como
+ * estavam quando foram sugeridas (de antes da chave, por exemplo): a tela não mostra o botão delas e a execução
+ * recusa. A conversa guardada fica como está, e com a chave ligada de novo elas voltam.
+ */
+export function actionAvailable(action: { type: string; screen?: string }, { finance }: { finance: boolean }): boolean {
+  if (finance) return true;
+  if (action.type === 'add_expense') return false;
+  return !(action.type === 'open_screen' && FINANCE_SCREENS.has(String(action.screen)));
+}
+
+/** A recusa de uma ação que este app não oferece (actionAvailable), se ela chegar a ser executada. */
+export const NUKE_ACTION_UNAVAILABLE = 'Isso não está disponível nesta versão do app.';
+
+/**
  * Confere cada ação que veio da função antes de mostrar um botão para ela. Sem Finanças (`finance` false, a chave
  * de lib/features), a função continua podendo sugerir lançar um gasto ou abrir Finanças ou as contas: essas ações
- * ficam de fora, como as de um tipo que o app não conhece.
+ * ficam de fora (actionAvailable), como as de um tipo que o app não conhece.
  */
-export function parseActions(raw: unknown, { finance }: { finance: boolean }): NukeAction[] {
+export function parseActions(raw: unknown, options: { finance: boolean }): NukeAction[] {
   if (!Array.isArray(raw)) return [];
   const out: NukeAction[] = [];
   for (const a of raw) {
-    if (!a || typeof a !== 'object' || !isText(a.label)) continue;
+    if (!a || typeof a !== 'object' || !isText(a.label) || !actionAvailable(a, options)) continue;
     if (a.type === 'add_to_list' && Array.isArray(a.items)) {
       const items = a.items.filter(
         (i: { name?: unknown; quantity?: unknown; unit?: unknown; category?: unknown }) =>
@@ -216,7 +232,6 @@ export function parseActions(raw: unknown, { finance }: { finance: boolean }): N
       out.push({ type: 'create_chore', label: a.label, title: a.title, due_on: a.due_on, recurrence: a.recurrence });
     } else if (
       a.type === 'add_expense' &&
-      finance &&
       isText(a.description) &&
       typeof a.amount === 'number' &&
       a.amount > 0 &&
@@ -224,7 +239,7 @@ export function parseActions(raw: unknown, { finance }: { finance: boolean }): N
       isDate(a.spent_on)
     ) {
       out.push({ type: 'add_expense', label: a.label, description: a.description, amount: a.amount, category: a.category, spent_on: a.spent_on });
-    } else if (a.type === 'open_screen' && SCREENS.has(a.screen) && (finance || !FINANCE_SCREENS.has(a.screen))) {
+    } else if (a.type === 'open_screen' && SCREENS.has(a.screen)) {
       out.push({ type: 'open_screen', label: a.label, screen: a.screen });
     } else if (a.type === 'send_feedback' && FEEDBACK_KINDS.includes(a.kind)) {
       // O texto aparado e no tamanho da coluna: o cartão mostra o que vai, e o banco não recusa.

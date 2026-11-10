@@ -4,6 +4,7 @@ import { useCallback, useRef } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { aiUsageRows } from '@/domain/aiUsage';
+import { FEATURES } from '@/lib/features';
 import { supabase, unwrap } from '@/lib/supabase';
 import { Card, Section, Text } from '@/ui/primitives';
 import { radius, space, useColors } from '@/ui/theme';
@@ -29,7 +30,8 @@ export function AiUsageSection() {
     }, [refetch]),
   );
   if (!usage.data) return null;
-  const rows = aiUsageRows(usage.data);
+  // Sem Finanças (lib/features), sem a linha do consultor financeiro.
+  const rows = aiUsageRows(usage.data, { finance: FEATURES.finance });
 
   return (
     <Section title="Uso da IA neste mês">

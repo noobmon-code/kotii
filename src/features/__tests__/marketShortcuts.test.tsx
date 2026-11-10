@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
-import { PRODUCT_CATEGORY_NOTE } from '@/domain/productCategory';
+import { productCategoryNote } from '@/domain/productCategory';
 import { ShoppingListsPanel } from '@/features/ShoppingListsPanel';
 import { PickerModal } from '@/ui/PickerModal';
 import { FeatureCard } from '@/ui/FeatureCard';
@@ -78,7 +78,7 @@ describe('o seletor de categoria', () => {
         <PickerModal
           visible
           title="Categoria"
-          message={PRODUCT_CATEGORY_NOTE}
+          message={productCategoryNote(false)}
           options={[{ id: 'graos', title: 'Grãos, massas e cereais' }]}
           onSelect={() => {}}
           onClose={() => {}}
@@ -86,7 +86,7 @@ describe('o seletor de categoria', () => {
       );
     });
     const text = texts(renderer!.toJSON());
-    expect(text.slice(0, 2)).toEqual(['Categoria', PRODUCT_CATEGORY_NOTE]);
+    expect(text.slice(0, 2)).toEqual(['Categoria', productCategoryNote(false)]);
     expect(text).toContain('Grãos, massas e cereais');
   });
 

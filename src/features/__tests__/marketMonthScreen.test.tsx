@@ -292,6 +292,8 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
+  // A chave de Finanças ligada num teste não passa para o seguinte, mesmo quando ele falha no meio.
+  jest.restoreAllMocks();
 });
 
 describe('mês carregado', () => {
@@ -318,7 +320,14 @@ describe('mês carregado', () => {
     expect(text).not.toContain(['Assaí', '1 ida'].join('\n'));
     // O total pago (270) não é a soma dos itens (260): a frase diz sobre o que são as porcentagens.
     expect(text).toContain('As porcentagens são sobre os itens lidos (R$ 260,00).');
-    // No fim da tela, pequeno, por que este total não é a barra do Resumo.
+    // Sem Finanças (lib/features), não há o Resumo: o pé da tela não compara com ele nem fala dos gastos lançados lá.
+    expect(text).not.toContain('Resumo');
+    expect(text).not.toContain('gastos avulsos');
+  });
+
+  it('com Finanças ligada, o fim da tela diz, pequeno, por que este total não é a barra do Resumo', async () => {
+    jest.replaceProperty(FEATURES, 'finance', true);
+    const text = await mount();
     expect(text.split('\n').at(-1)).toBe(NOT_THE_RESUMO);
   });
 
@@ -347,9 +356,9 @@ describe('mês carregado', () => {
     expect(text).toContain(['Outros', 'R$ 0,50', '<1%'].join('\n'));
     expect(text).not.toContain('Medicamentos');
     expect(text).toContain('As porcentagens são sobre os itens lidos (R$ 260,00).');
-    // O topo e a frase do fim continuam.
+    // O topo continua (a frase do fim, sobre a barra do Resumo, só existe com Finanças ligada).
     expect(text).toContain('R$ 270,00 em 2 idas');
-    expect(text.split('\n').at(-1)).toBe(NOT_THE_RESUMO);
+    expect(text).not.toContain('Resumo');
 
     await choose('Idas');
     expect(mockRouter.setParams).toHaveBeenLastCalledWith({ aba: 'idas' });
@@ -501,9 +510,21 @@ describe('como este total fecha', () => {
     await mount();
     await press(`Como este total fecha. ${CLOSING.replace('1 nota que espera', '4 notas que esperam')}`);
     const text = page();
-    expect(text).toContain(['Assaí', '· 14 out', 'Revisar', 'Assaí', '· 13 out', 'Revisar', 'Assaí', '· 12 out', 'Revisar', 'e mais 1 em Finanças > Notas'].join('\n'));
+    // Sem Finanças (lib/features), o resto está na tela Hoje, que lista todos os rascunhos.
+    expect(text).toContain(['Assaí', '· 14 out', 'Revisar', 'Assaí', '· 13 out', 'Revisar', 'Assaí', '· 12 out', 'Revisar', 'e mais 1 na tela Hoje'].join('\n'));
     expect(text).not.toContain('· 11 out');
+    expect(text).not.toContain('Finanças');
     // O resto é só texto: nada na tela leva para as abas.
+    expect(renderer!.root.findAll((node) => typeof node.props.onPress === 'function' && String(node.props.accessibilityLabel ?? '').includes('Hoje'))).toEqual([]);
+  });
+
+  it('com Finanças ligada, o resto dos rascunhos está em Finanças > Notas', async () => {
+    jest.replaceProperty(FEATURES, 'finance', true);
+    const drafts = [11, 12, 13, 14].map((day) => receipt(`r${day}`, at(10, day), [], { status: 'draft' }));
+    mockState.query = loaded([...HOUSE.filter((r) => r.status === 'confirmed'), ...drafts]);
+    await mount();
+    await press(`Como este total fecha. ${CLOSING.replace('1 nota que espera', '4 notas que esperam')}`);
+    expect(page()).toContain('e mais 1 em Finanças > Notas');
     expect(renderer!.root.findAll((node) => typeof node.props.onPress === 'function' && String(node.props.accessibilityLabel ?? '').includes('Finanças'))).toEqual([]);
   });
 
@@ -734,11 +755,10 @@ describe('sem notas, carregando e com erro', () => {
   });
 
   it('com Finanças ligada, o mês vazio lembra que o gasto lançado como Mercado lá também conta', async () => {
-    const finance = jest.replaceProperty(FEATURES, 'finance', true);
+    jest.replaceProperty(FEATURES, 'finance', true);
     mockState.query = loaded([]);
     const text = await mount();
     expect(text).toContain('As compras aparecem aqui quando uma nota fiscal é confirmada ou um gasto é lançado como Mercado em Finanças. Fotografe o cupom ou leia o QR code da nota.');
-    finance.restore();
   });
 
   it('mês corrente com uma nota de data depois de hoje: ela fica de fora do total, e os detalhes dizem e levam à nota', async () => {
@@ -1148,7 +1168,20 @@ describe('o mês pela tendência e a frase do pé', () => {
     expect(categoryCard()).toBeUndefined();
   });
 
-  it('a frase do pé aparece também no mês sem ida; num mês passado, sem falar de data depois de hoje', async () => {
+  it('sem Finanças (lib/features), nem o mês sem ida nem um mês passado comparam com o Resumo ou falam dos gastos de lá', async () => {
+    mockState.query = loaded([]);
+    let text = await mount();
+    expect(text).toContain('Nenhuma compra de mercado em outubro');
+    for (const absent of ['Resumo', 'gastos avulsos', 'contas pagas', 'Finanças']) expect(text).not.toContain(absent);
+    await act(async () => renderer?.unmount());
+    mockState.query = loaded(HOUSE);
+    mockState.params = { mes: '2026-09' };
+    text = await mount();
+    for (const absent of ['Resumo', 'gastos avulsos', 'contas pagas', 'Finanças']) expect(text).not.toContain(absent);
+  });
+
+  it('com Finanças ligada, a frase do pé aparece também no mês sem ida; num mês passado, sem falar de data depois de hoje', async () => {
+    jest.replaceProperty(FEATURES, 'finance', true);
     mockState.query = loaded([]);
     let text = await mount();
     expect(text).toContain('Nenhuma compra de mercado em outubro');
@@ -1165,6 +1198,11 @@ describe('o mês pela tendência e a frase do pé', () => {
 });
 
 describe('gastos de mercado lançados sem nota', () => {
+  // Só com Finanças (lib/features) a busca traz esses gastos: sem ela, fetchMarketSpends não devolve nenhum.
+  beforeEach(() => {
+    jest.replaceProperty(FEATURES, 'finance', true);
+  });
+
   /** Um gasto avulso ("gasto:id"), ou o pagamento de uma conta ("conta:id da conta"), lançado como Mercado em Finanças. */
   const spend = (ref: string, date: string, amount: number, name: string): MarketSpend => {
     const [source, refId] = ref.split(':') as ['gasto' | 'conta', string];

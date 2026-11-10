@@ -23,9 +23,14 @@ export interface AiUsageRow {
   level: 'ok' | 'perto' | 'acabou';
 }
 
-export function aiUsageRows(rows: { kind: string; used: number; lim: number }[]): AiUsageRow[] {
+/**
+ * As linhas que a aba mostra, na ordem em que vêm. Sem Finanças (`finance` false, a chave de lib/features), sem a
+ * do consultor financeiro: o servidor continua mandando a linha para quem tem o beta, mas o consultor está atrás da
+ * chave e a pessoa não chega a ele. O painel do app lê AI_KIND_LABELS por conta própria e não passa por aqui.
+ */
+export function aiUsageRows(rows: { kind: string; used: number; lim: number }[], { finance }: { finance: boolean }): AiUsageRow[] {
   return rows
-    .filter((r): r is { kind: AiKind; used: number; lim: number } => r.kind in AI_KIND_LABELS)
+    .filter((r): r is { kind: AiKind; used: number; lim: number } => r.kind in AI_KIND_LABELS && (finance || r.kind !== 'finance'))
     .map((r) => {
       const ratio = r.lim > 0 ? Math.min(1, r.used / r.lim) : 1;
       return {

@@ -7,7 +7,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAskNuke, useNukeContext, useRunNukeAction } from '@/data/nuke';
 import { FEEDBACK_DISCLOSURE } from '@/domain/appFeedback';
 import { todayISO } from '@/domain/dates';
-import { describeAction, historyForApi, nukeIntro, nukeSuggestions, type NukeAction, type NukeMessage } from '@/domain/nuke';
+import {
+  actionAvailable,
+  describeAction,
+  historyForApi,
+  nukeIntro,
+  nukeSuggestions,
+  type NukeAction,
+  type NukeMessage,
+} from '@/domain/nuke';
 import {
   clearConversation,
   conversationEpoch,
@@ -40,6 +48,15 @@ function actionButton(type: NukeAction['type']): { title: string; icon: keyof ty
   if (type === 'open_screen') return { title: 'Abrir', icon: 'arrow-right' };
   if (type === 'send_feedback') return { title: 'Enviar', icon: 'send' };
   return { title: 'Fazer', icon: 'check' };
+}
+
+/**
+ * As ações da mensagem que este app oferece, cada uma com o índice dela na mensagem (é por ele que `run` marca a
+ * feita). A conversa guardada no aparelho traz as ações como foram sugeridas: sem Finanças (lib/features), a de
+ * lançar um gasto e a de abrir Finanças ou as contas não aparecem (actionAvailable).
+ */
+function shownActions(message: NukeMessage) {
+  return (message.actions ?? []).flatMap((action, index) => (actionAvailable(action, { finance: FEATURES.finance }) ? [{ action, index }] : []));
 }
 
 export default function NukeScreen() {
@@ -210,7 +227,7 @@ export default function NukeScreen() {
                       {message.text}
                     </Text>
                   </View>
-                  {message.actions?.map((action, index) => (
+                  {shownActions(message).map(({ action, index }) => (
                     <View key={index} style={[styles.action, glass]}>
                       {/* O recado pode ser longo: o ícone fica no alto, ao lado do começo dele. */}
                       <Row style={action.type === 'send_feedback' ? styles.top : undefined}>

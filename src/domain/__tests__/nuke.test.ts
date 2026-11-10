@@ -1,7 +1,17 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { FEEDBACK_MAX_LENGTH } from '../appFeedback';
-import { buildNukeContext, describeAction, historyForApi, nukeIntro, nukeSuggestions, type NukeSnapshot, parseActions } from '../nuke';
+import {
+  actionAvailable,
+  buildNukeContext,
+  describeAction,
+  historyForApi,
+  nukeIntro,
+  nukeSuggestions,
+  type NukeAction,
+  type NukeSnapshot,
+  parseActions,
+} from '../nuke';
 import { supplyLines } from '../supplies';
 
 const snapshot: NukeSnapshot = {
@@ -226,6 +236,23 @@ describe('nuke history and actions', () => {
         { type: 'open_screen', label: 'Ver a despensa', screen: 'despensa' },
         { type: 'create_chore', label: 'Criar', title: 'Trocar filtro', due_on: '2026-10-01', recurrence: 'monthly' },
       ]);
+    });
+
+    it('a mesma regra vale para as ações guardadas na conversa (de antes da chave): as de Finanças não são oferecidas', () => {
+      // Como voltam do aparelho: já conferidas quando chegaram, e algumas já feitas.
+      const stored: (NukeAction & { done?: boolean })[] = [
+        { type: 'add_expense', label: 'Registrar', description: 'Feira', amount: 42.5, category: 'mercado', spent_on: '2026-09-27' },
+        { type: 'add_expense', label: 'Registrar', description: 'Pão', amount: 8, category: 'mercado', spent_on: '2026-09-26', done: true },
+        { type: 'open_screen', label: 'Ver Finanças', screen: 'financas' },
+        { type: 'open_screen', label: 'Ver contas', screen: 'contas' },
+        { type: 'open_screen', label: 'Ver notas', screen: 'notas' },
+        { type: 'create_chore', label: 'Criar', title: 'Trocar filtro', due_on: '2026-10-01', recurrence: 'monthly' },
+        { type: 'send_feedback', label: 'Mandar recado', kind: 'elogio', text: 'Gostei da lista.' },
+      ];
+      const offered = (finance: boolean) =>
+        stored.filter((a) => actionAvailable(a, { finance })).map((a) => (a.type === 'open_screen' ? a.screen : a.type));
+      expect(offered(false)).toEqual(['notas', 'create_chore', 'send_feedback']);
+      expect(offered(true)).toEqual(['add_expense', 'add_expense', 'financas', 'contas', 'notas', 'create_chore', 'send_feedback']);
     });
 
     it('ligada, as mesmas ações passam', () => {

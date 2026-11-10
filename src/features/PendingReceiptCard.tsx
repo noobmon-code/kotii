@@ -4,6 +4,7 @@ import { Platform, StyleSheet, View } from 'react-native';
 
 import { pendingReceiptCnpj, pendingReceiptSubtitle, sefazLink, type PendingReceipt } from '@/domain/pendingReceipts';
 import { MAX_RECEIPT_PHOTOS } from '@/domain/receiptPhotos';
+import { FEATURES } from '@/lib/features';
 import { openExternal } from '@/lib/openLink';
 import { confirmAction, notify } from '@/ui/dialogs';
 import { Badge, Button, Card, IconBadge, ListRow, Text } from '@/ui/primitives';
@@ -76,9 +77,10 @@ export function PendingReceiptCard({
           onPress={onRetrySefaz}
         />
       ) : null}
-      {/* No iPhone, o Safari e o Kotii da tela de início guardam cada um as suas: no site, "neste app". */}
+      {/* No iPhone, o Safari e o Kotii da tela de início guardam cada um as suas: no site, "neste app". Sem Finanças
+          (lib/features), a lista de notas de lá não existe: a nota aparece na tela Hoje. */}
       <Text variant="small">
-        {`A nota fica guardada ${Platform.OS === 'web' ? 'neste app' : 'neste aparelho'}, em Finanças → Notas e na tela Hoje, até você enviar os prints.`}
+        {`A nota fica guardada ${Platform.OS === 'web' ? 'neste app' : 'neste aparelho'}, ${FEATURES.finance ? 'em Finanças → Notas e na tela Hoje' : 'na tela Hoje'}, até você enviar os prints.`}
       </Text>
 
       <View style={styles.steps}>

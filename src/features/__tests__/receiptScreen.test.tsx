@@ -379,6 +379,8 @@ afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
   client.clear();
+  // A chave de Finanças ligada num teste não passa para o seguinte, mesmo quando ele falha no meio.
+  jest.restoreAllMocks();
 });
 
 describe('"Quem pagou" e a chave de Finanças (lib/features)', () => {
@@ -390,10 +392,9 @@ describe('"Quem pagou" e a chave de Finanças (lib/features)', () => {
   });
 
   it('ligada: a pergunta fica, com quem a nota tem anotado', async () => {
-    const finance = jest.replaceProperty(FEATURES, 'finance', true);
+    jest.replaceProperty(FEATURES, 'finance', true);
     await open();
     expect(renderer!.root.findAllByType(PayerChips).map((chips) => chips.props.value)).toEqual([null]);
-    finance.restore();
   });
 });
 

@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { planHouseReminders } from '@/domain/houseReminders';
-import { syncOtherHouses, useHouseReminderData } from '@/features/useReminderSync';
+import { syncOtherHouses, useHouseReminderData, useReminderSync } from '@/features/useReminderSync';
 import { FEATURES } from '@/lib/features';
 import type { HouseReminderData } from '@/lib/reminders';
 import type { Medication, MedicationDose } from '@/lib/types';
@@ -25,6 +25,8 @@ const mockState = {
   billsEnabled: [] as (boolean | undefined)[],
   billsRefetched: 0,
   billsFetchedFor: [] as unknown[],
+  /** O que useReminderSync chama de lib/reminders ao abrir, na ordem. */
+  opened: [] as string[],
 };
 
 const mockQuery = <T,>(data: T) => ({ data, refetch: async () => ({ data }) });
@@ -38,9 +40,14 @@ jest.mock('@/lib/supabase', () => ({ supabase: {}, unwrap: (r: { data: unknown }
 jest.mock('@/lib/auth', () => ({ useHousehold: () => ({ data: undefined }) }));
 jest.mock('@/lib/reminders', () => ({
   anyHouseReminderKind: async () => true,
+  dropHiddenHouseReminders: async () => {
+    mockState.opened.push('dropHiddenHouseReminders');
+  },
   householdsWithMedicationReminders: async () => new Set<string>(),
   pruneHouseholdReminders: async () => undefined,
-  reconcileReminders: async () => undefined,
+  reconcileReminders: async () => {
+    mockState.opened.push('reconcileReminders');
+  },
   syncReminders: async () => undefined,
   syncHouseReminders: async (data: HouseReminderData, target: { householdId: string }) => {
     mockState.synced.push({ data, householdId: target.householdId });
@@ -170,6 +177,7 @@ beforeEach(() => {
     billsEnabled: [],
     billsRefetched: 0,
     billsFetchedFor: [],
+    opened: [],
   });
   seen = undefined;
 });
@@ -296,5 +304,23 @@ describe('as contas e a chave de Finanças (lib/features)', () => {
     await syncOtherHouses(queryClient, houses, 'aberta');
     expect(mockState.billsFetchedFor).toEqual([{ house: 'praia' }]);
     expect(mockState.synced[0].data.bills).toEqual([luz]);
+  });
+});
+
+describe('ao abrir o app (useReminderSync)', () => {
+  function Sync() {
+    useReminderSync();
+    return null;
+  }
+
+  it('tira os avisos já agendados dos tipos escondidos (os de contas, sem Finanças) uma vez, antes de arrumar a agenda', async () => {
+    // Numa casa sem nenhum outro aviso ligado, syncOtherHouses nem refaz os avisos: é esta chamada que tira os de contas.
+    await act(async () => {
+      renderer = create(<Sync />);
+    });
+    expect(mockState.opened).toEqual(['dropHiddenHouseReminders', 'reconcileReminders']);
+    // Redesenhar não chama de novo.
+    await act(async () => renderer!.update(<Sync />));
+    expect(mockState.opened).toEqual(['dropHiddenHouseReminders', 'reconcileReminders']);
   });
 });
