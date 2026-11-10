@@ -105,6 +105,8 @@ export const shadows = {
   primary: '0px 6px 16px rgba(54, 86, 244, 0.28)',
   /** Pílula pequena sobre o véu ("Ver a agenda"). */
   pill: '0px 4px 12px rgba(120, 64, 40, 0.08)',
+  /** Sombra por dentro do vidro afundado (a aba aberta), em cima à esquerda. */
+  inset: 'inset 1px 1px 3px rgba(0, 0, 0, 0.1)',
 } as const;
 
 /**

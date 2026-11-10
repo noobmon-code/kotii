@@ -1,6 +1,6 @@
-// Barra de abas "Hora dourada": uma pílula de vidro solta do rodapé, com a aba aberta num destaque redondo
-// (ícone de linha e rótulo juntos). Feita à mão, porque o destaque da barra do navegador é um retângulo de
-// cantos vivos, que vaza da curva da pílula. Como na barra padrão, cada aba é um link na web (abre em outra aba do
+// Barra de abas "Hora dourada": uma pílula de vidro solta do rodapé, com a aba aberta num círculo de vidro
+// (ícone de linha e rótulo juntos), como a "Aba" ativa do kit do Figma. Feita à mão, porque o destaque da barra
+// do navegador é um retângulo de cantos vivos, que vaza da curva da pílula. Como na barra padrão, cada aba é um link na web (abre em outra aba do
 // navegador com ctrl/cmd ou o botão do meio) e, no iPhone, o leitor de tela diz a posição dela.
 
 import type { BottomTabBarProps } from 'expo-router/js-tabs';
@@ -28,15 +28,23 @@ export const TAB_BAR_HEIGHT = 72;
 export const tabBarBottomGap = (insets: Pick<EdgeInsets, 'bottom'>) => Math.max(insets.bottom, space.md);
 
 // As medidas do lado: num celular de 360, cada aba tem (360 - 32 - 2 - 2 * 4) / 5 = 63,6 e o rótulo, 63,6 - 12 = 51,6,
-// o bastante para "Compras", o rótulo mais largo (46,6 em Nunito 11 ExtraBold). "Configurações" (74,8) não cabe: na
+// o bastante para "Compras", o rótulo mais largo (46,6 em Nunito 11 ExtraBold), que passa 2 de cada lado do círculo
+// da aba aberta (TAB_ACTIVE_SIZE). "Configurações" (74,8) não cabe: na
 // barra a aba é "Ajustes", e "Configurações" fica como título da tela. Com a fonte grande do aparelho, o rótulo cresce
 // só até 1,2x e encolhe até 85% para caber, em vez de ser cortado. Com a chave de Finanças ligada (lib/features), são
 // seis abas e o rótulo tem (360 - 42) / 6 - 12 = 41: "Compras" e "Finanças" encolhem no aparelho (no navegador, que
 // não encolhe o texto, o fim pode ser cortado).
 /** O recuo da barra, dos lados. */
 export const TAB_BAR_PADDING = 4;
-/** O recuo da pílula de cada aba (o destaque da aba aberta), dos lados. */
+/** O recuo do rótulo de cada aba, dos lados. */
 export const TAB_PILL_PADDING = 6;
+/**
+ * O destaque da aba aberta: um círculo de 55, sempre redondo. Um rótulo mais largo que ele ("Compras") passa um
+ * pouco da borda, como no kit, em vez de esticar o círculo ou ser cortado.
+ */
+export const TAB_ACTIVE_SIZE = 55;
+/** O azul do destaque: a cor de ação a 12%. */
+export const TAB_ACTIVE_TINT = 0.12;
 export const TAB_LABEL_MAX_SCALE = 1.2;
 export const TAB_LABEL_MIN_SCALE = 0.85;
 
@@ -128,7 +136,20 @@ export function TabBar({ state, descriptors, navigation, insets }: BottomTabBarP
             pressOpacity={1}
             pressColor="transparent"
             style={styles.item}>
-            <View style={[styles.pill, focused && { backgroundColor: withAlpha(c.primary, 0.12) }]}>
+            <View style={styles.pill}>
+              {focused ? (
+                // O vidro: uma sombra leve por dentro, em cima à esquerda, e um fio de luz do lado oposto.
+                <View
+                  testID="tab-active"
+                  style={[
+                    styles.active,
+                    {
+                      backgroundColor: withAlpha(c.primary, TAB_ACTIVE_TINT),
+                      boxShadow: `${shadows.inset}, inset -1px -1px 1px ${c.glassEdge}`,
+                    },
+                  ]}
+                />
+              ) : null}
               {icon ? <TabIcon name={icon} color={color} /> : null}
               <Text
                 style={[styles.label, focused && styles.labelActive, { color }]}
@@ -159,14 +180,24 @@ const styles = StyleSheet.create({
   },
   item: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   pill: {
-    minWidth: 46,
+    minWidth: TAB_ACTIVE_SIZE,
+    minHeight: TAB_ACTIVE_SIZE,
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 2,
     paddingHorizontal: TAB_PILL_PADDING,
     paddingVertical: 8,
-    borderRadius: radius.pill,
-    borderCurve: 'continuous',
-    overflow: 'hidden',
+  },
+  // No meio da aba, atrás do ícone e do rótulo, e fora da conta do espaço deles.
+  active: {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    width: TAB_ACTIVE_SIZE,
+    height: TAB_ACTIVE_SIZE,
+    marginLeft: -TAB_ACTIVE_SIZE / 2,
+    marginTop: -TAB_ACTIVE_SIZE / 2,
+    borderRadius: TAB_ACTIVE_SIZE / 2,
   },
   label: { fontFamily: fonts.bold, fontSize: 11, lineHeight: 15 },
   labelActive: { fontFamily: fonts.heavy },
