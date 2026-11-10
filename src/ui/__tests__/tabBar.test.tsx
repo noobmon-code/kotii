@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { createBottomTabNavigator } from 'expo-router/build/react-navigation/bottom-tabs';
 import { NavigationContainer, PlatformPressable } from 'expo-router/react-navigation';
 import { Platform, Text as RNText } from 'react-native';
+import { Path, Svg } from 'react-native-svg';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
-import { TAB_BAR_PADDING, TAB_LABEL_MAX_SCALE, TAB_LABEL_MIN_SCALE, TAB_PILL_PADDING, TabBar } from '../TabBar';
+import { TAB_BAR_PADDING, TAB_ICONS, TAB_LABEL_MAX_SCALE, TAB_LABEL_MIN_SCALE, TAB_PILL_PADDING, TabBar, TabIcon } from '../TabBar';
+import { TAB_ICON_BOX, TAB_STROKE_GRID, TAB_STROKE_ICONS, TAB_STROKE_WIDTH } from '../tabIcons';
 import { space } from '../theme';
 
 // A barra de abas de verdade, num navegador de abas de verdade (com os endereços de cada aba): o rótulo cabe no
@@ -14,29 +18,115 @@ import { space } from '../theme';
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 
-/** O rótulo mais largo, "Finanças" em Nunito 11: 44,5 em Bold e 45,2 em ExtraBold (medidos na revisão). */
-const LONGEST_LABEL = 46;
+/**
+ * A largura de cada rótulo em Nunito 11 (Bold nas abas fechadas, ExtraBold na aberta), medida nos TTF de
+ * @expo-google-fonts/nunito somando o avanço de cada letra (tabelas cmap e hmtx, sem kerning): Hoje 23,7 e 24,1;
+ * Compras 45,8 e 46,6; Casa 24,9 e 25,2; Saúde 31,9 e 32,4; Ajustes 38,3 e 39,1. "Configurações" mede 73,3 e 74,8
+ * e não cabe: na barra a aba é "Ajustes" (o título da tela continua "Configurações"). Com a chave de Finanças
+ * ligada, "Finanças" mede 44,5 e 45,2.
+ */
+const LABEL_WIDTHS: Record<string, [bold: number, heavy: number]> = {
+  Hoje: [23.65, 24.1],
+  Compras: [45.76, 46.56],
+  Casa: [24.88, 25.19],
+  Saúde: [31.89, 32.42],
+  Ajustes: [38.32, 39.08],
+};
+const CONFIGURACOES_WIDTH = 74.8;
+/** O rótulo mais largo da barra, "Compras", arredondado para cima. */
+const LONGEST_LABEL = Math.ceil(Math.max(...Object.values(LABEL_WIDTHS).flat()));
 
 /** O espaço do rótulo numa tela de `width`: a barra tem a margem da tela, a borda e o recuo; a pílula, o recuo dela. */
-const labelRoom = (width: number) => (width - 2 * space.lg - 2 - 2 * TAB_BAR_PADDING) / 5 - 2 * TAB_PILL_PADDING;
+const labelRoom = (width: number, tabs = 5) => (width - 2 * space.lg - 2 - 2 * TAB_BAR_PADDING) / tabs - 2 * TAB_PILL_PADDING;
+
+const TABS = [
+  { name: 'index', title: 'Hoje', path: '' },
+  { name: 'compras', title: 'Compras', path: 'compras' },
+  { name: 'casa', title: 'Casa', path: 'casa' },
+  { name: 'saude', title: 'Saúde', path: 'saude' },
+  { name: 'configuracoes', title: 'Configurações', label: 'Ajustes', path: 'configuracoes' },
+];
+/** O que a barra escreve em cada aba: o rótulo próprio (tabBarLabel), ou o título. */
+const shownLabel = (tab: (typeof TABS)[number]) => tab.label ?? tab.title;
 
 describe('o rótulo das abas', () => {
-  it('"Finanças" cabe inteiro num celular de 360', () => {
+  it('todos os rótulos da barra estão medidos, e o mais largo, "Compras", cabe inteiro num celular de 360', () => {
+    expect(Object.keys(LABEL_WIDTHS).sort()).toEqual(TABS.map(shownLabel).sort());
+    expect(LONGEST_LABEL).toBe(47);
     expect(labelRoom(360)).toBeGreaterThanOrEqual(LONGEST_LABEL);
+  });
+
+  it('"Configurações" não caberia: por isso a barra diz "Ajustes"', () => {
+    expect(CONFIGURACOES_WIDTH).toBeGreaterThan(labelRoom(360));
+    expect(CONFIGURACOES_WIDTH * TAB_LABEL_MIN_SCALE).toBeGreaterThan(labelRoom(360));
   });
 
   it('com a fonte grande do aparelho, o rótulo encolhe até caber em vez de ser cortado', () => {
     expect(LONGEST_LABEL * TAB_LABEL_MAX_SCALE * TAB_LABEL_MIN_SCALE).toBeLessThanOrEqual(labelRoom(360));
   });
+
+  it('com a chave de Finanças ligada (seis abas), "Compras" encolhe até caber no aparelho', () => {
+    expect(LONGEST_LABEL).toBeGreaterThan(labelRoom(360, 6));
+    expect(LONGEST_LABEL * TAB_LABEL_MIN_SCALE).toBeLessThanOrEqual(labelRoom(360, 6));
+  });
 });
 
-const TABS = [
-  { name: 'index', title: 'Hoje', path: '' },
-  { name: 'casa', title: 'Casa', path: 'casa' },
-  { name: 'financas', title: 'Finanças', path: 'financas' },
-  { name: 'saude', title: 'Saúde', path: 'saude' },
-  { name: 'familia', title: 'Família', path: 'familia' },
-];
+describe('a barra do app', () => {
+  // As abas que o layout declara, na ordem: o nome da rota, o título e o rótulo próprio, quando tem.
+  const layout = readFileSync(join(__dirname, '..', '..', 'app', '(tabs)', '_layout.tsx'), 'utf8');
+  const declared = [...layout.matchAll(/<Tabs\.Screen name="([^"]+)" options=\{\{ title: '([^']+)'(?:, tabBarLabel: '([^']+)')? \}\} \/>/g)].map(
+    ([, name, title, label]) => ({ name, title, label }),
+  );
+
+  it('Hoje, Compras, Casa, Saúde e Configurações ("Ajustes" na barra), com Finanças entre Casa e Saúde quando a chave liga', () => {
+    expect(declared).toEqual([
+      { name: 'index', title: 'Hoje', label: undefined },
+      { name: 'compras', title: 'Compras', label: undefined },
+      { name: 'casa', title: 'Casa', label: undefined },
+      { name: 'financas', title: 'Finanças', label: undefined },
+      { name: 'saude', title: 'Saúde', label: undefined },
+      { name: 'configuracoes', title: 'Configurações', label: 'Ajustes' },
+    ]);
+    // A tabela do teste é a barra com a chave desligada.
+    expect(TABS.map(({ name, title, label }) => ({ name, title, label }))).toEqual(declared.filter((tab) => tab.name !== 'financas'));
+  });
+
+  it('cada aba tem o seu ícone: o carrinho em Compras e a engrenagem em Configurações', () => {
+    expect(declared.map((tab) => TAB_ICONS[tab.name])).toEqual(['sun', 'cart', 'home', 'wallet', 'heart', 'gear']);
+  });
+});
+
+describe('os ícones da barra', () => {
+  async function icon(name: Parameters<typeof TabIcon>[0]['name']) {
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(<TabIcon name={name} color="#123456" />);
+    });
+    const svg = renderer!.root.findByType(Svg).props;
+    const paths = renderer!.root.findAllByType(Path).map((path) => path.props);
+    await act(async () => renderer!.unmount());
+    return { svg, paths };
+  }
+
+  it('os desenhados à mão são linha (sem preenchimento), da cor da aba, de 2 no quadro de 24 reduzido aos 22 da barra', async () => {
+    for (const name of ['cart', 'gear'] as const) {
+      const { svg, paths } = await icon(name);
+      expect(svg).toMatchObject({ width: TAB_ICON_BOX, height: TAB_ICON_BOX, viewBox: `0 0 ${TAB_STROKE_GRID} ${TAB_STROKE_GRID}` });
+      expect(paths.map((path) => path.d)).toEqual(TAB_STROKE_ICONS[name]);
+      for (const path of paths) {
+        expect(path).toMatchObject({ fill: 'none', stroke: '#123456', strokeWidth: TAB_STROKE_WIDTH, strokeLinecap: 'round', strokeLinejoin: 'round' });
+      }
+    }
+    expect(TAB_STROKE_WIDTH).toBe(2);
+  });
+
+  it('os do Figma continuam área preenchida com a cor da aba, no quadro de 22', async () => {
+    const { svg, paths } = await icon('sun');
+    expect(svg).toMatchObject({ width: TAB_ICON_BOX, height: TAB_ICON_BOX, viewBox: `0 0 ${TAB_ICON_BOX} ${TAB_ICON_BOX}` });
+    expect(paths).toHaveLength(1);
+    expect(paths[0].fill).toBe('#123456');
+  });
+});
 
 const Tabs = createBottomTabNavigator();
 const Blank = () => null;
@@ -70,7 +160,7 @@ async function renderTabs({ blockTabPress = false } = {}) {
           })}
           tabBar={(props) => <TabBar {...props} />}>
           {TABS.map((tab) => (
-            <Tabs.Screen key={tab.name} name={tab.name} options={{ title: tab.title }} component={Blank} />
+            <Tabs.Screen key={tab.name} name={tab.name} options={{ title: tab.title, tabBarLabel: tab.label }} component={Blank} />
           ))}
         </Tabs.Navigator>
       </NavigationContainer>,
@@ -103,13 +193,13 @@ const click = (patch: Record<string, unknown> = {}) => ({
 describe('a barra de abas', () => {
   it('cada aba leva o endereço da tela, como a barra padrão', async () => {
     const { root } = await renderTabs();
-    expect(tabs(root).map((tab) => tab.props.href)).toEqual(['/', '/casa', '/financas', '/saude', '/familia']);
+    expect(tabs(root).map((tab) => tab.props.href)).toEqual(['/', '/compras', '/casa', '/saude', '/configuracoes']);
     expect(tabs(root).map(hostRole)).toEqual(Array(5).fill('tab'));
   });
 
   it('o rótulo encolhe com a fonte grande em vez de cortar', async () => {
     const { root } = await renderTabs();
-    const label = root.findAll((node) => node.type === RNText && node.props.children === 'Finanças')[0];
+    const label = root.findAll((node) => node.type === RNText && node.props.children === 'Compras')[0];
     expect(label.props).toMatchObject({
       numberOfLines: 1,
       adjustsFontSizeToFit: true,
@@ -121,13 +211,15 @@ describe('a barra de abas', () => {
   it('no iPhone, o leitor de tela diz a posição da aba', async () => {
     const { root } = await renderTabs();
     expect(Platform.OS).toBe('ios');
+    // A última aba é lida como aparece na barra ("Ajustes"): quem fala o que vê acha o botão pelo nome.
     expect(tabs(root).map((tab) => tab.props.accessibilityLabel)).toEqual([
       'Hoje, aba, 1 de 5',
-      'Casa, aba, 2 de 5',
-      'Finanças, aba, 3 de 5',
+      'Compras, aba, 2 de 5',
+      'Casa, aba, 3 de 5',
       'Saúde, aba, 4 de 5',
-      'Família, aba, 5 de 5',
+      'Ajustes, aba, 5 de 5',
     ]);
+    expect(root.findAll((node) => node.type === RNText).map((node) => node.props.children)).toEqual(TABS.map(shownLabel));
     expect(tabs(root).map((tab) => tab.props.accessibilityState)).toEqual([
       { selected: true },
       { selected: false },
@@ -142,7 +234,7 @@ describe('a barra de abas', () => {
   it('no navegador, o clique com tecla fica com o navegador e o clique simples troca a aba', async () => {
     jest.replaceProperty(Platform, 'OS', 'web');
     const { root } = await renderTabs();
-    expect(tabs(root).map((tab) => tab.props.accessibilityLabel)).toEqual(TABS.map((tab) => tab.title));
+    expect(tabs(root).map((tab) => tab.props.accessibilityLabel)).toEqual(TABS.map(shownLabel));
     // Link na web, mas ainda uma aba para o leitor de tela.
     expect(tabs(root).map(hostRole)).toEqual(Array(5).fill('tab'));
 
@@ -161,14 +253,14 @@ describe('a barra de abas', () => {
     const plain = click();
     await act(async () => press(tabs(root)[2], plain));
     expect(plain.preventDefault).toHaveBeenCalled();
-    expect(tabPresses).toEqual(['financas']);
+    expect(tabPresses).toEqual(['casa']);
     expect(selected(root)).toBe(2);
   });
 
   it('quem ouve o toque na aba pode impedir a troca', async () => {
     const { root } = await renderTabs({ blockTabPress: true });
     await act(async () => press(tabs(root)[1], click()));
-    expect(tabPresses).toEqual(['casa']);
+    expect(tabPresses).toEqual(['compras']);
     expect(selected(root)).toBe(0);
   });
 });

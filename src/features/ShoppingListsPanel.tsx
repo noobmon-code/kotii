@@ -27,7 +27,6 @@ import {
   TextField,
   Tile,
 } from '@/ui/primitives';
-import { FeatureCard } from '@/ui/FeatureCard';
 import { space } from '@/ui/theme';
 
 export const LIST_KINDS: { value: ListKind; label: string; icon: IconName }[] = [
@@ -163,13 +162,6 @@ export function ShoppingListsPanel() {
         </View>
       ) : null}
 
-      {/* Daqui também se chega ao dinheiro do mercado, que nasce das notas das compras destas listas. */}
-      <FeatureCard
-        gradient="salvia"
-        title="Para onde foi o dinheiro do mercado"
-        subtitle="Mercado do mês: por item, por categoria e por mercado"
-        onPress={() => router.push('/mercado')}
-      />
     </View>
   );
 }

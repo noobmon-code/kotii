@@ -89,14 +89,14 @@ export function SuppliesReminderHint() {
   return (
     <>
       <Text variant="muted">{`Para receber a notificação, ligue “${SUPPLIES_TITLE}” nos avisos ${REMINDER_PLACE}.`}</Text>
-      <Button title="Abrir os avisos" icon="bell-outline" variant="secondary" compact onPress={() => router.push('/familia')} />
+      <Button title="Abrir os avisos" icon="bell-outline" variant="secondary" compact onPress={() => router.push('/avisos')} />
     </>
   );
 }
 
 /**
  * Despensa: o que acaba sem nota fiscal, com a previsão de cada um. Fica acima
- * da despensa e não depende dela: quem põe as duas na tela é a aba Casa. Num
+ * da despensa e não depende dela: quem põe as duas na tela é Compras → Despensa. Num
  * banco ainda sem as tabelas, não aparece.
  */
 export function SuppliesSection() {
@@ -254,7 +254,7 @@ export function SuppliesTodaySection({ rows, today }: { rows: SupplyRow<Supply>[
                 onPress={() => refill.record(supply, today)}
               />
             }
-            onPress={() => router.push({ pathname: '/casa', params: { aba: 'despensa' } })}
+            onPress={() => router.push({ pathname: '/compras', params: { aba: 'despensa' } })}
           />
         ))}
       </ListCard>

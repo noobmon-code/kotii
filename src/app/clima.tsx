@@ -90,9 +90,9 @@ export default function WeatherScreen() {
           {remindersSupported ? (
             <>
               <Text variant="muted">
-                Às 7h, quando o tempo pede algo. Cada pessoa liga no próprio aparelho, em Família, “Avisos {REMINDER_PLACE}”.
+                Às 7h, quando o tempo pede algo. Cada pessoa liga no próprio aparelho, em Configurações, “Avisos {REMINDER_PLACE}”.
               </Text>
-              <Button title="Abrir os avisos" icon="bell-outline" variant="secondary" compact onPress={() => router.push('/familia')} />
+              <Button title="Abrir os avisos" icon="bell-outline" variant="secondary" compact onPress={() => router.push('/avisos')} />
             </>
           ) : (
             <Text variant="muted">{remindersUnavailableReason()} As dicas ficam aqui, nesta tela.</Text>

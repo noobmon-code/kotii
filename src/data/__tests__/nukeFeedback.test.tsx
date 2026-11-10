@@ -4,7 +4,7 @@ import { router } from 'expo-router';
 import { act, create } from 'react-test-renderer';
 
 import { FEEDBACK_LIMIT, FEEDBACK_SENT } from '@/domain/appFeedback';
-import { NUKE_ACTION_UNAVAILABLE, type NukeAction } from '@/domain/nuke';
+import { NUKE_ACTION_UNAVAILABLE, type NukeAction, type NukeScreen } from '@/domain/nuke';
 import { FEATURES } from '@/lib/features';
 
 import { useAskNuke, useRunNukeAction } from '../nuke';
@@ -146,18 +146,30 @@ describe('as ações de Finanças guardadas na conversa (de antes da chave)', ()
   });
 });
 
-describe('"Ver notas" do Nuke', () => {
-  const notas: NukeAction = { type: 'open_screen', label: 'Ver notas', screen: 'notas' };
+describe('as telas que o Nuke abre, nos lugares novos', () => {
+  const open = (screen: NukeScreen): NukeAction => ({ type: 'open_screen', label: 'Abrir', screen });
 
-  it('com Finanças desligada (lib/features), abre o Mercado do mês: as notas de Finanças não existem', async () => {
-    await runner()(notas);
+  it.each([
+    ['compras', { pathname: '/compras', params: { aba: 'listas' } }],
+    ['despensa', { pathname: '/compras', params: { aba: 'despensa' } }],
+    ['notas', { pathname: '/compras', params: { aba: 'notas' } }],
+    ['tarefas', { pathname: '/casa', params: { aba: 'tarefas' } }],
+    ['aparelhos', { pathname: '/casa', params: { aba: 'aparelhos' } }],
+    ['precos', '/precos'],
+    ['cardapio', '/cardapio'],
+    ['saude', '/saude'],
+    ['hoje', '/'],
+    // A Família virou a aba Configurações: a função continua chamando a tela de "familia".
+    ['familia', '/configuracoes'],
+  ] as [NukeScreen, unknown][])('"%s" fecha a conversa e abre %j', async (screen, href) => {
+    await runner()(open(screen));
     expect(router.back).toHaveBeenCalledTimes(1);
-    expect(router.navigate).toHaveBeenCalledWith('/mercado');
+    expect(router.navigate).toHaveBeenCalledWith(href);
   });
 
-  it('com ela ligada, abre Finanças → Notas', async () => {
+  it('"Ver notas" abre Compras → Notas também com Finanças ligada: as notas saíram de lá', async () => {
     jest.replaceProperty(FEATURES, 'finance', true);
-    await runner()(notas);
-    expect(router.navigate).toHaveBeenCalledWith({ pathname: '/financas', params: { aba: 'notas' } });
+    await runner()(open('notas'));
+    expect(router.navigate).toHaveBeenCalledWith({ pathname: '/compras', params: { aba: 'notas' } });
   });
 });

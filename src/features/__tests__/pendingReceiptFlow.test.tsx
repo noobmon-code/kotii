@@ -12,7 +12,7 @@ import { openExternal } from '@/lib/openLink';
 import { notify } from '@/ui/dialogs';
 import { Button, ListRow } from '@/ui/primitives';
 
-// A nota da Paraíba com o "não sou robô", de ponta a ponta: a tela do QR de verdade, a lista de Finanças > Notas,
+// A nota da Paraíba com o "não sou robô", de ponta a ponta: a tela do QR de verdade, a lista de Compras > Notas,
 // a tela da nota pendente, o leitor de foto de verdade e o aparelho (AsyncStorage) de mentira; o "servidor" guarda
 // as notas e responde à função nfce com o CAPTCHA e à parse-receipt com uma nota nova, com a chave mandada.
 
@@ -263,8 +263,8 @@ describe('nota da Sefaz com "não sou robô"', () => {
     await open(<PendingReceiptScreen />, client);
     expect(page()).toContain('Leia esta nota pelos prints da Sefaz');
     expect(page()).not.toContain('Esta nota não está mais pendente');
-    // Sem Finanças (lib/features), a lista de notas de lá não existe: a nota guardada aparece na tela Hoje.
-    expect(page()).toContain('A nota fica guardada neste aparelho, na tela Hoje, até você enviar os prints.');
+    // A lista das notas fica em Compras → Notas, e a nota guardada também aparece na tela Hoje.
+    expect(page()).toContain('A nota fica guardada neste aparelho, em Compras → Notas e na tela Hoje, até você enviar os prints.');
     await press('Abrir a nota na Sefaz');
     expect(openExternal).toHaveBeenCalledWith(expect.stringContaining(`www.sefaz.pb.gov.br/nfce?p=${KEY}`));
 
@@ -272,7 +272,7 @@ describe('nota da Sefaz com "não sou robô"', () => {
     await open(<PendingReceiptScreen />);
     expect(page()).toContain('Leia esta nota pelos prints da Sefaz');
 
-    // Finanças > Notas mostra a pendente, com o mercado que a casa já conhece.
+    // Compras > Notas mostra a pendente, com o mercado que a casa já conhece.
     await open(<ReceiptsPanel />);
     expect(page()).toContain('Esperando os prints');
     expect(page()).toContain('Mercado Bom');

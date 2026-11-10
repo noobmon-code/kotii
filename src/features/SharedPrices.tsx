@@ -1,4 +1,3 @@
-import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { StyleSheet } from 'react-native';
 
@@ -22,7 +21,6 @@ import {
   SHARING_ABOUT,
   SHARING_TITLE,
 } from '@/domain/sharedPrices';
-import { TERMS_TITLE } from '@/domain/terms';
 import { settledData } from '@/lib/settledData';
 import { Button, Card, IconBadge, ListCard, ListRow, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
@@ -93,21 +91,22 @@ function SharedPriceList({ title, moreLabel, rows }: { title: string; moreLabel:
 }
 
 /**
- * Aba Família: o que a casa compartilha. Só quando o banco responde que o
+ * Configurações → Sobre o Kotii: o que a casa compartilha. Só quando o banco responde que o
  * compartilhamento existe (uma pergunta de sim ou não, sem buscar os preços);
  * antes da migração, enquanto pergunta ou se a pergunta falhou, nada. Não há
- * chave para desligar: vale para toda casa, pelos termos de uso.
+ * chave para desligar: vale para toda casa, pelos termos de uso, que vêm logo
+ * abaixo, na mesma categoria.
  */
 export function SharedPricesAbout() {
   const available = useSharedPricesAvailable();
   if (available.data !== true) return null;
   return (
-    <Section title={SHARING_TITLE}>
-      <Card style={styles.about}>
-        <Text variant="muted">{SHARING_ABOUT}</Text>
-        <Button title={TERMS_TITLE} icon="shield-account-outline" variant="ghost" compact onPress={() => router.push('/termos')} />
-      </Card>
-    </Section>
+    <Card style={styles.about}>
+      <Text variant="label" accessibilityRole="header">
+        {SHARING_TITLE}
+      </Text>
+      <Text variant="muted">{SHARING_ABOUT}</Text>
+    </Card>
   );
 }
 

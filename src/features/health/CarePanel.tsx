@@ -24,7 +24,7 @@ import {
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 import { MedicationList } from './MedicationSections';
-import { openNewPerson, PersonChips } from './PersonChips';
+import { PersonChips } from './PersonChips';
 import { StaleNotice } from './StaleNotice';
 
 const PAST_LIMIT = 5;
@@ -78,13 +78,14 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
     ? medications.data.filter((m) => m.person_id === person.id)
     : medications.data;
 
+  // As fichas nascem num lugar só, em Configurações (Pessoas e pets sem celular): aqui só se filtra e se edita.
   if (!people.data.length) {
     return (
       <EmptyState
         icon="account-heart-outline"
         title="Cadastre a família"
-        message="Pessoas e pets da casa, cada um com sua ficha: tipo sanguíneo, alergias, plano de saúde."
-        action={<Button title="Adicionar pessoa ou pet" icon="plus" onPress={openNewPerson} />}
+        message="Pessoas e pets da casa, cada um com sua ficha: tipo sanguíneo, alergias, plano de saúde. O cadastro fica em Configurações."
+        action={<Button title="Abrir Configurações" icon="cog-outline" onPress={() => router.navigate('/configuracoes')} />}
       />
     );
   }
@@ -93,7 +94,7 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
     <View style={styles.gap}>
       {failed.length ? <StaleNotice onRetry={() => failed.forEach((q) => void q.refetch())} /> : null}
 
-      <PersonChips people={people.data} value={person?.id ?? null} onChange={onPersonChange} allLabel="Todos" onAdd={openNewPerson} />
+      <PersonChips people={people.data} value={person?.id ?? null} onChange={onPersonChange} allLabel="Todos" />
 
       {person ? <PersonCard person={person} today={today} /> : null}
 
@@ -192,7 +193,7 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
       <MedicationList medications={personMedications} personId={person?.id ?? null} />
 
       {!person ? (
-        <Section title="Pessoas da casa" action={<Button title="Adicionar" icon="plus" variant="ghost" compact onPress={openNewPerson} />}>
+        <Section title="Pessoas da casa">
           <ListCard>
             {people.data.map((p) => (
               <ListRow

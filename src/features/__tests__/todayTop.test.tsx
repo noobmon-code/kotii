@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { router } from 'expo-router';
 import { Children, type ReactElement } from 'react';
 import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -174,5 +175,14 @@ describe('o topo da tela Hoje', () => {
     const text = rawText(renderer!.root);
     expect(text).not.toMatch(/clima|bairro|Onde fica a casa/i);
     expect(text).not.toContain('Pinheiros');
+  });
+});
+
+describe('os atalhos da tela Hoje', () => {
+  it('"Listas de compras" abre Compras → Listas (antes, a parte Compras da aba Casa)', async () => {
+    await mount();
+    const tile = renderer!.root.findAll((node) => node.props.label === 'Listas de compras' && typeof node.props.onPress === 'function')[0];
+    await act(async () => tile.props.onPress());
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/compras', params: { aba: 'listas' } });
   });
 });

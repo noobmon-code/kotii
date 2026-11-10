@@ -165,7 +165,7 @@ export function MedicationStockSection({
           <Text variant="muted">
             Para receber por notificação, ligue “{REFILLS_REMINDER_LABEL}” nos avisos {REMINDER_PLACE}.
           </Text>
-          <Button title="Abrir os avisos" icon="bell-outline" variant="secondary" compact onPress={() => router.push('/familia')} />
+          <Button title="Abrir os avisos" icon="bell-outline" variant="secondary" compact onPress={() => router.push('/avisos')} />
         </>
       ) : null}
     </Card>

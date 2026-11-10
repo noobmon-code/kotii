@@ -580,10 +580,16 @@ export function Segmented<T extends string>({
   options,
   value,
   onChange,
+  widths = 'equal',
 }: {
-  options: { value: T; label: string }[];
+  options: readonly { value: T; label: string }[];
   value: T;
   onChange: (value: T) => void;
+  /**
+   * `equal`: as partes do mesmo tamanho. `content`: cada parte do tamanho do rótulo, com a sobra dividida por igual,
+   * para quando um rótulo comprido não cabe na parte igual ("Documentos" na Casa, num celular de 360).
+   */
+  widths?: 'equal' | 'content';
 }) {
   const c = useColors();
   // O item aberto é um cartão branco; à noite, um cinza um pouco mais claro que o fundo.
@@ -598,7 +604,12 @@ export function Segmented<T extends string>({
             accessibilityRole="tab"
             accessibilityState={{ selected }}
             onPress={() => onChange(o.value)}
-            style={[styles.segment, selected && { backgroundColor: selectedBg }, selected && styles.segmentSelected]}>
+            style={[
+              styles.segment,
+              widths === 'content' ? styles.segmentByContent : styles.segmentEqual,
+              selected && { backgroundColor: selectedBg },
+              selected && styles.segmentSelected,
+            ]}>
             <Text variant="label" color={selected ? 'text' : 'textMuted'} numberOfLines={1}>
               {o.label}
             </Text>
@@ -982,11 +993,13 @@ const styles = StyleSheet.create({
   inputMultiline: { minHeight: 88, paddingTop: space.md, textAlignVertical: 'top' },
   segmented: { flexDirection: 'row', borderRadius: radius.pill, padding: 4, borderWidth: 1 },
   segment: {
-    flex: 1,
     alignItems: 'center',
     paddingVertical: space.sm + 2,
     borderRadius: radius.pill,
   },
+  segmentEqual: { flex: 1 },
+  // A base é o rótulo, e a sobra vai por igual para cada parte; sem sobra (a tela estreita), elas encolhem juntas.
+  segmentByContent: { flexGrow: 1, flexShrink: 1, flexBasis: 'auto', paddingHorizontal: space.xs },
   segmentSelected: {
     shadowColor: '#784028',
     shadowOpacity: 0.1,

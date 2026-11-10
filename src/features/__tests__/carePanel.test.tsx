@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { router } from 'expo-router';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { CarePanel } from '@/features/health/CarePanel';
 import { StaleNotice } from '@/features/health/StaleNotice';
-import { Button, ErrorNotice, Loading } from '@/ui/primitives';
+import { Button, Chip, ErrorNotice, Loading } from '@/ui/primitives';
 
 // O painel de verdade, com as buscas trocadas por respostas prontas. O que se confere aqui: a busca de "quem tem
 // resultados de exame" (a casa toda) só segura o painel em "Todos", que é onde ela decide alguma coisa; e uma
@@ -20,7 +21,7 @@ type Name = 'people' | 'appointments' | 'vaccines' | 'exams' | 'owners' | 'medic
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockQueries: Record<Name, Query> = {} as never;
 
-jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
+jest.mock('expo-router', () => ({ router: { push: jest.fn(), navigate: jest.fn() } }));
 jest.mock('@/data/health', () => ({
   usePeople: () => mockQueries.people,
   useAppointments: () => mockQueries.appointments,
@@ -186,5 +187,27 @@ describe('painel de cuidados: a atualização que falha com o dado já carregado
   it('sem falha nenhuma, não há aviso', () => {
     open(null);
     expect(has(StaleNotice)).toBe(false);
+  });
+});
+
+describe('painel de cuidados: as fichas nascem em Configurações', () => {
+  it('filtra pela pessoa e edita a ficha, mas não cadastra: nem no seletor, nem na lista das pessoas', () => {
+    open(null);
+    const chips = renderer.root.findAllByType(Chip).map((chip) => chip.props.label);
+    expect(chips).toEqual(['Todos', 'Ana', 'Beto']);
+    expect(buttons().filter((title) => /Adicionar|Pessoa ou pet/.test(title))).toEqual([]);
+    act(() => renderer.unmount());
+    open('ana');
+    expect(buttons()).toContain('Editar ficha');
+    expect(renderer.root.findAllByType(Chip).map((chip) => chip.props.label)).toEqual(['Todos', 'Ana', 'Beto']);
+  });
+
+  it('sem ninguém cadastrado, o convite leva a Configurações, onde se cadastra', () => {
+    mockQueries.people = loaded([]);
+    open(null);
+    expect(buttons()).toEqual(['Abrir Configurações']);
+    act(() => renderer.root.findAllByType(Button)[0].props.onPress());
+    expect(router.navigate).toHaveBeenCalledWith('/configuracoes');
+    expect(router.push).not.toHaveBeenCalled();
   });
 });

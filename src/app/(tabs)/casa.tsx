@@ -1,84 +1,78 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { router, useLocalSearchParams } from 'expo-router';
-import { StyleSheet, View } from 'react-native';
+import { useState } from 'react';
 
-import { ChoresPanel } from '@/features/ChoresPanel';
-import { EquipmentPanel } from '@/features/EquipmentPanel';
-import { PantryPanel } from '@/features/PantryPanel';
-import { ShoppingListsPanel } from '@/features/ShoppingListsPanel';
-import { SuppliesSection } from '@/features/SuppliesSection';
-import { useChores, usePantry } from '@/data/home';
+import { useChores } from '@/data/home';
 import { useEquipmentList } from '@/data/house';
-import { useShoppingLists } from '@/data/market';
 import { JOBS_KEY, PROVIDERS_KEY } from '@/data/providers';
-import { useSupplies } from '@/data/supplies';
+import { CASA_TABS, movedFromCasa, tabFromParam, type CasaTab } from '@/domain/tabs';
+import { AgendaPanel, agendaQueryKeys } from '@/features/AgendaPanel';
+import { ChoresPanel } from '@/features/ChoresPanel';
+import { DocumentsSection } from '@/features/DocumentsSection';
+import { EquipmentPanel } from '@/features/EquipmentPanel';
+import { MovedSubTab } from '@/features/MovedSubTab';
+import { FEATURES } from '@/lib/features';
 import { Screen, Segmented } from '@/ui/primitives';
-import { space } from '@/ui/theme';
 
-type Tab = 'compras' | 'despensa' | 'tarefas' | 'aparelhos';
-const TABS: Tab[] = ['compras', 'despensa', 'tarefas', 'aparelhos'];
-
+/**
+ * Casa: o que mantém a casa funcionando. Tarefas (e os pontos das crianças), Agenda (os compromissos e o que vence
+ * em cada dia), Aparelhos (e os prestadores) e Documentos. A parte vive na URL (?aba=): os atalhos e o Nuke abrem
+ * direto nela. As compras e a despensa, que eram daqui, estão na aba Compras, e os endereços antigos delas
+ * (/casa?aba=compras e /casa?aba=despensa) levam até lá.
+ */
 export default function HouseScreen() {
-  // A aba vive na URL: atalhos da tela Hoje abrem direto nela.
   const { aba } = useLocalSearchParams<{ aba?: string }>();
-  const tab: Tab = aba && (TABS as string[]).includes(aba) ? (aba as Tab) : 'compras';
-  const setTab = (value: Tab) => router.setParams({ aba: value });
+  const moved = movedFromCasa(aba);
+  if (moved) return <MovedSubTab to={moved} />;
+  return <HouseTabs aba={aba} />;
+}
 
-  const lists = useShoppingLists();
-  const pantry = usePantry();
+function HouseTabs({ aba }: { aba: string | undefined }) {
+  const tab = tabFromParam(CASA_TABS, aba);
+  const setTab = (value: CasaTab) => router.setParams({ aba: value });
+
   const chores = useChores();
   const equipment = useEquipmentList();
-  const supplies = useSupplies();
-  const active = { compras: lists, despensa: pantry, tarefas: chores, aparelhos: equipment }[tab];
   const queryClient = useQueryClient();
-  // Na Despensa, puxar para atualizar traz também o gás, a água e a ração. Em Tarefas, as ordens do rodízio e as
-  // fichas (os nomes), como a tela Hoje: com a tarefa nova e a ordem de antes, a lista diria quem vem depois num
-  // rodízio que já acabou ou mudou. Em Aparelhos, o resto do que a lista mostra: a próxima manutenção (as tarefas),
-  // o último serviço (o conserto registrado em outro celular) e o botão dos prestadores, que volta quando o banco
-  // ganha as tabelas. Só as que a aba está mostrando (as outras abas nem as buscam), e dos serviços só a lista da
-  // casa toda (a de um prestador ou de um aparelho é de outra tela).
+  // A Agenda e os Documentos são várias buscas cada: o "girando" é o desta tela, até todas voltarem.
+  const [refreshingMany, setRefreshingMany] = useState(false);
+  const refetchAll = (keys: string[]) => {
+    setRefreshingMany(true);
+    Promise.all(keys.map((key) => queryClient.refetchQueries({ queryKey: [key], type: 'active' }))).finally(() =>
+      setRefreshingMany(false),
+    );
+  };
+  // Em Tarefas, as ordens do rodízio e as fichas (os nomes), como a tela Hoje: com a tarefa nova e a ordem de antes,
+  // a lista diria quem vem depois num rodízio que já acabou ou mudou. Em Aparelhos, o resto do que a lista mostra: a
+  // próxima manutenção (as tarefas), o último serviço (o conserto registrado em outro celular) e o botão dos
+  // prestadores, que volta quando o banco ganha as tabelas. Na Agenda, tudo o que ela junta; nos Documentos, eles e
+  // as fichas (os donos). Só as que a parte está mostrando (type 'active': as outras partes nem as buscam), e dos
+  // serviços só a lista da casa toda (a de um prestador ou de um aparelho é de outra tela).
   const refresh = () => {
-    active.refetch();
-    if (tab === 'despensa') supplies.refetch();
     if (tab === 'tarefas') {
+      chores.refetch();
       queryClient.refetchQueries({ queryKey: ['choreRotations'], type: 'active' });
       queryClient.refetchQueries({ queryKey: ['people'], type: 'active' });
     }
     if (tab === 'aparelhos') {
+      equipment.refetch();
       chores.refetch();
       queryClient.refetchQueries({ queryKey: [JOBS_KEY], exact: true, type: 'active' });
       queryClient.refetchQueries({ queryKey: [PROVIDERS_KEY], exact: true, type: 'active' });
     }
+    if (tab === 'agenda') refetchAll(agendaQueryKeys(FEATURES.finance));
+    if (tab === 'documentos') refetchAll(['documents', 'people']);
   };
+  const refreshing = tab === 'tarefas' ? chores.isRefetching : tab === 'aparelhos' ? equipment.isRefetching : refreshingMany;
 
   return (
-    <Screen fab heading="Casa" refreshing={active.isRefetching} onRefresh={refresh}>
-      <Segmented
-        value={tab}
-        onChange={setTab}
-        options={[
-          { value: 'compras', label: 'Compras' },
-          { value: 'despensa', label: 'Despensa' },
-          { value: 'tarefas', label: 'Tarefas' },
-          { value: 'aparelhos', label: 'Aparelhos' },
-        ]}
-      />
-      {tab === 'compras' ? <ShoppingListsPanel /> : null}
-      {tab === 'despensa' ? (
-        <View style={styles.gap}>
-          {/* O que não passa por nota (gás, água, ração) vem antes da despensa e fora dela: aparece
-              com ela carregando, vazia ou com erro, e o "Adicionar item" fica junto da lista dele. */}
-          <SuppliesSection />
-          <PantryPanel />
-        </View>
-      ) : null}
+    <Screen fab heading="Casa" refreshing={refreshing} onRefresh={refresh}>
+      {/* "Documentos" não cabe numa parte igual às outras num celular de 360: cada parte do tamanho do rótulo. */}
+      <Segmented value={tab} onChange={setTab} options={CASA_TABS} widths="content" />
       {tab === 'tarefas' ? <ChoresPanel /> : null}
+      {tab === 'agenda' ? <AgendaPanel /> : null}
       {tab === 'aparelhos' ? <EquipmentPanel /> : null}
+      {tab === 'documentos' ? <DocumentsSection /> : null}
     </Screen>
   );
 }
-
-const styles = StyleSheet.create({
-  // O mesmo espaço que a despensa põe entre as partes dela; cresce para o "carregando" da despensa ficar no meio do que sobra.
-  gap: { gap: space.lg, flexGrow: 1 },
-});

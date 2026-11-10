@@ -100,7 +100,7 @@ export default function MarketMonthScreen() {
   /** A altura em que o card "O que mudou" está, no mesmo espaço da chave. */
   const changesY = useRef(0);
   const summary = useMemo(
-    () => (market.data ? marketMonth(market.data.receipts, month, today, market.data.spends, { finance: FEATURES.finance }) : null),
+    () => (market.data ? marketMonth(market.data.receipts, month, today, market.data.spends) : null),
     [market.data, month, today],
   );
   const trend = useMemo(

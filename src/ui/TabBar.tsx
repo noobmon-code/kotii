@@ -10,7 +10,15 @@ import { type EdgeInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 
 import { Text } from './primitives';
-import { TAB_ICON_BOX, TAB_ICON_PATHS, type TabIconName } from './tabIcons';
+import {
+  isStrokeTabIcon,
+  TAB_ICON_BOX,
+  TAB_ICON_PATHS,
+  TAB_STROKE_GRID,
+  TAB_STROKE_ICONS,
+  TAB_STROKE_WIDTH,
+  type TabIconName,
+} from './tabIcons';
 import { fonts, radius, shadows, space, useColors, withAlpha } from './theme';
 
 /** Altura da pílula: o botão do Nuke fica logo acima dela. */
@@ -20,8 +28,11 @@ export const TAB_BAR_HEIGHT = 72;
 export const tabBarBottomGap = (insets: Pick<EdgeInsets, 'bottom'>) => Math.max(insets.bottom, space.md);
 
 // As medidas do lado: num celular de 360, cada aba tem (360 - 32 - 2 - 2 * 4) / 5 = 63,6 e o rótulo, 63,6 - 12 = 51,6,
-// o bastante para "Finanças" (uns 45). Com a fonte grande do aparelho, o rótulo cresce só até 1,2x e encolhe até
-// 85% para caber, em vez de ser cortado.
+// o bastante para "Compras", o rótulo mais largo (46,6 em Nunito 11 ExtraBold). "Configurações" (74,8) não cabe: na
+// barra a aba é "Ajustes", e "Configurações" fica como título da tela. Com a fonte grande do aparelho, o rótulo cresce
+// só até 1,2x e encolhe até 85% para caber, em vez de ser cortado. Com a chave de Finanças ligada (lib/features), são
+// seis abas e o rótulo tem (360 - 42) / 6 - 12 = 41: "Compras" e "Finanças" encolhem no aparelho (no navegador, que
+// não encolhe o texto, o fim pode ser cortado).
 /** O recuo da barra, dos lados. */
 export const TAB_BAR_PADDING = 4;
 /** O recuo da pílula de cada aba (o destaque da aba aberta), dos lados. */
@@ -29,16 +40,36 @@ export const TAB_PILL_PADDING = 6;
 export const TAB_LABEL_MAX_SCALE = 1.2;
 export const TAB_LABEL_MIN_SCALE = 0.85;
 
-/** A aba de cada rota, na ordem em que aparecem. */
+/** O ícone de cada rota, na ordem em que as abas aparecem (Finanças só com a chave ligada, lib/features). */
 export const TAB_ICONS: Record<string, TabIconName> = {
   index: 'sun',
+  compras: 'cart',
   casa: 'home',
   financas: 'wallet',
   saude: 'heart',
-  familia: 'users',
+  configuracoes: 'gear',
 };
 
 export function TabIcon({ name, color, size = TAB_ICON_BOX }: { name: TabIconName; color: string; size?: number }) {
+  // Os de traço (desenhados à mão, ui/tabIcons) vêm no quadro de 24 e o viewBox os reduz ao tamanho da barra, como
+  // os do Figma já vieram reduzidos: a linha fica da mesma grossura nos dois.
+  if (isStrokeTabIcon(name)) {
+    return (
+      <Svg width={size} height={size} viewBox={`0 0 ${TAB_STROKE_GRID} ${TAB_STROKE_GRID}`} accessible={false}>
+        {TAB_STROKE_ICONS[name].map((d) => (
+          <Path
+            key={d}
+            d={d}
+            fill="none"
+            stroke={color}
+            strokeWidth={TAB_STROKE_WIDTH}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        ))}
+      </Svg>
+    );
+  }
   return (
     <Svg width={size} height={size} viewBox={`0 0 ${TAB_ICON_BOX} ${TAB_ICON_BOX}`} accessible={false}>
       <Path d={TAB_ICON_PATHS[name]} fill={color} />

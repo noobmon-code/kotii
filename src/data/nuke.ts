@@ -244,20 +244,22 @@ export function useAskNuke() {
   });
 }
 
+// As telas têm os nomes que a função `nuke` conhece (não muda com o app): "compras", "despensa" e "notas" são as
+// partes da aba Compras, e "familia" é a aba Configurações, que juntou a Família e a tela de Configurações. A parte
+// vai sempre no endereço, para abrir nela mesmo com a aba já montada em outra.
 const SCREEN_ROUTES: Record<NukeScreen, () => void> = {
   hoje: () => router.navigate('/'),
-  compras: () => router.navigate({ pathname: '/casa', params: { aba: 'compras' } }),
+  compras: () => router.navigate({ pathname: '/compras', params: { aba: 'listas' } }),
   cardapio: () => router.navigate('/cardapio'),
-  despensa: () => router.navigate({ pathname: '/casa', params: { aba: 'despensa' } }),
+  despensa: () => router.navigate({ pathname: '/compras', params: { aba: 'despensa' } }),
   tarefas: () => router.navigate({ pathname: '/casa', params: { aba: 'tarefas' } }),
   aparelhos: () => router.navigate({ pathname: '/casa', params: { aba: 'aparelhos' } }),
   financas: () => router.navigate({ pathname: '/financas', params: { aba: 'resumo' } }),
   contas: () => router.navigate({ pathname: '/financas', params: { aba: 'contas' } }),
-  // Sem Finanças, as notas ainda não têm outra lista: o Mercado do mês, com as idas e os rascunhos do mês.
-  notas: () => router.navigate(FEATURES.finance ? { pathname: '/financas', params: { aba: 'notas' } } : '/mercado'),
+  notas: () => router.navigate({ pathname: '/compras', params: { aba: 'notas' } }),
   precos: () => router.navigate('/precos'),
   saude: () => router.navigate('/saude'),
-  familia: () => router.navigate('/familia'),
+  familia: () => router.navigate('/configuracoes'),
 };
 
 /** Executa a ação que a pessoa confirmou, com as mesmas regras das telas. */

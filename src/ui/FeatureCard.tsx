@@ -1,5 +1,5 @@
-// O cartão grande com gradiente que leva a outra tela ("Hora dourada") e o botão redondo de vidro do topo de uma tela
-// (a engrenagem das Configurações, na Família). As abas não têm mais o cartão de topo: a barra de abas já diz a aba.
+// O cartão grande com gradiente que leva a outra tela ("Hora dourada") e o botão redondo de vidro do topo de uma tela.
+// As abas não têm mais o cartão de topo: a barra de abas já diz a aba.
 
 import { Pressable, StyleSheet, View } from 'react-native';
 
@@ -12,8 +12,9 @@ import { fonts, space, useColors, useGlow, useGradient, type GradientName, type 
 const GLOW_TINT: Record<GradientName, Tint> = { pessego: 'orange', rosa: 'pink', salvia: 'green', caramelo: 'purple' };
 
 /**
- * Botão redondo de vidro no topo da tela (a engrenagem das Configurações, no canto da Família). O toque tem 44 em
- * toda plataforma: a caixa do botão é de 44 em volta da orbe de 40 (o `hitSlop` não vale no navegador).
+ * Botão redondo de vidro no topo da tela (foi a engrenagem das Configurações, no canto da antiga aba Família; hoje
+ * nenhuma tela o usa). O toque tem 44 em toda plataforma: a caixa do botão é de 44 em volta da orbe de 40 (o
+ * `hitSlop` não vale no navegador).
  */
 export function HeaderButton({ icon, label, onPress }: { icon: IconName; label: string; onPress: () => void }) {
   const c = useColors();

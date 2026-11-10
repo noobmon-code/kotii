@@ -55,7 +55,7 @@ export const TRIP_CONFIRM = {
   action: 'Avisar agora',
 };
 
-/** A opção em Família → "Avisos neste navegador" (o texto de ajuda ganha o ponto final lá, como os outros). */
+/** A opção em Configurações → "Avisos neste navegador" (o texto de ajuda ganha o ponto final lá, como os outros). */
 export const TRIP_PUSH_OPTION = {
   label: 'Alguém indo ao mercado',
   hint: 'Quando alguém da casa avisa que está saindo para as compras. Chega em até um minuto',

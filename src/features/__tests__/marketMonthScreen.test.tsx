@@ -510,22 +510,22 @@ describe('como este total fecha', () => {
     await mount();
     await press(`Como este total fecha. ${CLOSING.replace('1 nota que espera', '4 notas que esperam')}`);
     const text = page();
-    // Sem Finanças (lib/features), o resto está na tela Hoje, que lista todos os rascunhos.
-    expect(text).toContain(['Assaí', '· 14 out', 'Revisar', 'Assaí', '· 13 out', 'Revisar', 'Assaí', '· 12 out', 'Revisar', 'e mais 1 na tela Hoje'].join('\n'));
+    // O resto está em Compras > Notas, que lista todos os rascunhos.
+    expect(text).toContain(['Assaí', '· 14 out', 'Revisar', 'Assaí', '· 13 out', 'Revisar', 'Assaí', '· 12 out', 'Revisar', 'e mais 1 em Compras > Notas'].join('\n'));
     expect(text).not.toContain('· 11 out');
     expect(text).not.toContain('Finanças');
     // O resto é só texto: nada na tela leva para as abas.
-    expect(renderer!.root.findAll((node) => typeof node.props.onPress === 'function' && String(node.props.accessibilityLabel ?? '').includes('Hoje'))).toEqual([]);
+    expect(renderer!.root.findAll((node) => typeof node.props.onPress === 'function' && String(node.props.accessibilityLabel ?? '').includes('Compras'))).toEqual([]);
   });
 
-  it('com Finanças ligada, o resto dos rascunhos está em Finanças > Notas', async () => {
+  it('com Finanças ligada, o resto dos rascunhos continua em Compras > Notas: as notas saíram de Finanças', async () => {
     jest.replaceProperty(FEATURES, 'finance', true);
     const drafts = [11, 12, 13, 14].map((day) => receipt(`r${day}`, at(10, day), [], { status: 'draft' }));
     mockState.query = loaded([...HOUSE.filter((r) => r.status === 'confirmed'), ...drafts]);
     await mount();
     await press(`Como este total fecha. ${CLOSING.replace('1 nota que espera', '4 notas que esperam')}`);
-    expect(page()).toContain('e mais 1 em Finanças > Notas');
-    expect(renderer!.root.findAll((node) => typeof node.props.onPress === 'function' && String(node.props.accessibilityLabel ?? '').includes('Finanças'))).toEqual([]);
+    expect(page()).toContain('e mais 1 em Compras > Notas');
+    expect(page()).not.toContain('Finanças > Notas');
   });
 
   it('nas notas para abrir, a data nunca encolhe: só o nome do mercado é cortado', async () => {

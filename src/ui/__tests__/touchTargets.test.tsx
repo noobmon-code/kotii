@@ -8,7 +8,7 @@ import { Chip, LinkButton } from '../primitives';
 import { space } from '../theme';
 
 // A área de toque do texto de ação azul ("Pôr tudo na lista"): 44 de altura, sem invadir o cartão de baixo. E a do
-// botão redondo do topo (a engrenagem da Família): 44 pela própria caixa, porque o `hitSlop` não vale no navegador.
+// botão redondo do topo (HeaderButton): 44 pela própria caixa, porque o `hitSlop` não vale no navegador.
 
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));

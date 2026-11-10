@@ -2,9 +2,9 @@ import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from 'react-test-renderer';
 
-import HouseScreen from '@/app/(tabs)/casa';
+import ShoppingScreen from '@/app/(tabs)/compras';
 
-// A aba Casa de verdade, no segmento Despensa, com as buscas trocadas: o que se confere aqui é que
+// A aba Compras de verdade, na parte Despensa, com as buscas trocadas: o que se confere aqui é que
 // "Gás, água e ração" não depende da busca da despensa (carregando ou com erro, a seção continua
 // lá), fica antes do "Adicionar item", que é o botão da despensa, e diz onde ligar o aviso por
 // notificação. "mock" no nome: o jest.mock só enxerga variáveis assim.
@@ -34,16 +34,19 @@ jest.mock('@/lib/reminders', () => ({
   remindersUnavailableReason: () => mockReminders.reason,
 }));
 jest.mock('@/features/ShoppingListsPanel', () => ({ ShoppingListsPanel: () => null }));
-jest.mock('@/features/ChoresPanel', () => ({ ChoresPanel: () => null }));
-jest.mock('@/features/EquipmentPanel', () => ({ EquipmentPanel: () => null }));
+jest.mock('@/features/market/ReceiptsPanel', () => ({ ReceiptsPanel: () => null }));
 jest.mock('@/data/home', () => ({
   usePantry: () => mockQueries.pantry,
-  useChores: () => mockIdle,
   useConsumePantryItems: () => mockMutation,
   useTakeOneFromPantry: () => mockMutation,
 }));
-jest.mock('@/data/house', () => ({ useEquipmentList: () => mockIdle }));
-jest.mock('@/data/market', () => ({ useShoppingLists: () => mockIdle, useProducts: () => mockIdle, useAddToMarketList: () => mockMutation, useAddToPantryList: () => mockMutation }));
+jest.mock('@/data/market', () => ({
+  ARCHIVED_LISTS_KEY: 'archivedLists',
+  useShoppingLists: () => mockIdle,
+  useProducts: () => mockIdle,
+  useAddToMarketList: () => mockMutation,
+  useAddToPantryList: () => mockMutation,
+}));
 jest.mock('@/data/supplies', () => ({ useSupplies: () => mockQueries.supplies, useRecordRefill: () => mockMutation }));
 
 const gas = { id: 's1', name: 'Gás de cozinha', kind: 'gas', typical_days: null, notes: null, created_at: '2026-10-01T10:00:00Z', refills: [] };
@@ -73,7 +76,7 @@ function open(pantry: object): ReactTestRenderer {
   act(() => {
     screen = create(
       <QueryClientProvider client={new QueryClient()}>
-        <HouseScreen />
+        <ShoppingScreen />
       </QueryClientProvider>,
     );
   });
@@ -96,7 +99,7 @@ beforeEach(() => {
   mockQueries.supplies = { ...mockIdle, data: { available: true, supplies: [gas] } };
 });
 
-describe('Casa › Despensa', () => {
+describe('Compras › Despensa', () => {
   it('"Gás, água e ração" vem antes do "Adicionar item", que fica junto da lista da despensa', () => {
     const shown = despensa({ data: [rice] });
     expect(shown).toEqual(expect.arrayContaining(['Gás, água e ração', 'Gás de cozinha', 'Adicionar item', 'Arroz']));
@@ -130,7 +133,8 @@ describe('Casa › Despensa', () => {
     expect(shown.indexOf('Gás de cozinha')).toBeLessThan(shown.indexOf(POINTER));
     expect(shown.indexOf('Abrir os avisos')).toBeLessThan(shown.indexOf('Adicionar item'));
     act(() => screen.root.findByProps({ title: 'Abrir os avisos' }).props.onPress());
-    expect(mockPush).toHaveBeenCalledWith('/familia');
+    // Direto na tela dos avisos (antes, o topo da Família, com os avisos várias seções abaixo).
+    expect(mockPush).toHaveBeenCalledWith('/avisos');
     act(() => screen.unmount());
   });
 

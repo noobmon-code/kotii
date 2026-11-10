@@ -5,8 +5,8 @@ import { Text } from '@/ui/primitives';
 import { radius, space, useColors } from '@/ui/theme';
 
 /**
- * Uma linha com barra de proporção do painel (as funções, os usos da IA, os aparelhos), como as do uso da IA na
- * aba Família: o nome à esquerda, o número à direita, a barra e, embaixo, o detalhe. O leitor de tela lê a linha
+ * Uma linha com barra de proporção do painel (as funções, os usos da IA, os aparelhos), como as do uso da IA em
+ * Configurações: o nome à esquerda, o número à direita, a barra e, embaixo, o detalhe. O leitor de tela lê a linha
  * inteira numa frase só (`accessibilityLabel`, pronta em domain/appDashboard).
  */
 export function MeterRow({ row }: { row: DashboardMeterRow }) {

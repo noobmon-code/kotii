@@ -339,7 +339,7 @@ export default function TodayScreen() {
           art="carrinho"
           wash={WASHES.blue}
           label="Listas de compras"
-          onPress={() => router.push({ pathname: '/casa', params: { aba: 'compras' } })}
+          onPress={() => router.push({ pathname: '/compras', params: { aba: 'listas' } })}
         />
         <Tile
           art="tarefa"
@@ -490,7 +490,7 @@ export default function TodayScreen() {
               <Button
                 title={`Ver todos (${expiring.length})`}
                 variant="ghost"
-                onPress={() => router.push({ pathname: '/casa', params: { aba: 'despensa' } })}
+                onPress={() => router.push({ pathname: '/compras', params: { aba: 'despensa' } })}
               />
             ) : null}
           </ListCard>

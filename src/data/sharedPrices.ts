@@ -5,7 +5,7 @@
 // A função chega ao banco numa migração própria, e o app pode ser publicado
 // antes dela. Sem a função, a resposta é "não disponível" (null), nunca um
 // erro: as telas seguem como eram, sem a seção e a linha em Preços. O cartão
-// da aba Família pergunta à parte (shared_prices_available), sem buscar preço.
+// de Configurações pergunta à parte (shared_prices_available), sem buscar preço.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { useQuery } from '@tanstack/react-query';
@@ -79,7 +79,7 @@ export function useSharedPrices() {
 }
 
 /**
- * O compartilhamento existe neste banco? É tudo o que o cartão da aba Família
+ * O compartilhamento existe neste banco? É tudo o que o cartão de Configurações
  * precisa saber: a função dos preços calcularia e mandaria todos eles para um
  * parágrafo fixo. false quando a função não existe (o app chegou antes da
  * migração); outro erro sobe.

@@ -5,7 +5,7 @@ import { StaleNotice } from '@/features/health/StaleNotice';
 import { ShoppingListsPanel } from '@/features/ShoppingListsPanel';
 import { ErrorNotice } from '@/ui/primitives';
 
-// O painel das listas (aba Casa), com a busca das listas trocada por respostas prontas: com as listas guardadas,
+// O painel das listas (Compras > Listas), com a busca das listas trocada por respostas prontas: com as listas guardadas,
 // a busca que falha (voltar ao app com sinal fraco) não as tira da tela.
 
 interface Query {

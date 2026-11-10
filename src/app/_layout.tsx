@@ -163,8 +163,13 @@ function AppNavigator() {
           <Stack.Screen name="servico/[id]" options={{ title: 'Serviço', presentation: 'modal' }} />
           <Stack.Screen name="documento/[id]" options={{ title: 'Documento' }} />
           <Stack.Screen name="nuke" options={{ headerShown: false, presentation: 'modal' }} />
-          <Stack.Screen name="configuracoes" options={{ title: 'Configurações' }} />
+          {/* As telas que a aba Configurações abre por uma linha, para ficar curta. */}
+          <Stack.Screen name="avisos" options={{ title: 'Avisos' }} />
+          <Stack.Screen name="perfil" options={{ title: 'Perfil' }} />
+          <Stack.Screen name="recado" options={{ title: 'Mandar recado' }} />
           <Stack.Screen name="moderacao" options={{ title: 'Nomes dos mercados' }} />
+          {/* O endereço da antiga aba Família (favoritos, o app instalado): troca para a aba Configurações. */}
+          <Stack.Screen name="familia" options={{ headerShown: false }} />
         </Stack.Protected>
         {/* As telas de Finanças: só numa casa e com a chave ligada (lib/features). Desligada, nenhuma delas
             existe no navegador, e nenhum endereço ou botão chega a elas. */}
@@ -177,8 +182,8 @@ function AppNavigator() {
           <Stack.Screen name="consultor/lancamentos" options={{ title: 'Lançamentos do banco' }} />
           <Stack.Screen name="consultor/conversa" options={{ headerShown: false, presentation: 'modal' }} />
         </Stack.Protected>
-        {/* Sem depender de casa: apagar a conta (de Configurações, aba Família, e da tela de boas-vindas, sem casa
-            nenhuma) e o Painel do app (de Configurações ou por /painel; só quem está em app_admins vê os números). */}
+        {/* Sem depender de casa: apagar a conta (da aba Configurações e da tela de boas-vindas, sem casa nenhuma) e o
+            Painel do app (de Configurações ou por /painel; só quem está em app_admins vê os números). */}
         <Stack.Protected guard={signedIn && !newPassword}>
           <Stack.Screen name="apagar-conta" options={{ title: 'Apagar minha conta' }} />
           <Stack.Screen name="painel" options={{ title: 'Painel do app' }} />

@@ -84,7 +84,7 @@ function SummaryPanel({ today }: { today: string }) {
           <EmptyState
             icon="heart-pulse"
             title="Nada pendente"
-            message="Consultas, vacinas, remédios e o treino do dia aparecem aqui. Cadastre a família e as fichas na aba Cuidados."
+            message="Consultas, vacinas, remédios e o treino do dia aparecem aqui. As pessoas e os pets da casa se cadastram em Configurações."
           />
         </Card>
       ) : null}

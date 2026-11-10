@@ -629,7 +629,8 @@ export function financeScreenHref(screen: FinanceScreen): Href {
     case 'contas':
       return { pathname: '/financas', params: { aba: 'contas' } };
     case 'notas':
-      return { pathname: '/financas', params: { aba: 'notas' } };
+      // As notas saíram de Finanças: ficam em Compras → Notas.
+      return { pathname: '/compras', params: { aba: 'notas' } };
   }
 }
 

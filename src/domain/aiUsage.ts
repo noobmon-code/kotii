@@ -1,10 +1,10 @@
 // Uso da IA no mês (limite por casa, conferido no servidor): o que mostrar
-// na aba Família.
+// em Configurações.
 
 // 'finance' só vem para quem tem o consultor financeiro (beta) na casa aberta.
 export type AiKind = 'chat' | 'photo' | 'menu' | 'nfce' | 'finance';
 
-/** O nome de cada uso da IA, como a aba Família e o painel do app mostram. */
+/** O nome de cada uso da IA, como Configurações e o painel do app mostram. */
 export const AI_KIND_LABELS: Record<AiKind, string> = {
   chat: 'Mensagens com o Nuke',
   photo: 'Leituras de foto (notas e saúde)',

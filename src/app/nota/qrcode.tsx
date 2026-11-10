@@ -22,7 +22,7 @@ import { radius, space, useColors } from '@/ui/theme';
 /**
  * Lê o QR code da nota (ou o link colado) e traz os itens da Sefaz, sem IA.
  * Se a Sefaz pedir o "não sou robô", o app não passa por ele: a nota fica
- * pendente (guardada no aparelho, em Finanças > Notas) e abre a tela dela, com
+ * pendente (guardada no aparelho, em Compras > Notas) e abre a tela dela, com
  * o passo a passo dos prints da Sefaz, que vão com a chave do QR. O mesmo QR
  * lido de novo abre a pendente, sem ir à Sefaz. Por uma semana, as notas novas
  * do mesmo estado também vão direto para a pendente (domain/captchaStates).
@@ -113,7 +113,7 @@ export default function NfceQrScreen() {
     else setPhotoOnly({ ...qr, direct });
   }
 
-  const close = () => (router.canGoBack() ? router.back() : router.replace('/financas'));
+  const close = () => (router.canGoBack() ? router.back() : router.replace({ pathname: '/compras', params: { aba: 'notas' } }));
 
   return (
     <Screen edges={[]}>

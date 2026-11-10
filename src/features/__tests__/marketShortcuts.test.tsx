@@ -2,12 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { productCategoryNote } from '@/domain/productCategory';
+import { MARKET_MONTH_CARD, ReceiptsPanel } from '@/features/market/ReceiptsPanel';
 import { ShoppingListsPanel } from '@/features/ShoppingListsPanel';
 import { PickerModal } from '@/ui/PickerModal';
 import { FeatureCard } from '@/ui/FeatureCard';
+import { Button } from '@/ui/primitives';
 
-// Os caminhos até o dinheiro do mercado e o aviso da categoria: Casa > Compras leva ao Mercado do mês, e o
-// seletor de categoria diz, antes da escolha, que a categoria vale também para as compras dos meses passados.
+// Os caminhos até o dinheiro do mercado e o aviso da categoria: Compras > Notas leva ao Mercado do mês (a única
+// entrada dele), Compras > Listas leva aos Preços, e o seletor de categoria diz, antes da escolha, que a categoria
+// vale também para as compras dos meses passados.
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockRouter = { push: jest.fn() };
@@ -21,6 +24,13 @@ jest.mock('@/data/market', () => ({
   useArchivedLists: () => ({ data: [] }),
   useReopenList: () => ({ mutate: jest.fn(), isPending: false }),
 }));
+// As notas: uma casa com nada ainda (o painel das notas tem os testes dele, receiptsPanel.test).
+jest.mock('@/data/receipts', () => ({
+  useDraftReceipts: () => ({ data: [], isPending: false, isError: false }),
+  useReceiptHistory: () => ({ data: { pages: [{ rows: [], remaining: 0 }] }, isPending: false, isError: false, hasNextPage: false }),
+}));
+jest.mock('@/data/pendingReceipts', () => ({ usePendingReceipts: () => ({ pending: [], storeNames: {} }) }));
+jest.mock('@/features/ReceiptScanner', () => ({ useReceiptScanner: () => ({ open: jest.fn(), busy: false, element: null }) }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: { message?: string }) => error?.message ?? 'Algo deu errado.' }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
@@ -42,32 +52,41 @@ afterEach(async () => {
   renderer = undefined;
 });
 
-describe('Casa > Compras', () => {
-  it('tem o atalho para o Mercado do mês, depois das listas', async () => {
+describe('Compras > Notas', () => {
+  it('começa pelo cartão do Mercado do mês, que leva a ele; o botão "Preços" não fica aqui', async () => {
     await act(async () => {
-      renderer = create(<ShoppingListsPanel />);
+      renderer = create(<ReceiptsPanel />);
     });
-    const text = texts(renderer!.toJSON()).join('\n');
-    expect(text).toContain(['Para onde foi o dinheiro do mercado', 'Mercado do mês: por item, por categoria e por mercado'].join('\n'));
-    expect(text.indexOf('Compras do mês')).toBeLessThan(text.indexOf('Para onde foi o dinheiro do mercado'));
+    const text = texts(renderer!.toJSON());
+    expect(text.slice(0, 3)).toEqual([MARKET_MONTH_CARD.title, MARKET_MONTH_CARD.subtitle, 'Adicionar nota']);
+    expect(MARKET_MONTH_CARD).toEqual({
+      title: 'Para onde foi o dinheiro do mercado',
+      subtitle: 'Mercado do mês: por item, por categoria e por mercado',
+    });
     const card = renderer!.root.findByType(FeatureCard);
-    expect(card.props.title).toBe('Para onde foi o dinheiro do mercado');
     // O leitor de tela diz o título e a frase de baixo, não só o título.
     expect(card.findAll((node) => node.props.accessibilityRole === 'button')[0].props.accessibilityLabel).toBe(
       'Para onde foi o dinheiro do mercado. Mercado do mês: por item, por categoria e por mercado',
     );
     await act(async () => card.props.onPress());
     expect(mockRouter.push).toHaveBeenCalledWith('/mercado');
+    expect(renderer!.root.findAllByType(Button).map((b) => b.props.title)).toEqual(['Adicionar nota']);
+    expect(text).not.toContain('Preços');
   });
+});
 
-  it('sem lista nenhuma, o atalho continua lá', async () => {
-    mockLists.data = [];
+describe('Compras > Listas', () => {
+  it('tem os Preços (só aqui) e não o cartão do Mercado do mês, que foi para as notas', async () => {
     await act(async () => {
       renderer = create(<ShoppingListsPanel />);
     });
-    const text = texts(renderer!.toJSON()).join('\n');
-    expect(text).toContain('Nenhuma lista ainda');
-    expect(text).toContain('Para onde foi o dinheiro do mercado');
+    const text = texts(renderer!.toJSON());
+    expect(text).toContain('Compras do mês');
+    expect(text).not.toContain(MARKET_MONTH_CARD.title);
+    expect(renderer!.root.findAllByType(FeatureCard)).toHaveLength(0);
+    const prices = renderer!.root.findAll((node) => node.props.label === 'Preços' && typeof node.props.onPress === 'function')[0];
+    await act(async () => prices.props.onPress());
+    expect(mockRouter.push).toHaveBeenCalledWith('/precos');
   });
 });
 

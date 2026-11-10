@@ -3,10 +3,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Constants from 'expo-constants';
 import { router } from 'expo-router';
-import { AccessibilityInfo, Platform } from 'react-native';
+import type { ReactElement } from 'react';
+import { AccessibilityInfo, Platform, Share } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
-import SettingsScreen from '@/app/configuracoes';
+import SettingsScreen from '@/app/(tabs)/configuracoes';
+import RemindersScreen from '@/app/avisos';
+import ProfileScreen from '@/app/perfil';
+import FeedbackScreen from '@/app/recado';
 import { APP_DASHBOARD_TITLE } from '@/domain/appDashboard';
 import { HOUSE_PLACE_ROW_HINT, HOUSE_PLACE_ROW_UNKNOWN, HOUSE_PLACE_TITLE } from '@/domain/housePlace';
 import {
@@ -22,18 +26,24 @@ import {
 } from '@/domain/appFeedback';
 import { THEME_HINT } from '@/domain/appearance';
 import { PROFILE_MESSAGES, PROFILE_NAME_HINT, PROFILE_NOT_READY, PROFILE_PRIVACY } from '@/domain/profile';
+import { SHARING_ABOUT, SHARING_TITLE } from '@/domain/sharedPrices';
+import { MODERATION_TITLE } from '@/domain/storeModeration';
 import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
 import { OFFLINE_TRY_AGAIN } from '@/lib/networkErrors';
 import { THEME_CHOICE_KEY } from '@/lib/themeChoice';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Chip } from '@/ui/primitives';
+import { HeaderButton } from '@/ui/FeatureCard';
+import { Chip, Screen } from '@/ui/primitives';
 import { PALETTES } from '@/ui/theme';
 import { ThemeChoiceProvider } from '@/ui/ThemeChoiceProvider';
 
-// A tela de Configurações com o banco de mentira: o perfil (lido da tabela, salvo numa chamada só, com os erros
-// do banco em palavras, e só o nome com um aviso quando a migração ainda não chegou), o tema (que muda as
-// cores e fica no aparelho), o recado escrito pela pessoa (send_app_feedback, sem IA no meio), a conta (termos,
-// sair, apagar), que vieram da aba Família, e a linha do painel do app, só para quem o mantém.
+// A aba Configurações (que juntou a antiga aba Família e a tela de Configurações) e as telas que ela abre por uma
+// linha, com o banco de mentira. A aba: as categorias na ordem (Casa, Avisos, Você, Sobre o Kotii, Conta e, só para
+// quem tem acesso, Manutenção do app), os moradores (tocar abre a ficha), o convite (o código só ao tocar), as
+// pessoas e pets sem celular (o único lugar de cadastrar), o tema (que muda as cores e fica no aparelho), sair e
+// apagar a conta, e o painel e a moderação. O perfil (/perfil: lido da tabela, salvo numa chamada só, com os erros
+// do banco em palavras, e só o nome com um aviso quando a migração ainda não chegou) e o recado escrito pela pessoa
+// (/recado: send_app_feedback, sem IA no meio) são telas próprias.
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -41,14 +51,22 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 const mockSystem = { scheme: 'light' as 'light' | 'dark' };
 jest.mock('react-native/Libraries/Utilities/useColorScheme', () => ({ __esModule: true, default: () => mockSystem.scheme }));
 
-/** A tabela profiles e a save_my_profile, como o PostgREST responderia; is_app_admin responde à parte. */
+/**
+ * A tabela profiles e a save_my_profile, como o PostgREST responderia; is_app_admin, o uso da IA e a pergunta dos
+ * preços compartilhados respondem à parte.
+ */
 const mockDb = {
   read: { data: null as unknown, error: null as unknown },
   rpc: jest.fn(async (_name: string, _args: Record<string, unknown>): Promise<{ data: unknown; error: unknown }> => ({ data: null, error: null })),
   reads: [] as { table: string; filter: [string, unknown] }[],
   /** A resposta de is_app_admin: quase todo mundo não mantém o app. */
   admin: { data: false as unknown, error: null as unknown },
+  /** O uso da IA neste mês (ai_usage_summary). */
+  aiUsage: { data: [] as unknown, error: null as unknown },
+  /** O banco tem o compartilhamento de preços? (shared_prices_available) */
+  sharing: { data: false as unknown, error: null as unknown },
 };
+const RPC_APART: Record<string, keyof typeof mockDb> = { is_app_admin: 'admin', ai_usage_summary: 'aiUsage', shared_prices_available: 'sharing' };
 jest.mock('@/lib/supabase', () => ({
   supabase: {
     from: (table: string) => ({
@@ -62,7 +80,11 @@ jest.mock('@/lib/supabase', () => ({
       }),
     }),
     rpc: (name: string, args: Record<string, unknown>) =>
-      name === 'is_app_admin' ? Promise.resolve(mockDb.admin) : mockDb.rpc(name, args),
+      name in RPC_APART ? Promise.resolve(mockDb[RPC_APART[name]]) : mockDb.rpc(name, args),
+  },
+  unwrap: (result: { data: unknown; error: unknown }) => {
+    if (result.error) throw result.error;
+    return result.data;
   },
   // Como o de verdade para o pedido que não chegou ao servidor ("Sem internet agora…"); o resto, a mensagem.
   errorMessage: (error: unknown) => {
@@ -71,17 +93,42 @@ jest.mock('@/lib/supabase', () => ({
     return error instanceof Error ? error.message : String(error);
   },
 }));
-const mockMe = { household_id: 'h1', user_id: 'ana', display_name: 'Ana', role: 'owner' as const };
-// As casas da pessoa: com mais de uma, a linha do clima diz de qual casa é.
-const mockHouses = { list: [] as { id: string; name: string; role: string }[] };
+type Member = { household_id: string; user_id: string; display_name: string; role: 'owner' | 'member' };
+const mockMe: Member = { household_id: 'h1', user_id: 'ana', display_name: 'Ana', role: 'owner' };
+const mockBeto: Member = { household_id: 'h1', user_id: 'beto', display_name: 'Beto', role: 'member' };
+// Quem está na casa (com mais de uma pessoa, sair não apaga a casa), quem é a pessoa deste aparelho, e as casas
+// dela: com mais de uma, a linha do clima diz de qual casa é.
+const mockHousehold = { members: [mockMe, mockBeto], me: mockMe, houses: [] as { id: string; name: string; role: string }[] };
+const mockRefetchHousehold = jest.fn(async (): Promise<unknown> => undefined);
 jest.mock('@/lib/auth', () => ({
   signOut: jest.fn(),
   useAuth: () => ({ session: { user: { id: 'ana', email: 'ana@exemplo.com' } } }),
   useHousehold: () => ({
-    data: { household: { id: 'h1', name: 'Casa da Ana' }, members: [mockMe], me: mockMe, households: mockHouses.list },
+    data: {
+      household: { id: 'h1', name: 'Casa da Ana', invite_code: 'ABC234' },
+      members: mockHousehold.members,
+      me: mockHousehold.me,
+      households: mockHousehold.houses,
+    },
+    refetch: mockRefetchHousehold,
   }),
 }));
-jest.mock('@/data/household', () => ({ useSignOutQuestion: () => () => 'Deseja sair desta conta neste aparelho?' }));
+const mockLeave = { mutate: jest.fn(), isPending: false };
+const mockRegenerate = { mutate: jest.fn(), isPending: false };
+jest.mock('@/data/household', () => ({
+  LastMemberError: class extends Error {},
+  useSignOutQuestion: () => () => 'Deseja sair desta conta neste aparelho?',
+  useLeaveHousehold: () => mockLeave,
+  useRegenerateInviteCode: () => mockRegenerate,
+  useRemoveMember: () => ({ mutate: jest.fn(), isPending: false }),
+}));
+// As fichas da casa: a de quem usa o app (member_user_id) e as de quem não usa (crianças e pets).
+const mockPeople = { data: [] as { id: string; name: string; kind: 'pessoa' | 'pet'; member_user_id: string | null; species?: string | null }[] | undefined };
+jest.mock('@/data/health', () => ({ usePeople: () => ({ data: mockPeople.data }) }));
+jest.mock('@/data/home', () => ({ useKidPoints: () => ({ data: { 'p-lia': 3 } }) }));
+jest.mock('@/lib/reminders', () => ({ REMINDER_PLACE: 'neste celular' }));
+// Os interruptores dos avisos têm os testes deles (HouseRemindersSection.test): aqui, só onde eles ficam.
+jest.mock('@/features/HouseRemindersSection', () => ({ HouseRemindersSection: () => 'Os interruptores dos avisos' }));
 // Quem modera (a is_moderator): à parte do banco de mentira, que conta as chamadas do perfil.
 const mockModerator = { value: false };
 jest.mock('@/data/storeModeration', () => ({ useIsModerator: () => ({ data: mockModerator.value }) }));
@@ -89,7 +136,7 @@ jest.mock('@/data/storeModeration', () => ({ useIsModerator: () => ({ data: mock
 const mockLocation = { data: null as { label: string } | null | undefined };
 jest.mock('@/data/weather', () => ({ useHouseholdLocation: () => ({ data: mockLocation.data }) }));
 jest.mock('@/ui/dialogs', () => ({ confirmAction: jest.fn(), notify: jest.fn() }));
-jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
+jest.mock('expo-router', () => ({ router: { push: jest.fn(), navigate: jest.fn() }, useFocusEffect: () => undefined }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 
@@ -108,13 +155,14 @@ async function settle() {
   for (let i = 0; i < 5; i += 1) await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
 }
 
+/** A tela que `mount` abre: a aba, ou (nos blocos delas) o perfil ou o recado. */
+let shown: () => ReactElement = () => <SettingsScreen />;
+
 async function mount() {
   await act(async () => {
     renderer = create(
       <QueryClientProvider client={queryClient}>
-        <ThemeChoiceProvider>
-          <SettingsScreen />
-        </ThemeChoiceProvider>
+        <ThemeChoiceProvider>{shown()}</ThemeChoiceProvider>
       </QueryClientProvider>,
     );
   });
@@ -140,13 +188,21 @@ const pressable = (label: string) =>
 
 beforeEach(() => {
   jest.clearAllMocks();
+  shown = () => <SettingsScreen />;
   mockModerator.value = false;
   mockLocation.data = null;
-  mockHouses.list = [];
+  mockHousehold.members = [mockMe, mockBeto];
+  mockHousehold.me = mockMe;
+  mockHousehold.houses = [];
+  mockPeople.data = [];
+  mockLeave.isPending = false;
+  mockRegenerate.isPending = false;
   mockSystem.scheme = 'light';
   mockDb.read = { data: { birth_date: '1985-03-05', phone: '83999999999' }, error: null };
   mockDb.reads = [];
   mockDb.admin = { data: false, error: null };
+  mockDb.aiUsage = { data: [], error: null };
+  mockDb.sharing = { data: false, error: null };
   mockDb.rpc.mockImplementation(async (_name, args) => ({
     data: { name: String(args.p_name), birth_date: args.p_birth_date ?? null, phone: args.p_phone ?? null },
     error: null,
@@ -175,7 +231,137 @@ afterEach(async () => {
   await AsyncStorage.clear();
 });
 
-describe('Configurações: perfil', () => {
+describe('Configurações: a aba', () => {
+  it('as categorias, do mais usado ao mais raro e com as saídas no fim, sem o cartão do topo, a engrenagem nem a linha do fim', async () => {
+    const text = await mount();
+    const order = [
+      'Casa',
+      'Moradores (2)',
+      'Convidar',
+      'Pessoas e pets sem celular',
+      HOUSE_PLACE_TITLE,
+      'Suas casas',
+      'AvisosAvisos neste celular',
+      'Você',
+      'Perfil',
+      `Tema${'Automático'}`,
+      'Sobre o Kotii',
+      'Uso da IA neste mês',
+      TERMS_TITLE,
+      FEEDBACK_FORM_TITLE,
+      'ContaSair da conta',
+      'Sair desta casa',
+      'Apagar minha conta',
+    ];
+    const at = order.map((part) => text.indexOf(part));
+    expect(at.every((index) => index >= 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    // O nome da aba é o título da página só para o leitor de tela; o primeiro a aparecer é a categoria Casa.
+    expect(text.startsWith('ConfiguraçõesCasaMoradores (2)')).toBe(true);
+    const headers = renderer!.root.findAll((node) => typeof node.type === 'string' && node.props.accessibilityRole === 'header');
+    expect(headers[0].props.children).toBe('Configurações');
+    expect(renderer!.root.findByType(Screen).props.heading).toBe('Configurações');
+    // A engrenagem do topo e a linha "Configurações" do fim abriam esta mesma tela: saíram.
+    expect(renderer!.root.findAllByType(HeaderButton)).toHaveLength(0);
+    expect(text.split('Configurações')).toHaveLength(2);
+    // Os formulários e os interruptores ficam nas telas próprias: a aba é curta.
+    expect(renderer!.root.findAll((node) => node.props.label === 'Nome' || node.props.label === 'Recado')).toHaveLength(0);
+    expect(renderer!.root.findAll((node) => node.props.accessibilityRole === 'switch')).toHaveLength(0);
+    // Os documentos foram para Casa → Documentos.
+    expect(text).not.toContain('Documentos');
+  });
+
+  it('tocar num morador abre a ficha dele (a da saúde); sem a ficha, a linha só mostra', async () => {
+    mockPeople.data = [
+      { id: 'p-ana', name: 'Ana', kind: 'pessoa', member_user_id: 'ana' },
+      { id: 'p-lia', name: 'Lia', kind: 'pessoa', member_user_id: null },
+    ];
+    await mount();
+    const row = (title: string) => renderer!.root.findAll((node) => node.props.title === title && 'onPress' in node.props)[0];
+    expect(typeof row('Ana (você)').props.onPress).toBe('function');
+    await act(async () => row('Ana (você)').props.onPress());
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/pessoa/[id]', params: { id: 'p-ana' } });
+    // Beto ainda não tem ficha nesta casa (ou as fichas não chegaram): nada a abrir.
+    expect(row('Beto').props.onPress).toBeUndefined();
+  });
+
+  it('"Convidar" mostra o código só ao tocar, com compartilhar e, para quem é responsável, trocar o código', async () => {
+    const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+    expect(await mount()).not.toContain('ABC234');
+    const invite = () => renderer!.root.findAll((node) => node.props.title === 'Convidar' && typeof node.props.onPress === 'function')[0];
+    expect(invite().props.expanded).toBe(false);
+    await act(async () => invite().props.onPress());
+    expect(invite().props.expanded).toBe(true);
+    expect(page()).toContain('ConvidarCódigo de convite desta casaABC234Quem entrar com este código vê e edita tudo da casa');
+    await press('Compartilhar convite');
+    expect(share).toHaveBeenCalledWith({ message: 'Entre na nossa casa "Casa da Ana" no Kotii com o código ABC234.' });
+    await press('Trocar código');
+    expect(jest.mocked(confirmAction).mock.lastCall?.[0]).toBe('Trocar o código de convite');
+    // Tocar de novo esconde.
+    await act(async () => invite().props.onPress());
+    expect(page()).not.toContain('ABC234');
+    await act(async () => renderer?.unmount());
+
+    // Quem não é responsável vê e compartilha o código, mas não troca.
+    mockHousehold.me = mockBeto;
+    await mount();
+    await act(async () => invite().props.onPress());
+    expect(page()).toContain('ABC234');
+    expect(page()).toContain('Compartilhar convite');
+    expect(page()).not.toContain('Trocar código');
+    share.mockRestore();
+  });
+
+  it('pessoas e pets sem celular: as fichas e o cadastro (o único lugar de criar uma ficha)', async () => {
+    mockPeople.data = [
+      { id: 'p-ana', name: 'Ana', kind: 'pessoa', member_user_id: 'ana' },
+      { id: 'p-lia', name: 'Lia', kind: 'pessoa', member_user_id: null },
+      { id: 'p-rex', name: 'Rex', kind: 'pet', member_user_id: null, species: 'Cachorro' },
+    ];
+    const text = await mount();
+    expect(text).toContain('Lia3 pontos nas tarefasRexCachorroAdicionar pessoaAdicionar pet');
+    await act(async () => pressable('Lia3 pontos nas tarefas').props.onPress());
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/pessoa/[id]', params: { id: 'p-lia' } });
+    await press('Adicionar pessoa');
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/pessoa/[id]', params: { id: 'nova', kind: 'pessoa' } });
+    await press('Adicionar pet');
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/pessoa/[id]', params: { id: 'nova', kind: 'pet' } });
+  });
+
+  it('os avisos e o recado são linhas que abrem telas próprias', async () => {
+    await mount();
+    expect(page()).not.toContain('Os interruptores dos avisos');
+    await act(async () => pressable('Avisos neste celularTarefas, remédios, consultas e mais, por notificação').props.onPress());
+    expect(router.push).toHaveBeenCalledWith('/avisos');
+    await act(async () => pressable(`${FEEDBACK_FORM_TITLE}Um problema, uma sugestão ou um elogio sobre o app`).props.onPress());
+    expect(router.push).toHaveBeenCalledWith('/recado');
+  });
+
+  it('Sobre o Kotii: o uso da IA, os preços compartilhados (quando o banco tem) e depois os termos', async () => {
+    mockDb.aiUsage = { data: [{ kind: 'chat', used: 12, lim: 100 }], error: null };
+    mockDb.sharing = { data: true, error: null };
+    const text = await mount();
+    expect(text).toContain(
+      `Sobre o KotiiUso da IA neste mêsMensagens com o Nuke12 de 100Limite da casa para não passar do custo combinado.`,
+    );
+    expect(text).toContain(`${SHARING_TITLE}${SHARING_ABOUT}${TERMS_TITLE}${termsVersionLabel()}`);
+  });
+});
+
+describe('Avisos (/avisos, da linha em Configurações → Avisos)', () => {
+  it('a tela é a dos interruptores de cada aviso, sem nada da aba em volta', async () => {
+    shown = () => <RemindersScreen />;
+    expect(await mount()).toBe('Os interruptores dos avisos');
+    // Logo abaixo do cabeçalho da pilha: sem a margem de cima do aparelho.
+    expect(renderer!.root.findByType(Screen).props.edges).toEqual([]);
+  });
+});
+
+describe('Perfil (/perfil, da linha "Perfil" em Configurações → Você)', () => {
+  beforeEach(() => {
+    shown = () => <ProfileScreen />;
+  });
+
   it('lê a própria linha do perfil e mostra o nome da casa, a data, o telefone com a máscara e o e-mail só para ler', async () => {
     const text = await mount();
     expect(mockDb.reads).toEqual([{ table: 'profiles', filter: ['user_id', 'ana'] }]);
@@ -273,23 +459,36 @@ describe('Configurações: perfil', () => {
     expect(button('Salvar').props.disabled).toBe(false);
   });
 
-  it('sem a tabela (o app antes da migração): só o nome, com o aviso; o tema e a conta funcionam', async () => {
+  it('sem a tabela (o app antes da migração): só o nome, com o aviso; o e-mail continua, e a aba (o tema e a conta) funciona', async () => {
     mockDb.read = { data: null, error: { code: 'PGRST205', message: "Could not find the table 'public.profiles' in the schema cache" } };
     const text = await mount();
     expect(text).toContain(`NomeAna${PROFILE_NOT_READY}`);
+    expect(text).toContain('E-mail da contaana@exemplo.com');
     expect(renderer!.root.findAll((node) => node.props.label === 'Telefone')).toHaveLength(0);
     expect(renderer!.root.findAll((node) => node.props.title === 'Salvar')).toHaveLength(0);
+    await act(async () => renderer?.unmount());
+    shown = () => <SettingsScreen />;
+    const tab = await mount();
     await act(async () => pressable('Escuro').props.onPress());
     expect(await AsyncStorage.getItem(THEME_CHOICE_KEY)).toBe('dark');
-    expect(text).toContain('Sair da conta');
+    expect(tab).toContain('Sair da conta');
   });
 
-  it('a leitura que falha mostra o erro só no perfil, com "Tentar de novo"', async () => {
+  it('a leitura que falha mostra o erro no lugar do formulário, com "Tentar de novo", e o e-mail fica', async () => {
     mockDb.read = { data: null, error: new Error('Sem internet agora.') };
     const text = await mount();
     expect(text).toContain('Sem internet agora.Tentar de novo');
-    expect(text).toContain(`Tema${'Automático'}`);
-    expect(text).toContain('Apagar minha conta');
+    expect(text).toContain('E-mail da contaana@exemplo.com');
+  });
+
+  it('a aba não lê o perfil: o nome e o e-mail da linha vêm da casa e da conta', async () => {
+    shown = () => <SettingsScreen />;
+    const text = await mount();
+    expect(mockDb.reads).toEqual([]);
+    expect(text).toContain('PerfilAna · ana@exemplo.com');
+    expect(renderer!.root.findAll((node) => node.props.label === 'Telefone')).toHaveLength(0);
+    await act(async () => pressable('PerfilAna · ana@exemplo.com').props.onPress());
+    expect(router.push).toHaveBeenCalledWith('/perfil');
   });
 });
 
@@ -322,9 +521,13 @@ describe('Configurações: aparência', () => {
 });
 
 describe('Configurações: conta', () => {
-  it('os termos com a data da versão, sair (com a pergunta de sempre) e apagar a conta', async () => {
+  it('os termos com a data da versão (em Sobre o Kotii), sair (com a pergunta de sempre), sair desta casa e apagar a conta', async () => {
     const text = await mount();
-    expect(text).toContain(`${TERMS_TITLE}${termsVersionLabel()}Sair da contaApagar minha conta`);
+    expect(text).toContain(`${TERMS_TITLE}${termsVersionLabel()}`);
+    // A explicação de sair da casa vem antes do botão; com outra pessoa na casa, sair não apaga a casa.
+    expect(text).toContain(
+      'ContaSair da contaSaindo, você pode criar outra casa ou entrar em uma com um código.Sair desta casaApagar minha conta',
+    );
     await act(async () => pressable(`${TERMS_TITLE}${termsVersionLabel()}`).props.onPress());
     expect(router.push).toHaveBeenCalledWith('/termos');
     await press('Sair da conta');
@@ -332,49 +535,74 @@ describe('Configurações: conta', () => {
     await press('Apagar minha conta');
     expect(router.push).toHaveBeenCalledWith('/apagar-conta');
   });
+
+  it('sair desta casa confere de novo quem está nela: com outra pessoa, a pergunta de sair; sozinha, a de apagar a casa', async () => {
+    const fresh = (members: Member[]) => ({
+      data: { household: { id: 'h1', name: 'Casa da Ana' }, members, me: mockMe, households: [] },
+    });
+    mockRefetchHousehold.mockResolvedValueOnce(fresh([mockMe, mockBeto]));
+    await mount();
+    await press('Sair desta casa');
+    expect(mockRefetchHousehold).toHaveBeenCalledTimes(1);
+    expect(confirmAction).toHaveBeenLastCalledWith(
+      'Sair da casa',
+      'Você deixa de ver os dados de "Casa da Ana". O que você registrou continua com a casa. Beto fica responsável pela casa. Para voltar, só com o código de convite.',
+      'Sair da casa',
+      expect.any(Function),
+    );
+    // Beto saiu enquanto a tela estava aberta: agora sair apaga a casa, e a pergunta diz isso.
+    mockRefetchHousehold.mockResolvedValueOnce(fresh([mockMe]));
+    await press('Sair desta casa');
+    expect(jest.mocked(confirmAction).mock.lastCall?.[0]).toBe('Apagar a casa');
+    expect(mockLeave.mutate).not.toHaveBeenCalled();
+  });
+
+  it('sozinha na casa, a explicação diz que sair apaga a casa', async () => {
+    mockHousehold.members = [mockMe];
+    expect(await mount()).toContain('ContaSair da contaVocê é a única pessoa aqui: sair apaga a casa.Sair desta casa');
+  });
 });
 
-describe('Configurações: painel do app', () => {
-  it('quem não mantém o app não vê a linha do painel', async () => {
+describe('Configurações: manutenção do app', () => {
+  it('quem não mantém o app nem modera não vê a categoria', async () => {
     const text = await mount();
     expect(text).not.toContain(APP_DASHBOARD_TITLE);
-    expect(text).toContain('Sair da conta');
+    expect(text).not.toContain('Manutenção do app');
+    expect(text.endsWith('Apagar minha conta')).toBe(true);
   });
 
   it('sem a função no banco (antes da migração), a linha não aparece e a tela abre inteira', async () => {
     mockDb.admin = { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.is_app_admin' } };
     const text = await mount();
     expect(text).not.toContain(APP_DASHBOARD_TITLE);
-    expect(text).toContain(`${TERMS_TITLE}${termsVersionLabel()}Sair da conta`);
+    expect(text).toContain(`${TERMS_TITLE}${termsVersionLabel()}`);
+    expect(text.endsWith('Sair desta casaApagar minha conta')).toBe(true);
   });
 
-  it('para quem mantém o app, a linha abre o painel', async () => {
+  it('para quem mantém o app, a linha do painel fica no fim, depois da conta, e abre o painel', async () => {
     mockDb.admin = { data: true, error: null };
     const text = await mount();
-    expect(text).toContain(`Painel${APP_DASHBOARD_TITLE}Contas, pessoas ativas, Nuke e funções`);
-    // O recado fica entre a aparência e o painel.
-    expect(text.indexOf(THEME_HINT)).toBeLessThan(text.indexOf(FEEDBACK_FORM_TITLE));
-    expect(text.indexOf(FEEDBACK_FORM_TITLE)).toBeLessThan(text.indexOf(`Painel${APP_DASHBOARD_TITLE}`));
+    expect(text.endsWith(`Apagar minha contaManutenção do app${APP_DASHBOARD_TITLE}Contas, pessoas ativas, Nuke e funções`)).toBe(true);
     await act(async () => pressable(`${APP_DASHBOARD_TITLE}Contas, pessoas ativas, Nuke e funções`).props.onPress());
     expect(router.push).toHaveBeenCalledWith('/painel');
     // A pergunta não passa pela rpc do perfil.
     expect(mockDb.rpc).not.toHaveBeenCalled();
   });
-});
 
-describe('Configurações: moderação', () => {
   it('só quem modera vê "Nomes dos mercados", que abre a tela da moderação', async () => {
-    expect(await mount()).not.toContain('Moderação');
-    await act(async () => renderer?.unmount());
-
     mockModerator.value = true;
     const text = await mount();
-    expect(text).toContain('ModeraçãoNomes dos mercadosO nome padrão de cada mercado');
-    // O recado fica entre a aparência e a moderação.
-    expect(text.indexOf(THEME_HINT)).toBeLessThan(text.indexOf(FEEDBACK_FORM_TITLE));
-    expect(text.indexOf(FEEDBACK_FORM_TITLE)).toBeLessThan(text.indexOf('ModeraçãoNomes dos mercados'));
-    await act(async () => pressable('Nomes dos mercadosO nome padrão de cada mercado').props.onPress());
+    expect(text.endsWith(`Manutenção do app${MODERATION_TITLE}O nome padrão de cada mercado`)).toBe(true);
+    await act(async () => pressable(`${MODERATION_TITLE}O nome padrão de cada mercado`).props.onPress());
     expect(router.push).toHaveBeenCalledWith('/moderacao');
+  });
+
+  it('com os dois acessos, o painel e depois a moderação, na mesma categoria', async () => {
+    mockModerator.value = true;
+    mockDb.admin = { data: true, error: null };
+    expect(await mount()).toContain(
+      `Manutenção do app${APP_DASHBOARD_TITLE}Contas, pessoas ativas, Nuke e funções${MODERATION_TITLE}O nome padrão de cada mercado`,
+    );
   });
 });
 
@@ -382,39 +610,39 @@ describe('Configurações: clima da casa', () => {
   it('antes de saber (lendo, ou a leitura falhou sem nada guardado), a linha não convida a definir o bairro', async () => {
     mockLocation.data = undefined;
     const text = await mount();
-    expect(text).toContain(`Casa${HOUSE_PLACE_TITLE}${HOUSE_PLACE_ROW_UNKNOWN}Conta`);
+    expect(text).toContain(`${HOUSE_PLACE_TITLE}${HOUSE_PLACE_ROW_UNKNOWN}Suas casas`);
     expect(text).not.toContain(HOUSE_PLACE_ROW_HINT);
   });
 
   it('sem bairro, a linha convida; abre a tela do clima', async () => {
     mockLocation.data = null;
     const text = await mount();
-    expect(text).toContain(`Casa${HOUSE_PLACE_TITLE}${HOUSE_PLACE_ROW_HINT}Conta`);
+    expect(text).toContain(`${HOUSE_PLACE_TITLE}${HOUSE_PLACE_ROW_HINT}Suas casas`);
     await act(async () => pressable(`${HOUSE_PLACE_TITLE}${HOUSE_PLACE_ROW_HINT}`).props.onPress());
     expect(router.push).toHaveBeenCalledWith('/clima');
   });
 
-  it('com o bairro, a linha diz onde fica a casa, antes da conta', async () => {
+  it('com o bairro, a linha diz onde fica a casa, na categoria Casa', async () => {
     mockLocation.data = { label: 'Pinheiros, São Paulo' };
     const text = await mount();
-    expect(text).toContain(`Casa${HOUSE_PLACE_TITLE}Pinheiros, São PauloConta`);
-    expect(text.indexOf(HOUSE_PLACE_TITLE)).toBeGreaterThan(text.indexOf('Aparência'));
+    expect(text).toContain(`${HOUSE_PLACE_TITLE}Pinheiros, São PauloSuas casas`);
+    expect(text.indexOf(HOUSE_PLACE_TITLE)).toBeLessThan(text.indexOf('Você'));
   });
 
   it('com mais de uma casa, a linha diz de qual casa é o lugar (a aberta)', async () => {
-    mockHouses.list = [
+    mockHousehold.houses = [
       { id: 'h1', name: 'Casa da Ana', role: 'owner' },
       { id: 'h2', name: 'Casa da praia', role: 'member' },
     ];
     mockLocation.data = { label: 'Pinheiros, São Paulo' };
-    expect(await mount()).toContain(`Casa${HOUSE_PLACE_TITLE}Casa da Ana · Pinheiros, São PauloConta`);
+    expect(await mount()).toContain(`${HOUSE_PLACE_TITLE}Casa da Ana · Pinheiros, São PauloSuas casas (2)`);
     await act(async () => renderer?.unmount());
     mockLocation.data = null;
-    expect(await mount()).toContain(`Casa${HOUSE_PLACE_TITLE}Casa da Ana · ${HOUSE_PLACE_ROW_HINT}Conta`);
+    expect(await mount()).toContain(`${HOUSE_PLACE_TITLE}Casa da Ana · ${HOUSE_PLACE_ROW_HINT}Suas casas (2)`);
   });
 });
 
-describe('Configurações: mandar recado', () => {
+describe('Mandar recado (/recado, da linha em Configurações → Sobre o Kotii)', () => {
   const chip = (label: string) => renderer!.root.findAllByType(Chip).find((node) => node.props.label === label)!;
   const selectedKinds = () =>
     renderer!.root
@@ -424,18 +652,16 @@ describe('Configurações: mandar recado', () => {
   const sends = () => mockDb.rpc.mock.calls.filter(([name]) => name === 'send_app_feedback');
 
   beforeEach(() => {
+    shown = () => <FeedbackScreen />;
     mockDb.rpc.mockImplementation(async (name) =>
       name === 'send_app_feedback' ? { data: 'recado-1', error: null } : { data: null, error: null },
     );
   });
 
-  it('fica entre a aparência e a conta: para que serve, os tipos sem nenhum marcado, o campo e quem lê', async () => {
+  it('a tela tem para que serve, os tipos sem nenhum marcado, o campo e quem lê', async () => {
     const text = await mount();
-    expect(text).toContain(
-      `${THEME_HINT}${FEEDBACK_FORM_TITLE}${FEEDBACK_FORM_INTRO}${FEEDBACK_FORM_KIND_LABEL}ProblemaSugestãoElogioOutro`,
-    );
+    expect(text.startsWith(`${FEEDBACK_FORM_INTRO}${FEEDBACK_FORM_KIND_LABEL}ProblemaSugestãoElogioOutro`)).toBe(true);
     expect(text).toContain(`${FEEDBACK_DISCLOSURE}Enviar`);
-    expect(text.indexOf(FEEDBACK_FORM_TITLE)).toBeLessThan(text.indexOf(TERMS_TITLE));
     expect(selectedKinds()).toEqual([]);
     // Em branco não vai.
     expect(button('Enviar').props.disabled).toBe(true);

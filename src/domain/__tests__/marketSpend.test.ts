@@ -195,15 +195,9 @@ describe('o que conta como dinheiro do mercado', () => {
     const four = marketMonth([first, second, third, fourth, confirmed], MONTH, AFTER);
     expect(four.drafts?.label).toBe('4 notas de outubro ainda esperam a revisão. Elas entram nesta conta quando forem confirmadas.');
     expect(four.drafts?.receipts.map((r) => r.key)).toEqual([fourth.id, third.id, second.id]);
-    // Sem Finanças (lib/features, como no app: sem a opção), o resto está na tela Hoje, que lista todos os rascunhos.
-    expect(four.drafts?.more).toBe('e mais 1 na tela Hoje');
-    expect(marketMonth([first, second, third, fourth, draft(15), draft(16)], MONTH, AFTER).drafts?.more).toBe('e mais 3 na tela Hoje');
-    expect(marketMonth([first, second, third, fourth], MONTH, AFTER, [], { finance: false }).drafts?.more).toBe('e mais 1 na tela Hoje');
-    // Com Finanças ligada, em Finanças > Notas.
-    const withFinance = (receipts: MarketReceipt[]) => marketMonth(receipts, MONTH, AFTER, [], { finance: true }).drafts?.more;
-    expect(withFinance([first, second, third, fourth, confirmed])).toBe('e mais 1 em Finanças > Notas');
-    expect(withFinance([first, second, third, fourth, draft(15), draft(16)])).toBe('e mais 3 em Finanças > Notas');
-    expect(withFinance([first, second, third])).toBeNull();
+    // O resto está em Compras > Notas, que lista todos os rascunhos (com Finanças ligada ou não: as notas saíram de lá).
+    expect(four.drafts?.more).toBe('e mais 1 em Compras > Notas');
+    expect(marketMonth([first, second, third, fourth, draft(15), draft(16)], MONTH, AFTER).drafts?.more).toBe('e mais 3 em Compras > Notas');
   });
 });
 
