@@ -6,7 +6,7 @@ import { addDays, todayISO } from '@/domain/dates';
 import { MedicationsPanel } from '@/features/health/MedicationsPanel';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import type { Medication } from '@/lib/types';
-import { Button, Chip, ErrorNotice, ListRow, Loading, Section } from '@/ui/primitives';
+import { Badge, Button, Chip, ErrorNotice, ListRow, Loading, Section } from '@/ui/primitives';
 
 // Saúde → Remédios de verdade (as seções de remédios inteiras), com as buscas trocadas por respostas prontas: as
 // doses de hoje, os remédios acabando e os em uso, com "Novo remédio" no alto; a pessoa escolhida (?pessoa=, a mesma
@@ -21,6 +21,8 @@ interface Query {
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockQueries: { people: Query; medications: Query } = {} as never;
+const mockLists: { data: unknown[] } = { data: [] };
+const mockAdd = jest.fn<(item: unknown) => Promise<unknown>>();
 
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 jest.mock('@/lib/supabase', () => ({ supabase: {}, unwrap: (r: { data: unknown }) => r.data, errorMessage: (error: unknown) => String(error) }));
@@ -33,8 +35,8 @@ jest.mock('@/data/home', () => ({
   useToggleDose: () => ({ mutate: jest.fn() }),
 }));
 jest.mock('@/data/market', () => ({
-  useShoppingLists: () => ({ data: [] }),
-  useAddToPharmacyList: () => ({ mutateAsync: jest.fn() }),
+  useShoppingLists: () => mockLists,
+  useAddToPharmacyList: () => ({ mutateAsync: mockAdd }),
 }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));
@@ -113,6 +115,8 @@ const newMedication = () => renderer!.root.findAllByType(Button).find((button) =
 
 beforeEach(() => {
   jest.mocked(router.push).mockClear();
+  mockLists.data = [];
+  mockAdd.mockReset();
   Object.assign(mockQueries, {
     people: loaded([person('ana', 'Ana'), person('beto', 'Beto')]),
     medications: loaded([losartana, vitamina, dipirona]),
@@ -170,6 +174,49 @@ describe('Saúde → Remédios', () => {
     expect(rowsOf('Em uso')).toEqual(['Losartana', 'Vitamina D', 'Dipirona']);
     act(() => newMedication().props.onPress());
     expect(router.push).toHaveBeenCalledWith({ pathname: '/remedio/[id]', params: { id: 'novo', pessoa: '' } });
+  });
+});
+
+describe('Saúde → Remédios: o item da farmácia com a pessoa escolhida', () => {
+  // A Ana e o Beto tomam losartana; a da Ana está acabando, a do Beto não tem estoque acompanhado. O item da farmácia
+  // diz de quem é (as linhas são contadas com todos os remédios da casa), também com a Ana escolhida, quando o remédio
+  // do Beto está fora da tela: o mesmo item de "Todos".
+  const losartanaBeto = medication({ id: 'los-beto', person_id: 'beto', person_name: 'Beto', name: 'Losartana', times: ['23:56'] });
+  const pharmacy = (...names: string[]) => [
+    { id: 'l1', name: 'Farmácia', kind: 'farmacia', items: names.map((name) => ({ name, product_id: null, checked_at: null })) },
+  ];
+  const refillSection = () => renderer!.root.findAllByType(Section).find((section) => section.props.title === 'Remédios e receitas acabando')!;
+  const offers = () =>
+    refillSection().findAll((node) => node.props.title === 'Pôr na lista da farmácia' && typeof node.props.onPress === 'function');
+  const listed = () => refillSection().findAllByType(Badge).some((badge) => badge.props.label === 'Na lista da farmácia');
+
+  beforeEach(() => {
+    mockQueries.medications = loaded([losartana, losartanaBeto]);
+  });
+
+  const choices: [string, string | null][] = [
+    ['em "Todos"', null],
+    ['com a Ana escolhida', 'ana'],
+  ];
+
+  it.each(choices)('%s: o item só com o nome, pendente, não vale pela caixa da Ana, e o toque manda o item com o nome dela', async (_, chosen) => {
+    mockLists.data = pharmacy('Losartana');
+    mockAdd.mockImplementation(async () => ({ id: 'l1', name: 'Farmácia', added: true }));
+    open(chosen);
+    expect(rowsOf('Remédios e receitas acabando')).toEqual(['Losartana (Ana)']);
+    expect(listed()).toBe(false);
+    expect(offers()).toHaveLength(1);
+    await act(async () => offers()[0].props.onPress());
+    expect(mockAdd.mock.calls.map(([item]) => item)).toEqual([
+      { name: 'Losartana — Ana', altName: 'Losartana — Ana', category: 'medicamentos', productId: null, quantity: 1, unit: 'un' },
+    ]);
+  });
+
+  it.each(choices)('%s: o item com o nome da Ana, pendente, põe a linha "Na lista da farmácia"', (_, chosen) => {
+    mockLists.data = pharmacy('Losartana — Ana');
+    open(chosen);
+    expect(listed()).toBe(true);
+    expect(offers()).toHaveLength(0);
   });
 });
 
