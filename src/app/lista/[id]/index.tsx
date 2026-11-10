@@ -61,7 +61,7 @@ import { listNameKey } from '@/domain/listLinks';
 import {
   ALL_IN_CART_MESSAGE,
   afterReceipt,
-  asksEndTrip,
+  asksEndTripAfterClear,
   END_TRIP_AFTER_CLEAR,
   endTripTitle,
   FINISH_LABEL,
@@ -170,13 +170,14 @@ export default function ShoppingListScreen() {
   const [unit, setUnit] = useState<Unit>('un');
   const [pickerOpen, setPickerOpen] = useState(false);
   // Guardar na despensa: um item (botão do item) ou o carrinho todo (Limpar),
-  // com o carrinho como estava no toque. `notice`: o aviso do caminho que trouxe até aqui (o "Finalizar compra" sem
-  // internet).
+  // com o carrinho como estava no toque. `finishing`: veio do "Finalizar compra" (sem a nota), e por isso termina
+  // com a pergunta de encerrar a ida; `notice`: o aviso desse caminho (sem internet).
   const [storing, setStoring] = useState<{
     items: ShoppingListItem[];
     rows: CartPantryRow[];
     single: boolean;
     pantryUnknown: boolean;
+    finishing: boolean;
     notice?: string;
   } | null>(null);
   const [editing, setEditing] = useState<ShoppingListItem | null>(null);
@@ -630,7 +631,7 @@ export default function ShoppingListScreen() {
   // Despensa não carregada (sem internet e nunca vista neste aparelho) não é
   // despensa vazia. Sem as ligações da lista também não dá para saber o que a
   // nota já guardou ("Filtro de café" é o filtro Melitta): a pessoa escolhe.
-  const openStore = async (cart: ShoppingListItem[], single: boolean, notice?: string) => {
+  const openStore = async (cart: ShoppingListItem[], single: boolean, { finishing = false, notice }: { finishing?: boolean; notice?: string } = {}) => {
     const linkIndex = links.data ?? (await loadListLinks(queryClient));
     const known = pantry.data !== undefined && linkIndex !== null;
     setStoring({
@@ -638,30 +639,40 @@ export default function ShoppingListScreen() {
       rows: cartPantryRows(cart, known ? pantry.data! : null, { single, today, links: linkIndex ?? undefined, learned }),
       single,
       pantryUnknown: !known,
+      finishing,
       notice,
     });
   };
   /** A ida desta lista de quem está com o app, agora. */
   const myLiveTrip = () => ownLiveTrip(trips.data ?? [], { listId: id, userId: session?.user.id, now: new Date() });
-  /** "Encerrar a ida?": encerrar é um pedido ao servidor; se der errado, o aviso de sempre do "Encerrar". */
+  /**
+   * "Encerrar a ida?": encerrar é um pedido ao servidor; se der errado, o aviso de sempre do "Encerrar". true quando
+   * a ida acabou.
+   */
   const askEndTrip = async (trip: MarketTrip, title: string, message: string) => {
-    if (!(await askYesNo(title, message, 'Encerrar', 'Agora não'))) return;
+    if (!(await askYesNo(title, message, 'Encerrar', 'Agora não'))) return false;
     try {
       await endTrip.mutateAsync(trip.id);
+      return true;
     } catch (err) {
       notify('Não deu para encerrar', marketTripErrorMessage(err, 'end'));
+      return false;
     }
   };
-  /** Depois de limpar, quem avisou que estava indo às compras desta lista decide se a ida acabou. Só com internet. */
+  /**
+   * Depois de limpar pelo "Finalizar compra", quem avisou que estava indo às compras desta lista decide se a ida
+   * acabou. Só com internet.
+   */
   const offerEndTrip = () => {
     const trip = myLiveTrip();
     if (trip && tripsOnline()) void askEndTrip(trip, endTripTitle(trip.list.kind), END_TRIP_AFTER_CLEAR);
   };
   // "Finalizar compra" (domain/finishPurchase): a nota antes de limpar. Sem a nota, o "Limpar" do carrinho todo, com o
-  // carrinho como está no toque. Com ela, a revisão tira da lista o que casou e volta para cá: aqui vem o que ela fez
-  // e, uma vez, no fim do fluxo, a pergunta de encerrar a ida. O que a nota não tirou continua no carrinho.
+  // carrinho como está no toque, e a pergunta de encerrar a ida no fim. Com ela, a revisão tira da lista o que casou e
+  // volta para cá: aqui vem o que ela fez e, uma vez, no fim do fluxo, a pergunta de encerrar a ida. O que a nota não
+  // tirou continua no carrinho.
   const finish = useFinishPurchase(id, {
-    withoutReceipt: (notice) => void openStore(checked, false, notice),
+    withoutReceipt: (notice) => void openStore(checked, false, { finishing: true, notice }),
     receiptConfirmed: (receipt: ConfirmedReceipt, now: number) => {
       const trip = myLiveTrip();
       const outcome = afterReceipt(receipt, {
@@ -670,10 +681,17 @@ export default function ShoppingListScreen() {
         online: tripsOnline(),
         now,
       });
+      // A nota esvaziou o carrinho: as compras acabaram, como no "Limpar" do carrinho todo, e o mercado de "Onde
+      // estou" não vale para a próxima. Com algo ainda no carrinho a pessoa pode estar no mercado: a escolha fica,
+      // até ela encerrar a ida (ou limpar).
+      if (outcome.cartEmpty) chooseStore(id, null);
       // Depois de a lista aparecer de novo: o aviso não sai por cima da revisão que está saindo.
       afterPaint(() => {
-        if (outcome.kind === 'endTrip' && trip) void askEndTrip(trip, outcome.title, outcome.message);
-        else notify(outcome.title, outcome.message);
+        if (outcome.kind === 'endTrip' && trip) {
+          void askEndTrip(trip, outcome.title, outcome.message).then((ended) => {
+            if (ended) chooseStore(id, null);
+          });
+        } else notify(outcome.title, outcome.message);
       });
     },
   });
@@ -733,8 +751,12 @@ export default function ShoppingListScreen() {
       },
       { onError },
     );
-  /** `single`: só um item guardado pela geladeira; o "Limpar" do carrinho todo é que encerra as compras. */
-  const clearCart = (cart: ShoppingListItem[], toPantry: CartPantryEntry[], single: boolean) => {
+  /**
+   * `single`: só um item guardado pela geladeira; o "Limpar" do carrinho todo é que encerra as compras.
+   * `finishing`: o limpar veio do "Finalizar compra", e só então termina com a pergunta de encerrar a ida; o "Limpar"
+   * da seção "No carrinho" só esvazia (domain/finishPurchase, `asksEndTripAfterClear`).
+   */
+  const clearCart = (cart: ShoppingListItem[], toPantry: CartPantryEntry[], single: boolean, finishing: boolean) => {
     setStoring(null);
     // As compras acabaram: o mercado de "Onde estou" não vale para a próxima (e volta se o limpar falhar).
     const previousStore = storeChoice;
@@ -754,7 +776,7 @@ export default function ShoppingListScreen() {
       {
         onSuccess: () => {
           emptyPhotoTrash();
-          if (asksEndTrip({ onlineAtTap, tappedAt, answeredAt: Date.now() })) offerEndTrip();
+          if (asksEndTripAfterClear({ finishing, onlineAtTap, tappedAt, answeredAt: Date.now() })) offerEndTrip();
         },
         onError: (err) => {
           if (!single) restoreStoreChoice(id, previousStore);
@@ -989,8 +1011,16 @@ export default function ShoppingListScreen() {
           ))}
         </Section>
       ) : checked.length && !archived ? (
-        // O botão "Finalizar compra" está no rodapé, sempre no mesmo lugar: aqui, o que ele faz.
-        <EmptyState icon="cart-check" title="Tudo no carrinho!" message={ALL_IN_CART_MESSAGE} tint="green" />
+        // O "Finalizar compra" também aqui, no estado (o do rodapé, o primário, fica no mesmo lugar de sempre).
+        <EmptyState
+          icon="cart-check"
+          title="Tudo no carrinho!"
+          message={ALL_IN_CART_MESSAGE}
+          tint="green"
+          action={
+            <Button title={FINISH_LABEL} icon="receipt-text-check-outline" variant="secondary" loading={finish.busy} onPress={finish.start} />
+          }
+        />
       ) : null}
 
       {checked.length ? (
@@ -1049,7 +1079,7 @@ export default function ShoppingListScreen() {
           pantryUnknown={storing.pantryUnknown}
           notice={storing.notice}
           shelfLifeDays={shelfLifeDays}
-          onConfirm={(toPantry) => clearCart(storing.items, toPantry, storing.single)}
+          onConfirm={(toPantry) => clearCart(storing.items, toPantry, storing.single, storing.finishing)}
           onClose={() => setStoring(null)}
         />
       ) : null}

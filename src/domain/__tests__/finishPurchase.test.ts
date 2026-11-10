@@ -3,6 +3,7 @@ import { describe, expect, it } from '@jest/globals';
 import {
   afterReceipt,
   asksEndTrip,
+  asksEndTripAfterClear,
   END_TRIP_ASK_MS,
   endTripTitle,
   finishStart,
@@ -53,6 +54,15 @@ describe('asksEndTrip: as regras de quando perguntar de encerrar a ida', () => {
     expect(asksEndTrip({ onlineAtTap: true, tappedAt: 1000, answeredAt: 1000 + END_TRIP_ASK_MS })).toBe(false);
     expect(asksEndTrip({ onlineAtTap: false, tappedAt: 1000, answeredAt: 1500 })).toBe(false);
   });
+
+  it('asksEndTripAfterClear: depois de limpar, só no fim do "Finalizar compra", com as mesmas regras do toque', () => {
+    const tap = { onlineAtTap: true, tappedAt: 1000, answeredAt: 1500 };
+    expect(asksEndTripAfterClear({ finishing: true, ...tap })).toBe(true);
+    // O "Limpar" da seção "No carrinho" só esvazia: a pergunta passou para o fim do fluxo.
+    expect(asksEndTripAfterClear({ finishing: false, ...tap })).toBe(false);
+    expect(asksEndTripAfterClear({ finishing: true, ...tap, onlineAtTap: false })).toBe(false);
+    expect(asksEndTripAfterClear({ finishing: true, ...tap, answeredAt: 1000 + END_TRIP_ASK_MS })).toBe(false);
+  });
 });
 
 describe('textos', () => {
@@ -94,6 +104,7 @@ describe('afterReceipt: a lista de volta, com a nota confirmada no fluxo', () =>
       kind: 'saved',
       title: 'Nota salva',
       message: '2 itens foram para a despensa. 2 itens saíram da lista.',
+      cartEmpty: true,
     });
   });
 
@@ -102,6 +113,7 @@ describe('afterReceipt: a lista de volta, com a nota confirmada no fluxo', () =>
       kind: 'saved',
       title: 'Nota salva',
       message: undefined,
+      cartEmpty: true,
     });
   });
 
@@ -123,12 +135,22 @@ describe('afterReceipt: a lista de volta, com a nota confirmada no fluxo', () =>
       kind: 'endTrip',
       title: 'Encerrar a ida ao mercado?',
       message: `A nota foi salva. 2 itens foram para a despensa. 1 item saiu da lista. Ficou 1 item no carrinho que a nota não tirou da lista. Se não comprou, toque nele para devolver à lista; se comprou, use "Limpar". ${TAIL}`,
+      cartEmpty: false,
     });
     expect(afterReceipt(receipt({ pantryCount: 0, removedListItems: [] }), ctx({ cart: [], trip: { kind: 'farmacia' } }))).toEqual({
       kind: 'endTrip',
       title: 'Encerrar a ida às compras?',
       message: `A nota foi salva. ${TAIL}`,
+      cartEmpty: true,
     });
+  });
+
+  it('cartEmpty: a nota esvaziou o carrinho de agora (as compras acabaram); com algo nele, não', () => {
+    expect(afterReceipt(receipt({ removedListItems: ['leite', 'cafe'] }), ctx()).cartEmpty).toBe(true);
+    expect(afterReceipt(receipt({ removedListItems: ['leite'] }), ctx()).cartEmpty).toBe(false);
+    // A busca nova da lista já chegou sem o que a nota tirou: o carrinho de agora decide.
+    expect(afterReceipt(receipt({ removedListItems: ['leite'] }), ctx({ cart: [] })).cartEmpty).toBe(true);
+    expect(afterReceipt(receipt({ removedListItems: ['leite'] }), ctx({ cart: ['arroz'], trip: { kind: 'mercado' } })).cartEmpty).toBe(false);
   });
 
   it('as mesmas regras do "Limpar": sem internet no toque, ou com a resposta depois de 30 s, não pergunta', () => {

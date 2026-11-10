@@ -27,7 +27,7 @@ import type { LatestPrice, PantryItem, Product, ShoppingListItem } from '@/lib/t
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
 import { askYesNo, notify } from '@/ui/dialogs';
-import { Badge, Button, Card, ErrorNotice, ListRow, Loading, Screen, Text, TextField } from '@/ui/primitives';
+import { Badge, Button, Card, EmptyState, ErrorNotice, ListRow, Loading, Screen, Text, TextField } from '@/ui/primitives';
 
 // A tela da lista de verdade, com as buscas trocadas por respostas prontas: o que se confere aqui é o que ela
 // faz com o que cada busca devolve (carregada, a caminho, falhou), que as regras de domain/ não enxergam.
@@ -1238,6 +1238,21 @@ const liveTrip = (patch: Partial<MarketTrip> = {}): MarketTrip => ({
 });
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
 const button = (title: string) => renderer!.root.findAllByType(Button).find((entry) => entry.props.title === title);
+/** O botão do rodapé da tela (Screen `footer`), ou undefined. */
+const footer = () => renderer!.root.findByType(Screen).props.footer as { props: { title: string; onPress: () => void } } | undefined;
+const finishSheet = () => renderer!.root.findAllByType(ActionSheet).find((sheet) => sheet.props.title === 'Finalizar compra')!;
+/** Toca no "Finalizar compra" do rodapé. */
+const tapFinish = () => act(async () => footer()!.props.onPress());
+/** Escolhe no menu do "Finalizar compra", como ele faz: fecha e depois roda a ação. */
+async function pick(label: string) {
+  const sheet = finishSheet();
+  const action = (sheet.props.actions as SheetAction[]).find((entry) => entry.label === label);
+  expect(action).toBeDefined();
+  await act(async () => {
+    sheet.props.onClose();
+    action!.onPress();
+  });
+}
 
 describe('renomear e reabrir a lista', () => {
   it('"Renomear lista" abre o modal com o nome de agora e grava o nome novo', async () => {
@@ -1293,20 +1308,24 @@ describe('renomear e reabrir a lista', () => {
   });
 });
 
-describe('limpar o carrinho com uma ida ao mercado aberta', () => {
+describe('finalizar a compra sem a nota, com uma ida ao mercado aberta: a pergunta de encerrar vem no fim', () => {
   beforeEach(() => {
     mockQueries.items = loaded([{ ...listItem('a', 'Arroz', null), checked_at: minutesAgo(5) }]);
     jest.mocked(askYesNo).mockReset();
   });
 
-  /** "Limpar", a confirmação do que vai para a despensa e a resposta do servidor. */
+  /** "Finalizar compra" sem a nota, a confirmação do que vai para a despensa e a resposta do servidor. */
   async function clearCart() {
     await tapClear();
     await deliverClears();
   }
-  /** O toque em "Limpar" e a confirmação do que vai para a despensa. */
+  /**
+   * "Finalizar compra", "Sem a nota: só limpar o carrinho" (sem internet o menu nem abre: o limpar vem direto) e a
+   * confirmação do que vai para a despensa.
+   */
   async function tapClear() {
-    await act(async () => button('Limpar')!.props.onPress());
+    await tapFinish();
+    if (finishSheet().props.visible) await pick('Sem a nota: só limpar o carrinho');
     await act(async () => (mockSeen.cartPantry!.onConfirm as (rows: unknown[]) => void)([]));
   }
   /** A fila manda o que esperava e o servidor responde que deu certo. */
@@ -1386,6 +1405,19 @@ describe('limpar o carrinho com uma ida ao mercado aberta', () => {
     await deliverClears();
     expect(askYesNo).not.toHaveBeenCalled();
   });
+
+  it('o "Limpar" da seção "No carrinho" só esvazia: a pergunta passou para o fim do "Finalizar compra"', async () => {
+    mockTrips.list = [liveTrip()];
+    mockQueue.clear.mockClear();
+    await mount();
+    await act(async () => button('Limpar')!.props.onPress());
+    expect(mockSeen.cartPantry).toMatchObject({ single: false });
+    await act(async () => (mockSeen.cartPantry!.onConfirm as (rows: unknown[]) => void)([]));
+    expect(mockQueue.clear).toHaveBeenCalledWith(expect.objectContaining({ items: [{ id: 'a', token: 'selo' }] }), expect.anything());
+    await deliverClears();
+    expect(askYesNo).not.toHaveBeenCalled();
+    expect(mockTrips.end).not.toHaveBeenCalled();
+  });
 });
 
 describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
@@ -1403,21 +1435,6 @@ describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
     stopWaitingForReceipt('l1');
   });
 
-  /** O botão do rodapé da tela (Screen `footer`), ou undefined. */
-  const footer = () => renderer!.root.findByType(Screen).props.footer as { props: { title: string; onPress: () => void } } | undefined;
-  const finishSheet = () => renderer!.root.findAllByType(ActionSheet).find((sheet) => sheet.props.title === 'Finalizar compra')!;
-  /** Toca no "Finalizar compra" do rodapé. */
-  const tapFinish = () => act(async () => footer()!.props.onPress());
-  /** Escolhe no menu do "Finalizar compra", como ele faz: fecha e depois roda a ação. */
-  async function pick(label: string) {
-    const sheet = finishSheet();
-    const action = (sheet.props.actions as SheetAction[]).find((entry) => entry.label === label);
-    expect(action).toBeDefined();
-    await act(async () => {
-      sheet.props.onClose();
-      action!.onPress();
-    });
-  }
   /**
    * A revisão confirmou a nota (o que nota/[id] entrega: o toque de agora, e a resposta `answerMs` depois) e voltou:
    * a lista ganha o foco de novo.
@@ -1453,13 +1470,26 @@ describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
       expect(button('Limpar')).toBeDefined();
     });
 
-    it('"Tudo no carrinho!": o botão no rodapé, e o texto diz o que ele faz', async () => {
+    it('"Tudo no carrinho!": o botão no estado, além do rodapé, e o texto diz o que ele faz', async () => {
       mockQueries.items = loaded([leite, cafe]);
       const page = await mount();
       expect(page).toContain('Tudo no carrinho!');
       expect(page).toContain(ALL_IN_CART_MESSAGE);
       expect(page).not.toContain('Quando guardar as compras, limpe o carrinho.');
       expect(footer()?.props.title).toBe('Finalizar compra');
+      // O do estado, secundário (o primário é o do rodapé), faz o mesmo: pergunta como finalizar.
+      const state = renderer!.root.findAllByType(EmptyState).find((entry) => entry.props.title === 'Tudo no carrinho!')!;
+      const inState = state.findAllByType(Button).find((entry) => entry.props.title === 'Finalizar compra')!;
+      expect(inState.props.variant).toBe('secondary');
+      expect(finishSheet().props.visible).toBe(false);
+      await act(async () => inState.props.onPress());
+      expect(finishSheet().props.visible).toBe(true);
+    });
+
+    it('com algo ainda para comprar, o "Finalizar compra" é só o do rodapé', async () => {
+      mockQueries.items = loaded([arroz, leite]);
+      await mount();
+      expect(renderer!.root.findAllByType(Button).filter((entry) => entry.props.title === 'Finalizar compra')).toHaveLength(1);
     });
 
     it('a lista arquivada é só para ver: sem "Finalizar compra"', async () => {
@@ -1634,6 +1664,59 @@ describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
       expect(askYesNo).not.toHaveBeenCalled();
       // Uma nota confirmada depois, por outro caminho, avisa sozinha na revisão.
       expect(handConfirmedReceipt({ tappedAt: Date.now(), onlineAtTap: true, pantryCount: 0, removedListItems: [] })).toBe(false);
+    });
+
+    describe('"Onde estou" depois da nota', () => {
+      const estimateCard = () => renderer!.root.findByType(ListEstimateCard);
+      /** No mercado s1 ("Onde estou"), "Finalizar compra" pelo QR code. */
+      async function atStoreAndFinish() {
+        await mount();
+        await act(async () => estimateCard().props.onChangeStore('s1'));
+        expect(estimateCard().props.storeId).toBe('s1');
+        await tapFinish();
+        await pick('Ler o QR code da nota');
+      }
+
+      it('a nota que esvazia o carrinho encerra as compras, como o "Limpar": a escolha sai', async () => {
+        await atStoreAndFinish();
+        await confirmedAndBack({ pantryCount: 2, removedListItems: ['l', 'c'] });
+        expect(estimateCard().props.storeId).toBeNull();
+        expect(await AsyncStorage.getItem('kotii:store-choice:l1')).toBeNull();
+      });
+
+      it('com algo ainda no carrinho a pessoa pode estar no mercado: a escolha fica', async () => {
+        await atStoreAndFinish();
+        await confirmedAndBack({ pantryCount: 1, removedListItems: ['l'] });
+        expect(estimateCard().props.storeId).toBe('s1');
+      });
+
+      it('com algo no carrinho, encerrar a ida no fim do fluxo tira a escolha; "Agora não" a deixa', async () => {
+        mockTrips.list = [liveTrip()];
+        jest.mocked(askYesNo).mockResolvedValue(false);
+        await atStoreAndFinish();
+        await confirmedAndBack({ pantryCount: 1, removedListItems: ['l'] });
+        expect(askYesNo).toHaveBeenCalledTimes(1);
+        expect(estimateCard().props.storeId).toBe('s1');
+        await act(async () => renderer!.unmount());
+        renderer = undefined;
+
+        jest.mocked(askYesNo).mockResolvedValue(true);
+        mockTrips.end.mockResolvedValue(true);
+        await atStoreAndFinish();
+        await confirmedAndBack({ pantryCount: 1, removedListItems: ['l'] });
+        expect(mockTrips.end).toHaveBeenCalledWith('t1');
+        expect(estimateCard().props.storeId).toBeNull();
+      });
+
+      it('se encerrar der errado, a ida continua, e a escolha também', async () => {
+        mockTrips.list = [liveTrip()];
+        jest.mocked(askYesNo).mockResolvedValue(true);
+        mockTrips.end.mockRejectedValue(new Error('sem rede'));
+        await atStoreAndFinish();
+        await confirmedAndBack({ pantryCount: 1, removedListItems: ['l'] });
+        expect(notify).toHaveBeenCalledWith('Não deu para encerrar', expect.any(String));
+        expect(estimateCard().props.storeId).toBe('s1');
+      });
     });
 
     it('a lista que sai da tela no meio deixa de esperar a nota', async () => {
