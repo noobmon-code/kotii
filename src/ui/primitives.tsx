@@ -315,6 +315,7 @@ export function IconButton({
   label,
   color = 'textMuted',
   disabled,
+  expanded,
 }: {
   icon: IconName;
   onPress: () => void;
@@ -322,12 +323,15 @@ export function IconButton({
   color?: keyof Colors;
   /** Apagado e sem toque, como o Button desligado. */
   disabled?: boolean;
+  /** Para o botão que abre e fecha um conteúdo (como `ListRow`): o leitor de tela diz se está aberto. */
+  expanded?: boolean;
 }) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityState={disabled ? { disabled } : undefined}
+      aria-expanded={expanded}
       hitSlop={8}
       onPress={onPress}
       disabled={disabled}

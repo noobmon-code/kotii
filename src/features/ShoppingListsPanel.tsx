@@ -25,7 +25,6 @@ import {
   Section,
   Text,
   TextField,
-  Tile,
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -77,12 +76,9 @@ export function ShoppingListsPanel() {
       {lists.isError ? (
         <StaleNotice message={isNetworkFailure(lists.error) ? LISTS_OFFLINE : undefined} onRetry={() => lists.refetch()} />
       ) : null}
-      <Row gap={space.md} style={styles.tiles}>
-        <Tile icon="plus" tint="orange" label="Nova lista" onPress={() => setCreating(true)} />
-        <Tile icon="chart-line" tint="blue" label="Preços" onPress={() => router.push('/precos')} />
-        <Tile icon="silverware-fork-knife" tint="green" label="Cardápio da semana" onPress={() => router.push('/cardapio')} />
-      </Row>
-
+      {/* A ação principal da parte é um botão primário no alto (os atalhos de azulejo ficam só na tela Hoje); o
+          formulário toma o lugar dele enquanto está aberto. Preços e Cardápio são outras telas, não criar: botões
+          secundários logo abaixo. */}
       {creating ? (
         <Card style={styles.gap}>
           <Text variant="heading">Nova lista</Text>
@@ -97,7 +93,20 @@ export function ShoppingListsPanel() {
             <Button title="Criar" onPress={create} loading={createList.isPending} style={styles.flex} />
           </Row>
         </Card>
-      ) : null}
+      ) : (
+        <Button title="Nova lista" icon="plus" onPress={() => setCreating(true)} />
+      )}
+      <Row style={styles.links}>
+        <Button title="Preços" icon="chart-line" variant="secondary" style={styles.link} onPress={() => router.push('/precos')} />
+        <Button
+          title="Cardápio"
+          accessibilityLabel="Cardápio da semana"
+          icon="silverware-fork-knife"
+          variant="secondary"
+          style={styles.link}
+          onPress={() => router.push('/cardapio')}
+        />
+      </Row>
 
       {lists.data.length === 0 && !creating ? (
         // Todas arquivadas: a casa já teve listas.
@@ -171,5 +180,8 @@ const styles = StyleSheet.create({
   gap: { gap: space.lg },
   gapSm: { gap: space.sm },
   wrap: { flexWrap: 'wrap' },
-  tiles: { alignItems: 'stretch' },
+  // Lado a lado num celular de 360 ("Cardápio da semana" inteiro não caberia ao lado de "Preços"); se não couber, um
+  // embaixo do outro.
+  links: { flexWrap: 'wrap' },
+  link: { flexGrow: 1 },
 });

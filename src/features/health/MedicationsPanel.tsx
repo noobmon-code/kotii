@@ -46,7 +46,6 @@ export function MedicationsPanel({ personId, onPersonChange }: { personId: strin
       <Button
         title="Novo remédio"
         icon="plus"
-        variant="secondary"
         onPress={() => router.push({ pathname: '/remedio/[id]', params: { id: 'novo', pessoa: person?.id ?? '' } })}
       />
       <MedicationsToday today={today} personId={person?.id ?? null} />

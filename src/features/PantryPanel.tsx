@@ -45,6 +45,16 @@ function describeLots(group: Group): string {
   return `Compras: ${parts.slice(0, -1).join(', ')} e ${parts[parts.length - 1]}.`;
 }
 
+/**
+ * A ação principal de Compras → Despensa, no alto da parte (antes de "Gás, água e ração"): um botão primário, como
+ * o de cada parte. Fica na tela também com a despensa carregando ou com erro.
+ */
+export function PantryAddButton() {
+  return (
+    <Button title="Adicionar à despensa" icon="plus" onPress={() => router.push({ pathname: '/despensa/[id]', params: { id: 'novo' } })} />
+  );
+}
+
 export function PantryPanel() {
   const today = todayISO();
   const pantry = usePantry();
@@ -173,12 +183,6 @@ export function PantryPanel() {
 
   return (
     <View style={styles.gap}>
-      <Button
-        title="Adicionar item"
-        icon="plus"
-        variant="secondary"
-        onPress={() => router.push({ pathname: '/despensa/[id]', params: { id: 'novo' } })}
-      />
       {pantry.data.length === 0 ? (
         <EmptyState
           icon="fridge-outline"

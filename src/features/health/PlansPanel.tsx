@@ -95,7 +95,6 @@ export function PlansPanel({
       <Button
         title={copy.add}
         icon="camera-outline"
-        variant="secondary"
         onPress={() => (humans.length ? importer.start(kind, selected ?? (humans.length === 1 ? humans[0].id : null)) : openNewPerson())}
       />
       {visible.length === 0 ? <EmptyState icon={copy.icon} title={copy.emptyTitle} message={copy.emptyMessage} /> : null}

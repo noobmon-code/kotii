@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { ReactNode } from 'react';
-import { AccessibilityInfo, Platform, ScrollView } from 'react-native';
+import { AccessibilityInfo, Platform, ScrollView, StyleSheet } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import ShoppingListScreen from '@/app/lista/[id]/index';
@@ -13,6 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { ALL_IN_CART_MESSAGE, FINISH_OFFLINE_NOTICE } from '@/domain/finishPurchase';
 import { CHOSEN_STORE_MS } from '@/domain/listEstimate';
+import { LIST_MENU_LABEL } from '@/domain/listMode';
 import type { MarketTrip } from '@/domain/marketTrips';
 import { CartPantryModal } from '@/features/CartPantryModal';
 import { ListEstimateCard } from '@/features/ListEstimateCard';
@@ -22,12 +23,14 @@ import { pickReceiptImages } from '@/data/receipts';
 import { router } from 'expo-router';
 import { PasteListModal } from '@/features/PasteListModal';
 import { ANNOUNCE_DELAY_MS, PriceCalculator } from '@/features/PriceCalculator';
+import { ListMenu } from '@/features/ListMenu';
+import { RecentPurchases, RestockStrip } from '@/features/RecentPurchases';
 import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
 import type { LatestPrice, PantryItem, Product, ShoppingListItem } from '@/lib/types';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
-import { askYesNo, notify } from '@/ui/dialogs';
-import { Badge, Button, Card, EmptyState, ErrorNotice, ListRow, Loading, Screen, Text, TextField } from '@/ui/primitives';
+import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
+import { Badge, Button, Card, Chip, EmptyState, ErrorNotice, IconButton, ListRow, Loading, Screen, Text, TextField } from '@/ui/primitives';
 
 // A tela da lista de verdade, com as buscas trocadas por respostas prontas: o que se confere aqui é o que ela
 // faz com o que cada busca devolve (carregada, a caminho, falhou), que as regras de domain/ não enxergam.
@@ -105,6 +108,7 @@ const mockQueue = {
   removePending: jest.fn<(input: unknown) => Promise<string>>(),
   reopen: jest.fn(),
   rename: jest.fn(),
+  archive: jest.fn(),
 };
 /**
  * A fila do limpar: guarda as respostas até "a conexão voltar" (deliverClears), como a fila de verdade faz com o
@@ -121,7 +125,7 @@ jest.mock('@/data/market', () => {
     newToggleToken: () => 'selo',
     removalWaitsForQueue: () => false,
     useAddListItem: () => ({ add: mockQueue.add }),
-    useArchiveList: mutation,
+    useArchiveList: () => ({ mutate: mockQueue.archive, isPending: false }),
     useReopenList: () => ({ mutate: mockQueue.reopen, isPending: false }),
     useRenameList: () => ({ mutate: mockQueue.rename, isPending: false }),
     useClearCheckedItems: () => ({
@@ -1254,15 +1258,95 @@ async function pick(label: string) {
   });
 }
 
-describe('renomear e reabrir a lista', () => {
+describe('o menu da lista, no cabeçalho ao lado da calculadora: renomear, arquivar e reabrir', () => {
+  let header: ReactTestRenderer | undefined;
+
+  afterEach(async () => {
+    await act(async () => header?.unmount());
+    header = undefined;
+  });
+
+  /** Desenha o que a tela pôs à direita no cabeçalho, como o Stack faz, e devolve o botão do menu. */
+  async function menuButton() {
+    const headerRight = mockSeen.options?.headerRight as ((props: { tintColor?: string }) => ReactNode) | undefined;
+    expect(headerRight).toBeDefined();
+    await act(async () => {
+      header = create(<>{headerRight!({ tintColor: '#3656F4' })}</>);
+    });
+    const found = header!.root.findAll((node) => node.props.accessibilityLabel === LIST_MENU_LABEL && Boolean(node.props.onPress));
+    expect(found).toHaveLength(1);
+    return found[0];
+  }
+  /** O menu que a tela desenha (o cabeçalho só tem o botão). */
+  const menu = () => renderer!.root.findByType(ListMenu).findByType(ActionSheet);
+  const menuChoices = () => (menu().props.actions as SheetAction[]).map((action) => action.label);
+  /** Abre o menu pelo botão do cabeçalho e escolhe, como o menu faz: fecha e depois roda a ação. */
+  async function fromMenu(label: string) {
+    const open = await menuButton();
+    await act(async () => open.props.onPress());
+    expect(menu().props.visible).toBe(true);
+    const action = (menu().props.actions as SheetAction[]).find((entry) => entry.label === label);
+    expect(action).toBeDefined();
+    await act(async () => {
+      menu().props.onClose();
+      action!.onPress();
+    });
+    expect(menu().props.visible).toBe(false);
+  }
+
+  it('o botão do menu fica ao lado da calculadora, com nome para o leitor de tela e o toque de 44', async () => {
+    await mount();
+    const open = await menuButton();
+    expect(open.props.accessibilityRole).toBe('button');
+    const style = StyleSheet.flatten(typeof open.props.style === 'function' ? open.props.style({ pressed: false }) : open.props.style);
+    expect(style).toMatchObject({ minWidth: 44, minHeight: 44 });
+    // A calculadora e o menu, nessa ordem, numa linha.
+    const labels = header!.root
+      .findAll((node) => typeof node.props.accessibilityLabel === 'string' && Boolean(node.props.onPress))
+      .map((node) => node.props.accessibilityLabel);
+    expect([...new Set(labels)]).toEqual([PRICE_CALCULATOR_LABEL, LIST_MENU_LABEL]);
+    // Fechado até o toque; o título é o nome da lista.
+    expect(menu().props.visible).toBe(false);
+    expect(menu().props.title).toBe('Mercado');
+    expect(menuChoices()).toEqual(['Renomear lista', 'Arquivar lista']);
+  });
+
+  it('os botões largos do fim da tela saíram: renomear e arquivar ficam só no menu', async () => {
+    mockQueries.items = loaded([listItem('a', 'Arroz', null)]);
+    await mount();
+    expect(button('Renomear lista')).toBeUndefined();
+    expect(button('Arquivar lista')).toBeUndefined();
+    expect(button('Reabrir lista')).toBeUndefined();
+  });
+
   it('"Renomear lista" abre o modal com o nome de agora e grava o nome novo', async () => {
     await mount();
-    await act(async () => button('Renomear lista')!.props.onPress());
+    await fromMenu('Renomear lista');
     const field = renderer!.root.findAllByType(TextField).find((entry) => entry.props.label === 'Nome da lista')!;
     expect(field.props.value).toBe('Mercado');
     await act(async () => field.props.onChangeText(' Feira  do sábado'));
     await act(async () => button('Salvar')!.props.onPress());
     expect(mockQueue.rename).toHaveBeenCalledWith('Feira do sábado', expect.anything());
+  });
+
+  it('"Arquivar lista" pergunta como antes e, confirmado, arquiva e volta', async () => {
+    jest.mocked(confirmAction).mockClear();
+    mockQueue.archive.mockClear();
+    jest.mocked(router.back).mockClear();
+    await mount();
+    await fromMenu('Arquivar lista');
+    expect(confirmAction).toHaveBeenCalledWith(
+      'Arquivar lista',
+      'A lista some das telas, mas as notas e preços continuam.',
+      'Arquivar',
+      expect.any(Function),
+    );
+    expect(mockQueue.archive).not.toHaveBeenCalled();
+    await act(async () => jest.mocked(confirmAction).mock.calls[0][3]());
+    expect(mockQueue.archive).toHaveBeenCalledTimes(1);
+    const [, options] = mockQueue.archive.mock.calls[0] as [unknown, { onSuccess: () => void }];
+    await act(async () => options.onSuccess());
+    expect(router.back).toHaveBeenCalled();
   });
 
   it('a lista arquivada é só para ver: sem pôr item, sem limpar, sem marcar nem editar, com o aviso', async () => {
@@ -1283,10 +1367,10 @@ describe('renomear e reabrir a lista', () => {
     expect(mockSeen.editor?.onSave).toBeUndefined();
     expect(mockSeen.editor?.onRemove).toBeUndefined();
     expect(page).not.toContain('Toque num item para pôr no carrinho');
-    // Ver ainda dá: os itens, mandar a lista, renomear e reabrir.
+    // Ver ainda dá: os itens, mandar a lista; o menu renomeia e reabre, e o aviso também reabre.
     expect(button('Mandar a lista')).toBeDefined();
-    expect(button('Renomear lista')).toBeDefined();
     expect(button('Reabrir lista')).toBeDefined();
+    expect(menuChoices()).toEqual(['Renomear lista', 'Reabrir lista']);
   });
 
   it('a lista aberta continua com tudo', async () => {
@@ -1299,12 +1383,157 @@ describe('renomear e reabrir a lista', () => {
     expect(typeof mockSeen.editor?.onSave).toBe('function');
   });
 
-  it('a lista arquivada mostra "Reabrir lista" no lugar de "Arquivar lista"', async () => {
+  it('a lista arquivada reabre pelo aviso e pelo menu, e também se renomeia', async () => {
     mockQueries.list = loaded({ id: 'l1', name: 'Churrasco', kind: 'mercado', archived_at: '2026-10-20T12:00:00Z', created_at: '2026-10-01T12:00:00Z' });
+    mockQueue.reopen.mockClear();
     await mount();
     expect(button('Arquivar lista')).toBeUndefined();
     await act(async () => button('Reabrir lista')!.props.onPress());
     expect(mockQueue.reopen).toHaveBeenCalledWith('l1', expect.anything());
+    await fromMenu('Reabrir lista');
+    expect(mockQueue.reopen).toHaveBeenCalledTimes(2);
+    await fromMenu('Renomear lista');
+    expect(renderer!.root.findAllByType(TextField).find((entry) => entry.props.label === 'Nome da lista')!.props.value).toBe('Churrasco');
+  });
+});
+
+describe('o modo compra: com item no carrinho ou com a própria ida, a lista sobe', () => {
+  const fields = (placeholder: string) => renderer!.root.findAllByType(TextField).filter((field) => field.props.placeholder === placeholder);
+  const quantityFields = () => renderer!.root.findAllByType(TextField).filter((field) => field.props.accessibilityLabel === 'Quantidade');
+  const unitChips = () => renderer!.root.findAllByType(Chip).filter((chip) => ['un', 'kg', 'g', 'l', 'ml'].includes(chip.props.label));
+  const moreOptions = () => renderer!.root.findAllByType(IconButton).filter((entry) => String(entry.props.label).startsWith('Mais opções'));
+  const strips = () => renderer!.root.findAllByType(RestockStrip).length + renderer!.root.findAllByType(RecentPurchases).length;
+  const typeName = (text: string) => act(() => fields('Adicionar item')[0].props.onChangeText(text));
+  const submit = () => act(() => fields('Adicionar item')[0].props.onSubmitEditing());
+  const pending = listItem('a', 'Arroz', null);
+  const inCart = { ...listItem('b', 'Carvão', null), checked_at: minutesAgo(5) };
+
+  beforeEach(() => {
+    mockQueue.add.mockClear();
+    // Algo que passou do costume: "Acho que acabou" teria o que mostrar.
+    mockQueries.purchases = loaded(ranOutHistory('Café Pilão 500g', 'pilao'));
+  });
+
+  it('montando (carrinho vazio, sem ida): o cartão inteiro e as faixas, sem "Mais opções"', async () => {
+    mockQueries.items = loaded([pending]);
+    await mount();
+    expect(fields('Adicionar item')).toHaveLength(1);
+    expect(quantityFields()).toHaveLength(1);
+    expect(unitChips().length).toBeGreaterThan(0);
+    expect(button('Escolher dos itens comuns')).toBeDefined();
+    expect(button('Colar lista')).toBeDefined();
+    expect(strips()).toBe(2);
+    expect(moreOptions()).toHaveLength(0);
+  });
+
+  it('com item no carrinho: o cartão recolhe ao campo, e "Acabou" e os recentes somem; o "Finalizar compra" continua', async () => {
+    mockBarcode.available = true;
+    mockQueries.items = loaded([pending, inCart]);
+    await mount();
+    expect(fields('Adicionar item')).toHaveLength(1);
+    expect(quantityFields()).toHaveLength(0);
+    expect(unitChips()).toHaveLength(0);
+    expect(button('Escolher dos itens comuns')).toBeUndefined();
+    expect(button('Colar lista')).toBeUndefined();
+    expect(button('Ler código de barras')).toBeUndefined();
+    expect(strips()).toBe(0);
+    expect(footer()!.props.title).toBe('Finalizar compra');
+    // O resto do cartão fica a um toque, e o leitor de tela diz o que o botão abre e que está fechado.
+    const [more] = moreOptions();
+    expect(more.props.label).toBe('Mais opções: quantidade, unidade, itens comuns, colar lista e código de barras');
+    expect(more.props.expanded).toBe(false);
+    // Ainda dá para pôr o que faltou: as sugestões da busca e o "Adicionar" aparecem com o texto.
+    await typeName('Leite');
+    expect(button('Adicionar "Leite"')).toBeDefined();
+    await submit();
+    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Leite', quantity: 1, unit: 'un' }), 'u1');
+  });
+
+  it('"Mais opções" traz o cartão inteiro de volta; recolher volta a quantidade a 1 un', async () => {
+    mockBarcode.available = true;
+    mockQueries.items = loaded([pending, inCart]);
+    await mount();
+    await act(async () => moreOptions()[0].props.onPress());
+    expect(moreOptions()[0].props.expanded).toBe(true);
+    expect(quantityFields()).toHaveLength(1);
+    expect(unitChips().length).toBeGreaterThan(0);
+    expect(button('Escolher dos itens comuns')).toBeDefined();
+    expect(button('Colar lista')).toBeDefined();
+    expect(button('Ler código de barras')).toBeDefined();
+    // As faixas são para montar a lista: continuam fora.
+    expect(strips()).toBe(0);
+
+    await act(async () => quantityFields()[0].props.onChangeText('3'));
+    await act(async () => unitChips().find((chip) => chip.props.label === 'kg')!.props.onPress());
+    await act(async () => moreOptions()[0].props.onPress());
+    expect(quantityFields()).toHaveLength(0);
+    // Recolhido, o item não sai com a quantidade que ficou escondida.
+    await typeName('Banana');
+    await submit();
+    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Banana', quantity: 1, unit: 'un' }), 'u1');
+    await act(async () => moreOptions()[0].props.onPress());
+    expect(quantityFields()[0].props.value).toBe('1');
+  });
+
+  it('com a própria ida nesta lista, modo compra também com o carrinho vazio; a ida de outra pessoa não muda nada', async () => {
+    mockQueries.items = loaded([pending]);
+    mockTrips.list = [liveTrip()];
+    await mount();
+    expect(quantityFields()).toHaveLength(0);
+    expect(strips()).toBe(0);
+    expect(moreOptions()).toHaveLength(1);
+    await act(async () => renderer!.unmount());
+
+    mockTrips.list = [liveTrip({ user_id: 'u2', display_name: 'Beto' })];
+    await mount();
+    expect(quantityFields()).toHaveLength(1);
+    expect(strips()).toBe(2);
+    expect(moreOptions()).toHaveLength(0);
+  });
+
+  it('a lista vazia na própria ida diz para digitar o que faltou, sem as faixas', async () => {
+    mockTrips.list = [liveTrip()];
+    const page = await mount();
+    expect(page).toContain('Lista vazia');
+    expect(page).toContain('Digite no campo acima o que faltou.');
+    expect(strips()).toBe(0);
+  });
+
+  it('o carrinho que começa no meio da digitação não leva o texto, e com a quantidade mudada o cartão fica inteiro', async () => {
+    mockQueries.items = loaded([pending]);
+    await mount();
+    await typeName('Pão');
+    await typeQuantity('6');
+    // Outra pessoa da casa pôs o primeiro item no carrinho (a lista chega em tempo real).
+    mockQueries.items = loaded([pending, inCart]);
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(fields('Adicionar item')[0].props.value).toBe('Pão');
+    expect(quantityFields()).toHaveLength(1);
+    expect(moreOptions()[0].props.expanded).toBe(true);
+    await submit();
+    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Pão', quantity: 6 }), 'u1');
+  });
+
+  it('com a quantidade de sempre, recolhe sem perder o texto; o carrinho limpo volta a montar, e a próxima compra recolhe de novo', async () => {
+    mockQueries.items = loaded([pending]);
+    await mount();
+    await typeName('Pão');
+    mockQueries.items = loaded([pending, inCart]);
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(fields('Adicionar item')[0].props.value).toBe('Pão');
+    expect(quantityFields()).toHaveLength(0);
+    await act(async () => moreOptions()[0].props.onPress());
+    expect(quantityFields()).toHaveLength(1);
+
+    mockQueries.items = loaded([pending]);
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(moreOptions()).toHaveLength(0);
+    expect(quantityFields()).toHaveLength(1);
+
+    mockQueries.items = loaded([pending, inCart]);
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(quantityFields()).toHaveLength(0);
+    expect(moreOptions()[0].props.expanded).toBe(false);
   });
 });
 

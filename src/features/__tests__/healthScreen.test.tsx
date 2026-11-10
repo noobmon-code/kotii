@@ -3,14 +3,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { Tabs } from 'expo-router/js-tabs';
 import type { ReactNode } from 'react';
-import { StyleSheet, Text } from 'react-native';
+import { Text } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import HealthScreen from '@/app/(tabs)/saude';
 import { CarePanel } from '@/features/health/CarePanel';
 import { MedicationsPanel } from '@/features/health/MedicationsPanel';
 import { PlansPanel } from '@/features/health/PlansPanel';
-import { Segmented, Tile } from '@/ui/primitives';
+import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
+import { Button, Segmented, Tile } from '@/ui/primitives';
 
 // A aba Saúde de verdade num roteador de verdade (o Expo Router, com as rotas montadas na memória): as partes
 // Resumo, Remédios, Cuidados e Planos na URL (?aba=), o seletor de Planos (?plano=), a pessoa escolhida (?pessoa=)
@@ -108,19 +109,25 @@ async function choose(selector: ReactTestInstance, value: string) {
 }
 
 describe('as partes da Saúde', () => {
-  it('sem parte, o Resumo, com os quatro atalhos de criar: o remédio primeiro, dois por linha', async () => {
+  /** O "Adicionar" do Resumo e o menu dele. */
+  const addButton = () => renderer!.root.findAllByType(Button).find((button) => button.props.title === 'Adicionar')!;
+  const addSheet = () => renderer!.root.findAllByType(ActionSheet).find((sheet) => sheet.props.title === 'Adicionar')!;
+
+  it('sem parte, o Resumo, com um "Adicionar" primário no alto, que pergunta o quê: o remédio primeiro', async () => {
     await open('/saude');
     expect(part()).toBe('resumo');
     expect(selectors()[0].props.options.map((o: { label: string }) => o.label)).toEqual(['Resumo', 'Remédios', 'Cuidados', 'Planos']);
-    // "Consulta" (59,4) e "Remédio" (58,1) em Nunito 14 ExtraBold não cabem num quarto da largura de um celular de
-    // 360: quatro azulejos de 71, com 8 de recuo de cada lado e a borda, deixam 53 para o rótulo.
-    const rows = new Map<ReactTestInstance, string[]>();
-    for (const tile of renderer!.root.findAllByType(Tile)) rows.set(tile.parent!, [...(rows.get(tile.parent!) ?? []), tile.props.label]);
-    expect([...rows.values()]).toEqual([
-      ['Remédio', 'Consulta'],
-      ['Vacina', 'Exame'],
-    ]);
-    for (const row of rows.keys()) expect(StyleSheet.flatten(row.props.style)).toMatchObject({ flexDirection: 'row' });
+    // Os azulejos ficam só na tela Hoje: a ação principal de cada parte é um botão primário no alto.
+    expect(renderer!.root.findAllByType(Tile)).toHaveLength(0);
+    const buttons = renderer!.root.findAllByType(Button);
+    expect(buttons[0]).toBe(addButton());
+    expect(addButton().props.variant ?? 'primary').toBe('primary');
+    // O leitor de tela diz o que ele cria (o nome visível está no começo do que ele diz).
+    expect(addButton().props.accessibilityLabel).toBe('Adicionar remédio, consulta, vacina ou exame');
+    expect(addSheet().props.visible).toBe(false);
+    await act(async () => addButton().props.onPress());
+    expect(addSheet().props.visible).toBe(true);
+    expect((addSheet().props.actions as SheetAction[]).map((action) => action.label)).toEqual(['Remédio', 'Consulta', 'Vacina', 'Exame']);
   });
 
   it.each([
@@ -128,12 +135,18 @@ describe('as partes da Saúde', () => {
     ['Consulta', '/consulta/nova'],
     ['Vacina', '/vacina/nova'],
     ['Exame', '/exame/nova'],
-  ])('o atalho "%s" do Resumo abre %s', async (label, pathname) => {
+  ])('"Adicionar" → "%s", no Resumo, abre %s', async (label, pathname) => {
     await open('/saude');
-    const tile = renderer!.root.findAllByType(Tile).find((t) => t.props.label === label)!;
-    await act(async () => tile.props.onPress());
+    await act(async () => addButton().props.onPress());
+    const action = (addSheet().props.actions as SheetAction[]).find((entry) => entry.label === label)!;
+    // Como o menu faz: fecha e depois roda a ação.
+    await act(async () => {
+      addSheet().props.onClose();
+      action.onPress();
+    });
     await settle();
     expect(where().pathname).toBe(pathname);
+    expect(where().params).toEqual({ id: pathname.endsWith('novo') ? 'novo' : 'nova' });
   });
 
   it('Remédios e Cuidados recebem a pessoa da URL, e a escolhida numa parte continua escolhida na outra', async () => {

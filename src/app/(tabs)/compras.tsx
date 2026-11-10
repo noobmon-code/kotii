@@ -8,7 +8,7 @@ import { ARCHIVED_LISTS_KEY, useShoppingLists } from '@/data/market';
 import { useSupplies } from '@/data/supplies';
 import { COMPRAS_TABS, tabFromParam, type ComprasTab } from '@/domain/tabs';
 import { ReceiptsPanel } from '@/features/market/ReceiptsPanel';
-import { PantryPanel } from '@/features/PantryPanel';
+import { PantryAddButton, PantryPanel } from '@/features/PantryPanel';
 import { ShoppingListsPanel } from '@/features/ShoppingListsPanel';
 import { SuppliesSection } from '@/features/SuppliesSection';
 import { Screen, Segmented } from '@/ui/primitives';
@@ -57,8 +57,9 @@ export default function ShoppingScreen() {
       {tab === 'notas' ? <ReceiptsPanel /> : null}
       {tab === 'despensa' ? (
         <View style={styles.gap}>
-          {/* O que não passa por nota (gás, água, ração) vem antes da despensa e fora dela: aparece
-              com ela carregando, vazia ou com erro, e o "Adicionar item" fica junto da lista dele. */}
+          {/* A ação principal da parte no alto, como em todas. O que não passa por nota (gás, água, ração) vem
+              antes da despensa e fora dela: aparece com ela carregando, vazia ou com erro. */}
+          <PantryAddButton />
           <SuppliesSection />
           <PantryPanel />
         </View>

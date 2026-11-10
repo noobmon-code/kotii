@@ -90,7 +90,6 @@ export function FinanceSummaryPanel() {
     <Button
       title="Registrar gasto"
       icon="plus"
-      variant="secondary"
       onPress={() => router.push({ pathname: '/gasto/[id]', params: { id: 'novo' } })}
     />
   );

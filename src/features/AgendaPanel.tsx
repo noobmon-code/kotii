@@ -79,8 +79,8 @@ export function agendaQueryKeys(finance: boolean): string[] {
 }
 
 /**
- * A agenda da casa: o mês, os dias com o que há em cada um, o dia escolhido e "Novo compromisso" (nele). Mostrada
- * em Casa → Agenda e na tela /agenda (a da pílula "Ver a agenda" da tela Hoje).
+ * A agenda da casa: "Novo compromisso" no alto (no dia escolhido), o mês, os dias com o que há em cada um e o dia
+ * escolhido. Mostrada em Casa → Agenda e na tela /agenda (a da pílula "Ver a agenda" da tela Hoje).
  */
 export function AgendaPanel() {
   const c = useColors();
@@ -148,6 +148,13 @@ export function AgendaPanel() {
 
   return (
     <View style={styles.panel}>
+      {/* A ação principal da parte, primária e no alto, como em todas. O compromisso novo nasce no dia escolhido
+          no calendário (hoje, se nenhum). */}
+      <Button
+        title="Novo compromisso"
+        icon="calendar-plus"
+        onPress={() => router.push({ pathname: '/compromisso/[id]', params: { id: 'novo', dia: selected } })}
+      />
       <Card style={styles.calendar}>
         <Row style={styles.monthRow}>
           <IconButton icon="chevron-left" label="Mês anterior" onPress={() => goToMonth(-1)} />
@@ -224,12 +231,6 @@ export function AgendaPanel() {
           </Row>
         </Card>
       )}
-      <Button
-        title="Novo compromisso"
-        variant="secondary"
-        icon="calendar-plus"
-        onPress={() => router.push({ pathname: '/compromisso/[id]', params: { id: 'novo', dia: selected } })}
-      />
       <Text variant="small" style={[styles.center, { color: c.textMuted }]}>
         {finance
           ? 'Contas e tarefas que se repetem aparecem apagadas nas próximas datas: é a previsão.'

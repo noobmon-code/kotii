@@ -7,19 +7,20 @@ import { useMedications } from '@/data/home';
 import { todayISO } from '@/domain/dates';
 import { healthParts, PLANOS, SAUDE_TABS, type Plano, type SaudeTab } from '@/domain/tabs';
 import { CarePanel } from '@/features/health/CarePanel';
+import { HealthAddButton } from '@/features/health/HealthAddButton';
 import { HealthTodaySections } from '@/features/health/HealthTodaySections';
 import { MedicationRefills, MedicationsToday, useRefills } from '@/features/health/MedicationSections';
 import { MedicationsPanel } from '@/features/health/MedicationsPanel';
 import { PlansPanel } from '@/features/health/PlansPanel';
 import type { PlanKind } from '@/features/health/usePlanImport';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
-import { Card, EmptyState, Screen, Segmented, Tile } from '@/ui/primitives';
+import { Card, EmptyState, Screen, Segmented } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 const PLAN_KIND: Record<Plano, PlanKind> = { treino: 'workout', dieta: 'diet' };
 
 /**
- * Saúde: Resumo (o que pede atenção, e os atalhos de criar), Remédios (o item de uso diário, numa parte própria),
+ * Saúde: Resumo (o que pede atenção, e o "Adicionar" de remédio, consulta, vacina e exame), Remédios (o item de uso diário, numa parte própria),
  * Cuidados (consultas, vacinas, exames e a ficha de cada pessoa) e Planos (treino e dieta, com um seletor). A parte,
  * o plano e a pessoa vivem na URL (?aba=, ?plano=, ?pessoa=): atalhos de outras telas abrem direto neles, e a pessoa
  * escolhida numa parte continua escolhida nas outras que filtram por ela. Os endereços antigos do treino e da dieta
@@ -74,8 +75,6 @@ function SummaryPanel({ today }: { today: string }) {
   const overview = useHealthOverview(today);
   const medications = useMedications();
   const refills = useRefills(today);
-  const newItem = (pathname: '/consulta/[id]' | '/vacina/[id]' | '/exame/[id]') =>
-    router.push({ pathname, params: { id: 'nova' } });
   const empty =
     overview.loaded &&
     medications.isSuccess &&
@@ -88,23 +87,10 @@ function SummaryPanel({ today }: { today: string }) {
 
   return (
     <View style={styles.gap}>
-      {/* Dois por linha: "Consulta" e "Remédio" não cabem num quarto da largura de um celular de 360 (ver
-          healthScreen.test). O remédio vem primeiro, como a parte dele vem antes dos Cuidados. */}
-      <View style={styles.tiles}>
-        <View style={styles.tilesRow}>
-          <Tile
-            icon="pill"
-            tint="green"
-            label="Remédio"
-            onPress={() => router.push({ pathname: '/remedio/[id]', params: { id: 'novo' } })}
-          />
-          <Tile icon="stethoscope" tint="pink" label="Consulta" onPress={() => newItem('/consulta/[id]')} />
-        </View>
-        <View style={styles.tilesRow}>
-          <Tile icon="needle" tint="purple" label="Vacina" onPress={() => newItem('/vacina/[id]')} />
-          <Tile icon="test-tube" tint="blue" label="Exame" onPress={() => newItem('/exame/[id]')} />
-        </View>
-      </View>
+      {/* Quatro coisas de mesmo peso para criar: um botão primário no alto, "Adicionar", que pergunta qual (o
+          padrão de criar de todas as partes; azulejos só na tela Hoje). O remédio vem primeiro, como a parte dele
+          vem antes dos Cuidados. Sem remédio cadastrado, é por aqui que se chega ao primeiro. */}
+      <HealthAddButton kinds={['remedio', 'consulta', 'vacina', 'exame']} />
       <MedicationsToday today={today} />
       {/* Aqui entram também os parados há mais de duas semanas (selo neutro), que a tela Hoje não lista: é o caminho até "Atualizar estoque". */}
       <MedicationRefills rows={refills.rows} />
@@ -126,6 +112,4 @@ const styles = StyleSheet.create({
   gap: { gap: space.xl },
   // O mesmo espaço que o painel dos planos põe entre as partes dele.
   plans: { gap: space.lg },
-  tiles: { gap: space.md },
-  tilesRow: { flexDirection: 'row', gap: space.md },
 });

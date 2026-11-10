@@ -4,6 +4,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { CarePanel } from '@/features/health/CarePanel';
 import { StaleNotice } from '@/features/health/StaleNotice';
+import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
 import { Button, Chip, ErrorNotice, Loading, Section } from '@/ui/primitives';
 
 // O painel de verdade, com as buscas trocadas por respostas prontas. O que se confere aqui: a busca de "quem tem
@@ -79,6 +80,9 @@ function open(personId: string | null) {
 }
 const has = (component: Parameters<ReactTestRenderer['root']['findAllByType']>[0]) => renderer.root.findAllByType(component).length > 0;
 const buttons = () => renderer.root.findAllByType(Button).map((button) => button.props.title);
+/** O menu do "Adicionar" do alto e o que ele oferece. */
+const addSheet = () => renderer.root.findAllByType(ActionSheet).find((sheet) => sheet.props.title === 'Adicionar')!;
+const addChoices = () => (addSheet().props.actions as SheetAction[]).map((action) => action.label);
 
 beforeEach(() => {
   Object.assign(mockQueries, {
@@ -194,7 +198,9 @@ describe('painel de cuidados: as fichas nascem em Configurações', () => {
     open(null);
     const chips = renderer.root.findAllByType(Chip).map((chip) => chip.props.label);
     expect(chips).toEqual(['Todos', 'Ana', 'Beto']);
-    expect(buttons().filter((title) => /Adicionar|Pessoa ou pet/.test(title))).toEqual([]);
+    // O "Adicionar" do alto é de consulta, vacina e exame: pessoa ou pet não estão nele, nem em outro botão.
+    expect(buttons().filter((title) => /Adicionar (pessoa|pet)|Pessoa ou pet/.test(title))).toEqual([]);
+    expect(addChoices()).toEqual(['Consulta', 'Vacina', 'Exame']);
     act(() => renderer.unmount());
     open('ana');
     expect(buttons()).toContain('Editar ficha');
@@ -213,6 +219,38 @@ describe('painel de cuidados: as fichas nascem em Configurações', () => {
 
 describe('painel de cuidados: consultas, vacinas e exames', () => {
   const sections = () => renderer.root.findAllByType(Section).map((section) => section.props.title);
+
+  it('a ação principal é um "Adicionar" primário no alto, depois do filtro; as seções ficam sem o "+" no título', () => {
+    open(null);
+    const [first] = renderer.root.findAllByType(Button);
+    expect(first.props.title).toBe('Adicionar');
+    expect(first.props.variant ?? 'primary').toBe('primary');
+    expect(first.props.accessibilityLabel).toBe('Adicionar consulta, vacina ou exame');
+    expect(renderer.root.findAllByType(Section).every((section) => section.props.action === undefined)).toBe(true);
+    // O botão vem depois do seletor de pessoa (ele diz de quem é o registro novo).
+    const order = renderer.root.findAll((node) => node.type === Chip || node.type === Button).map((node) => node.type);
+    expect(order.indexOf(Button)).toBeGreaterThan(order.lastIndexOf(Chip));
+  });
+
+  it.each([
+    ['em "Todos"', 'Consulta', null, '/consulta/[id]', ''],
+    ['com a Ana escolhida', 'Vacina', 'ana', '/vacina/[id]', 'ana'],
+    ['com a Ana escolhida', 'Exame', 'ana', '/exame/[id]', 'ana'],
+  ])('%s, "Adicionar" → "%s" abre a tela nova (já da pessoa escolhida)', (_who, label, personId, pathname, pessoa) => {
+    jest.mocked(router.push).mockClear();
+    open(personId);
+    act(() => renderer.root.findAllByType(Button)[0].props.onPress());
+    const sheet = addSheet();
+    expect(sheet.props.visible).toBe(true);
+    // Com a pessoa escolhida, o menu diz para quem.
+    expect(sheet.props.message).toBe(personId ? 'Para Ana.' : undefined);
+    const action = (sheet.props.actions as SheetAction[]).find((entry) => entry.label === label)!;
+    act(() => {
+      sheet.props.onClose();
+      action.onPress();
+    });
+    expect(router.push).toHaveBeenCalledWith({ pathname, params: { id: 'nova', pessoa } });
+  });
 
   it('os remédios ficam na parte deles (Saúde → Remédios): aqui nem a seção, nem o botão, nem a busca', () => {
     open(null);

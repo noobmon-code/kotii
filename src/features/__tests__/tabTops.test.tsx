@@ -26,7 +26,7 @@ jest.mock('@/data/financeBeta', () => ({ useBeta: () => ({ data: false }) }));
 // As partes de cada aba ficam de fora: aqui só importa o topo.
 jest.mock('@/features/ChoresPanel', () => ({ ChoresPanel: () => null }));
 jest.mock('@/features/EquipmentPanel', () => ({ EquipmentPanel: () => null }));
-jest.mock('@/features/PantryPanel', () => ({ PantryPanel: () => null }));
+jest.mock('@/features/PantryPanel', () => ({ PantryAddButton: () => null, PantryPanel: () => null }));
 jest.mock('@/features/ShoppingListsPanel', () => ({ ShoppingListsPanel: () => null }));
 jest.mock('@/features/SuppliesSection', () => ({ SuppliesSection: () => null }));
 jest.mock('@/features/AgendaPanel', () => ({ AgendaPanel: () => null, agendaQueryKeys: () => [] }));

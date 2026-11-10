@@ -22,6 +22,7 @@ import {
   Text,
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
+import { HealthAddButton } from './HealthAddButton';
 import { PersonChips } from './PersonChips';
 import { StaleNotice } from './StaleNotice';
 
@@ -55,8 +56,6 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
 
   const mine = <T extends { person_id: string | null }>(rows: T[]) => (person ? rows.filter((r) => r.person_id === person.id) : rows);
   const nameOf = (id: string) => (person ? null : people.data.find((p) => p.id === id)?.name ?? null);
-  const add = (pathname: '/consulta/[id]' | '/vacina/[id]' | '/exame/[id]') =>
-    router.push({ pathname, params: { id: 'nova', pessoa: person?.id ?? '' } });
 
   const personAppointments = mine(appointments.data);
   const upcoming = upcomingAppointments(personAppointments, today);
@@ -94,9 +93,13 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
 
       <PersonChips people={people.data} value={person?.id ?? null} onChange={onPersonChange} allLabel="Todos" />
 
+      {/* A ação principal da parte, primária e no alto (depois do filtro, como em Remédios e Planos): consulta,
+          vacina ou exame, já da pessoa escolhida. As seções abaixo ficam sem o "+" no título. */}
+      <HealthAddButton kinds={['consulta', 'vacina', 'exame']} personId={person?.id ?? ''} personName={person?.name} />
+
       {person ? <PersonCard person={person} today={today} /> : null}
 
-      <Section title="Consultas" action={<Button title="Consulta" icon="plus" variant="ghost" compact onPress={() => add('/consulta/[id]')} />}>
+      <Section title="Consultas">
         {personAppointments.length === 0 ? (
           <Text variant="muted">Nenhuma consulta registrada.</Text>
         ) : (
@@ -128,7 +131,7 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
         )}
       </Section>
 
-      <Section title="Vacinas" action={<Button title="Vacina" icon="plus" variant="ghost" compact onPress={() => add('/vacina/[id]')} />}>
+      <Section title="Vacinas">
         {personVaccines.length === 0 ? (
           <Text variant="muted">Nenhuma vacina registrada.</Text>
         ) : (
@@ -152,7 +155,7 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
         )}
       </Section>
 
-      <Section title="Exames" action={<Button title="Exame" icon="plus" variant="ghost" compact onPress={() => add('/exame/[id]')} />}>
+      <Section title="Exames">
         {trendsPerson ? (
           <Button
             title={hasResults(trendsPerson) ? 'Evolução e resumo para a consulta' : 'Resumo para a consulta'}

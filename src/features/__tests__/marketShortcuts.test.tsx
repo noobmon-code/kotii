@@ -6,7 +6,7 @@ import { MARKET_MONTH_CARD, ReceiptsPanel } from '@/features/market/ReceiptsPane
 import { ShoppingListsPanel } from '@/features/ShoppingListsPanel';
 import { PickerModal } from '@/ui/PickerModal';
 import { FeatureCard } from '@/ui/FeatureCard';
-import { Button } from '@/ui/primitives';
+import { Button, Tile } from '@/ui/primitives';
 
 // Os caminhos até o dinheiro do mercado e o aviso da categoria: Compras > Notas leva ao Mercado do mês (a única
 // entrada dele), Compras > Listas leva aos Preços, e o seletor de categoria diz, antes da escolha, que a categoria
@@ -76,6 +76,8 @@ describe('Compras > Notas', () => {
 });
 
 describe('Compras > Listas', () => {
+  const button = (title: string) => renderer!.root.findAllByType(Button).find((entry) => entry.props.title === title)!;
+
   it('tem os Preços (só aqui) e não o cartão do Mercado do mês, que foi para as notas', async () => {
     await act(async () => {
       renderer = create(<ShoppingListsPanel />);
@@ -84,9 +86,32 @@ describe('Compras > Listas', () => {
     expect(text).toContain('Compras do mês');
     expect(text).not.toContain(MARKET_MONTH_CARD.title);
     expect(renderer!.root.findAllByType(FeatureCard)).toHaveLength(0);
-    const prices = renderer!.root.findAll((node) => node.props.label === 'Preços' && typeof node.props.onPress === 'function')[0];
-    await act(async () => prices.props.onPress());
+    await act(async () => button('Preços').props.onPress());
     expect(mockRouter.push).toHaveBeenCalledWith('/precos');
+  });
+
+  it('"Nova lista" é o botão primário no alto; Preços e Cardápio são outras telas, botões secundários, sem azulejo', async () => {
+    await act(async () => {
+      renderer = create(<ShoppingListsPanel />);
+    });
+    expect(renderer!.root.findAllByType(Tile)).toHaveLength(0);
+    const buttons = renderer!.root.findAllByType(Button);
+    expect(buttons.slice(0, 3).map((entry) => [entry.props.title, entry.props.variant ?? 'primary'])).toEqual([
+      ['Nova lista', 'primary'],
+      ['Preços', 'secondary'],
+      ['Cardápio', 'secondary'],
+    ]);
+    // O nome curto cabe ao lado de "Preços" num celular de 360; o leitor de tela diz o nome da tela.
+    expect(button('Cardápio').props.accessibilityLabel).toBe('Cardápio da semana');
+    await act(async () => button('Cardápio').props.onPress());
+    expect(mockRouter.push).toHaveBeenCalledWith('/cardapio');
+    // O formulário da lista nova toma o lugar do botão enquanto está aberto, no alto.
+    await act(async () => button('Nova lista').props.onPress());
+    expect(renderer!.root.findAllByType(Button).find((entry) => entry.props.title === 'Nova lista')).toBeUndefined();
+    expect(texts(renderer!.toJSON())[0]).toBe('Nova lista');
+    expect(button('Criar')).toBeDefined();
+    await act(async () => button('Cancelar').props.onPress());
+    expect(button('Nova lista')).toBeDefined();
   });
 });
 

@@ -100,7 +100,6 @@ export function BillsPanel() {
       <Button
         title="Nova conta"
         icon="plus"
-        variant="secondary"
         onPress={() => router.push({ pathname: '/conta/[id]', params: { id: 'nova' } })}
       />
       {bills.data.length === 0 ? (
