@@ -26,13 +26,12 @@ import {
 } from '@/domain/appFeedback';
 import { THEME_HINT } from '@/domain/appearance';
 import { PROFILE_MESSAGES, PROFILE_NAME_HINT, PROFILE_NOT_READY, PROFILE_PRIVACY } from '@/domain/profile';
-import { SHARING_ABOUT, SHARING_TITLE } from '@/domain/sharedPrices';
+import { SHARING_ABOUT, SHARING_SUMMARY, SHARING_TITLE } from '@/domain/sharedPrices';
 import { MODERATION_TITLE } from '@/domain/storeModeration';
 import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
 import { OFFLINE_TRY_AGAIN } from '@/lib/networkErrors';
 import { THEME_CHOICE_KEY } from '@/lib/themeChoice';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { HeaderButton } from '@/ui/FeatureCard';
 import { Chip, Screen } from '@/ui/primitives';
 import { PALETTES } from '@/ui/theme';
 import { ThemeChoiceProvider } from '@/ui/ThemeChoiceProvider';
@@ -40,8 +39,9 @@ import { ThemeChoiceProvider } from '@/ui/ThemeChoiceProvider';
 // A aba Configurações (que juntou a antiga aba Família e a tela de Configurações) e as telas que ela abre por uma
 // linha, com o banco de mentira. A aba: as categorias na ordem (Casa, Avisos, Você, Sobre o Kotii, Conta e, só para
 // quem tem acesso, Manutenção do app), os moradores (tocar abre a ficha), o convite (o código só ao tocar), as
-// pessoas e pets sem celular (o único lugar de cadastrar), o tema (que muda as cores e fica no aparelho), sair e
-// apagar a conta, e o painel e a moderação. O perfil (/perfil: lido da tabela, salvo numa chamada só, com os erros
+// pessoas e pets sem celular (a lista das fichas, com o cadastro), o uso da IA e os preços compartilhados (linhas que
+// abrem ao tocar), o tema (que muda as cores e fica no aparelho), sair (com a explicação de sair da casa junto do
+// botão dela) e apagar a conta, e o painel e a moderação. O perfil (/perfil: lido da tabela, salvo numa chamada só, com os erros
 // do banco em palavras, e só o nome com um aviso quando a migração ainda não chegou) e o recado escrito pela pessoa
 // (/recado: send_app_feedback, sem IA no meio) são telas próprias.
 
@@ -262,11 +262,12 @@ describe('Configurações: a aba', () => {
     expect(headers[0].props.children).toBe('Configurações');
     expect(renderer!.root.findByType(Screen).props.heading).toBe('Configurações');
     // A engrenagem do topo e a linha "Configurações" do fim abriam esta mesma tela: saíram.
-    expect(renderer!.root.findAllByType(HeaderButton)).toHaveLength(0);
+    expect(renderer!.root.findAll((node) => node.props.accessibilityLabel === 'Configurações' && 'onPress' in node.props)).toHaveLength(0);
     expect(text.split('Configurações')).toHaveLength(2);
-    // Os formulários e os interruptores ficam nas telas próprias: a aba é curta.
+    // Os formulários e os interruptores ficam nas telas próprias, e o uso da IA abre só ao tocar: a aba é curta.
     expect(renderer!.root.findAll((node) => node.props.label === 'Nome' || node.props.label === 'Recado')).toHaveLength(0);
     expect(renderer!.root.findAll((node) => node.props.accessibilityRole === 'switch')).toHaveLength(0);
+    expect(text).not.toContain('Limite da casa para não passar do custo combinado.');
     // Os documentos foram para Casa → Documentos.
     expect(text).not.toContain('Documentos');
   });
@@ -312,7 +313,7 @@ describe('Configurações: a aba', () => {
     share.mockRestore();
   });
 
-  it('pessoas e pets sem celular: as fichas e o cadastro (o único lugar de criar uma ficha)', async () => {
+  it('pessoas e pets sem celular: as fichas e o cadastro (Saúde → Cuidados não cadastra mais)', async () => {
     mockPeople.data = [
       { id: 'p-ana', name: 'Ana', kind: 'pessoa', member_user_id: 'ana' },
       { id: 'p-lia', name: 'Lia', kind: 'pessoa', member_user_id: null },
@@ -337,14 +338,38 @@ describe('Configurações: a aba', () => {
     expect(router.push).toHaveBeenCalledWith('/recado');
   });
 
-  it('Sobre o Kotii: o uso da IA, os preços compartilhados (quando o banco tem) e depois os termos', async () => {
+  it('Sobre o Kotii: o uso da IA e os preços compartilhados (quando o banco tem), fechados, e depois os termos', async () => {
     mockDb.aiUsage = { data: [{ kind: 'chat', used: 12, lim: 100 }], error: null };
     mockDb.sharing = { data: true, error: null };
     const text = await mount();
     expect(text).toContain(
-      `Sobre o KotiiUso da IA neste mêsMensagens com o Nuke12 de 100Limite da casa para não passar do custo combinado.`,
+      `Sobre o KotiiUso da IA neste mêsQuanto a casa já usou do limite do mês${SHARING_TITLE}${SHARING_SUMMARY}${TERMS_TITLE}${termsVersionLabel()}`,
     );
-    expect(text).toContain(`${SHARING_TITLE}${SHARING_ABOUT}${TERMS_TITLE}${termsVersionLabel()}`);
+    const row = (title: string) => renderer!.root.findAll((node) => node.props.title === title && typeof node.props.onPress === 'function')[0];
+    // Cada uma abre ali mesmo, ao tocar, como o "Convidar", e fecha no segundo toque.
+    expect(row('Uso da IA neste mês').props.expanded).toBe(false);
+    await act(async () => row('Uso da IA neste mês').props.onPress());
+    expect(row('Uso da IA neste mês').props.expanded).toBe(true);
+    expect(page()).toContain(
+      'Uso da IA neste mêsQuanto a casa já usou do limite do mêsMensagens com o Nuke12 de 100Limite da casa para não passar do custo combinado.',
+    );
+    await act(async () => row(SHARING_TITLE).props.onPress());
+    expect(page()).toContain(`${SHARING_TITLE}${SHARING_SUMMARY}${SHARING_ABOUT}${TERMS_TITLE}`);
+    await act(async () => row('Uso da IA neste mês').props.onPress());
+    await act(async () => row(SHARING_TITLE).props.onPress());
+    expect(page()).not.toContain('Mensagens com o Nuke');
+    expect(page()).not.toContain(SHARING_ABOUT);
+  });
+
+  it('Sobre o Kotii: fechada, a linha do uso da IA já diz o limite que acabou ou está perto do fim', async () => {
+    mockDb.aiUsage = {
+      data: [
+        { kind: 'chat', used: 12, lim: 100 },
+        { kind: 'photo', used: 100, lim: 100 },
+      ],
+      error: null,
+    };
+    expect(await mount()).toContain('Uso da IA neste mêsAcabou o limite de leituras de foto (notas e saúde)');
   });
 });
 
@@ -524,9 +549,10 @@ describe('Configurações: conta', () => {
   it('os termos com a data da versão (em Sobre o Kotii), sair (com a pergunta de sempre), sair desta casa e apagar a conta', async () => {
     const text = await mount();
     expect(text).toContain(`${TERMS_TITLE}${termsVersionLabel()}`);
-    // A explicação de sair da casa vem antes do botão; com outra pessoa na casa, sair não apaga a casa.
+    // A explicação de sair da casa vem antes do botão dela e diz de qual saída fala (vem logo depois de "Sair da
+    // conta", que não apaga nada); com outra pessoa na casa, sair não apaga a casa.
     expect(text).toContain(
-      'ContaSair da contaSaindo, você pode criar outra casa ou entrar em uma com um código.Sair desta casaApagar minha conta',
+      'ContaSair da contaSaindo desta casa, você pode criar outra ou entrar em uma com um código.Sair desta casaApagar minha conta',
     );
     await act(async () => pressable(`${TERMS_TITLE}${termsVersionLabel()}`).props.onPress());
     expect(router.push).toHaveBeenCalledWith('/termos');
@@ -557,9 +583,25 @@ describe('Configurações: conta', () => {
     expect(mockLeave.mutate).not.toHaveBeenCalled();
   });
 
-  it('sozinha na casa, a explicação diz que sair apaga a casa', async () => {
+  it('sozinha na casa, a explicação diz que sair desta casa apaga a casa, junto do botão dela e não do de sair da conta', async () => {
     mockHousehold.members = [mockMe];
-    expect(await mount()).toContain('ContaSair da contaVocê é a única pessoa aqui: sair apaga a casa.Sair desta casa');
+    expect(await mount()).toContain('ContaSair da contaVocê é a única pessoa aqui: sair desta casa apaga a casa.Sair desta casa');
+    // A explicação e o botão que ela explica num grupo só; "Sair da conta" fica fora dele.
+    const buttons = (node: ReactTestInstance) =>
+      new Set(node.findAll((child) => typeof child.props.title === 'string' && typeof child.props.onPress === 'function').map((child) => child.props.title));
+    let group: ReactTestInstance = renderer!.root.findAll(
+      (node) => typeof node.type === 'string' && node.props.children === 'Você é a única pessoa aqui: sair desta casa apaga a casa.',
+    )[0];
+    while (!buttons(group).has('Sair desta casa')) group = group.parent!;
+    expect(buttons(group)).toEqual(new Set(['Sair desta casa']));
+  });
+
+  it('com outra casa, a explicação diz onde o app abre depois de sair desta casa', async () => {
+    mockHousehold.houses = [
+      { id: 'h1', name: 'Casa da Ana', role: 'owner' },
+      { id: 'h2', name: 'Casa da praia', role: 'member' },
+    ];
+    expect(await mount()).toContain('Sair da contaDepois de sair desta casa, o app abre em "Casa da praia".Sair desta casa');
   });
 });
 

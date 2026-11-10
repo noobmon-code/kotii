@@ -78,7 +78,8 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
     ? medications.data.filter((m) => m.person_id === person.id)
     : medications.data;
 
-  // As fichas nascem num lugar só, em Configurações (Pessoas e pets sem celular): aqui só se filtra e se edita.
+  // A lista das fichas, com o cadastro, fica em Configurações (Pessoas e pets sem celular): aqui só se filtra e se
+  // edita, sem "Adicionar" (os formulários com o seletor de pessoa ainda cadastram alguém na hora).
   if (!people.data.length) {
     return (
       <EmptyState

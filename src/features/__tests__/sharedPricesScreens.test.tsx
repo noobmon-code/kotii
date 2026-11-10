@@ -6,7 +6,7 @@ import SettingsScreen from '@/app/(tabs)/configuracoes';
 import PricesScreen from '@/app/precos';
 import ProductScreen from '@/app/produto/[id]';
 import { formatShortDate, toISODate } from '@/domain/dates';
-import { SHARED_PRICES_NOTICE, SHARING_ABOUT, type SharedPrice } from '@/domain/sharedPrices';
+import { SHARED_PRICES_NOTICE, SHARING_ABOUT, SHARING_SUMMARY, SHARING_TITLE, type SharedPrice } from '@/domain/sharedPrices';
 import { storePricesFromSaved } from '@/domain/storePrices';
 import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
 import type { LatestPrice, PriceObservation, Product, Store } from '@/lib/types';
@@ -403,7 +403,11 @@ describe('Preços: a linha "Visto por"', () => {
 describe('Configurações: "Preços compartilhados"', () => {
   it('com o compartilhamento no banco, a casa lê o que entra na base comum (mesmo sem preço nenhum para ela)', async () => {
     const page = await mount(<SettingsScreen />);
-    expect(page).toContain(`Preços compartilhados${SHARING_ABOUT}`);
+    // Fechada, a linha diz em poucas palavras; o texto inteiro vem ao tocar.
+    expect(page).toContain(`${SHARING_TITLE}${SHARING_SUMMARY}`);
+    expect(page).not.toContain(SHARING_ABOUT);
+    await press(`${SHARING_TITLE}${SHARING_SUMMARY}`);
+    expect(textOf(renderer!.root)).toContain(`${SHARING_TITLE}${SHARING_SUMMARY}${SHARING_ABOUT}`);
     // Não há chave para desligar.
     expect(renderer!.root.findAll((node) => node.props.accessibilityRole === 'switch')).toHaveLength(0);
   });
@@ -412,7 +416,7 @@ describe('Configurações: "Preços compartilhados"', () => {
     // Nem quando os preços já estão aí, nem quando a função dos preços falta: o cartão segue a pergunta.
     for (const shared of [loaded([seen(SUPER, 'SUPER OUTRO', 21.9, 3)]), loaded(null)]) {
       mockQueries.shared = shared;
-      expect(await mount(<SettingsScreen />)).toContain(`Preços compartilhados${SHARING_ABOUT}`);
+      expect(await mount(<SettingsScreen />)).toContain(`${SHARING_TITLE}${SHARING_SUMMARY}`);
       await act(async () => renderer?.unmount());
     }
     expect(mockSharedPrices).not.toHaveBeenCalled();
@@ -431,14 +435,14 @@ describe('Configurações: "Preços compartilhados"', () => {
     mockQueries.available = answer();
     const page = await mount(<SettingsScreen />);
     // A aba inteira, menos o cartão: nada mais muda.
-    expect(page).toBe(withCard.replace(`Preços compartilhados${SHARING_ABOUT}`, ''));
+    expect(page).toBe(withCard.replace(`${SHARING_TITLE}${SHARING_SUMMARY}`, ''));
     expect(page).not.toContain('Preços compartilhados');
     expect(page.startsWith('ConfiguraçõesCasaMoradores (1)')).toBe(true);
   });
 
   it('logo depois do cartão, na mesma categoria, os termos de uso, que dizem que o compartilhamento vem ligado', async () => {
     const page = await mount(<SettingsScreen />);
-    expect(page).toContain(`Sobre o KotiiPreços compartilhados${SHARING_ABOUT}${TERMS_TITLE}${termsVersionLabel()}`);
+    expect(page).toContain(`Sobre o Kotii${SHARING_TITLE}${SHARING_SUMMARY}${TERMS_TITLE}${termsVersionLabel()}`);
     await press(`${TERMS_TITLE}${termsVersionLabel()}`);
     expect(router.push).toHaveBeenCalledWith('/termos');
   });

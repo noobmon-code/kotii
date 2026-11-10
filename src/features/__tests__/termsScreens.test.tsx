@@ -6,8 +6,8 @@ import SignInScreen from '@/app/entrar';
 import TermsScreen from '@/app/termos';
 import { TERMS_CONSENT, TERMS_SECTIONS, TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
 
-// A tela dos termos e o link da tela de entrar. O link da aba Família e o do cartão dos preços compartilhados
-// estão em sharedPricesScreens.test.tsx, junto com o resto da aba.
+// A tela dos termos e o link da tela de entrar. A linha dos termos em Configurações → Sobre o Kotii está em
+// settingsScreen.test.tsx e, logo depois da linha dos preços compartilhados, em sharedPricesScreens.test.tsx.
 
 /** Se há para onde voltar, e quem escuta as mudanças da pilha (a tela dos termos). */
 let mockCanGoBack = true;

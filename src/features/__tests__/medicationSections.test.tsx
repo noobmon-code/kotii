@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { router } from 'expo-router';
 import { useEffect } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -33,7 +34,14 @@ jest.mock('@/data/market', () => ({
   useAddToPharmacyList: () => ({ mutateAsync: mockAdd }),
 }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
-jest.mock('@/lib/reminders', () => ({ REMINDER_PLACE: 'neste celular', remindersSupported: false }));
+// Os avisos por notificação: desligados, menos no teste do botão "Abrir os avisos".
+const mockReminders = { supported: false };
+jest.mock('@/lib/reminders', () => ({
+  REMINDER_PLACE: 'neste celular',
+  get remindersSupported() {
+    return mockReminders.supported;
+  },
+}));
 jest.mock('@/lib/medicationBox', () => ({ lastBoxUnits: async () => null, rememberBoxUnits: jest.fn() }));
 // Os desenhos animados (reanimated) e o fundo não entram no que se confere aqui.
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
@@ -95,6 +103,7 @@ async function mount(element: React.ReactElement) {
 
 beforeEach(() => {
   Object.assign(mockQueries, { medications: undefined, doses: undefined, dosesAsked: [], lists: [] });
+  mockReminders.supported = false;
   mockAdd.mockReset();
 });
 
@@ -163,6 +172,30 @@ describe('as doses de hoje já marcadas chegam à conta do estoque', () => {
     mockQueries.doses = undefined;
     await act(async () => renderer?.update(section()));
     expect(texts(renderer!.toJSON()).join(' ')).toContain('Acaba em 5 dias');
+  });
+});
+
+describe('"Abrir os avisos" na tela do remédio', () => {
+  it('com avisos por notificação neste aparelho, o botão abre a tela dos avisos (/avisos), e não o topo de Configurações', async () => {
+    mockReminders.supported = true;
+    mockQueries.doses = [];
+    const form = stockFormOf(toSchedules([course(0)], today, [])[0], today);
+    const text = await mount(
+      <MedicationStockSection medication={course(0)} form={form} initial={form} today={today} onChange={jest.fn()} onRestocked={jest.fn()} />,
+    );
+    expect(text.join('')).toContain('nos avisos neste celular.');
+    const button = renderer!.root.findAll((node) => node.props.title === 'Abrir os avisos' && typeof node.props.onPress === 'function')[0];
+    await act(async () => button.props.onPress());
+    expect(router.push).toHaveBeenCalledWith('/avisos');
+  });
+
+  it('sem avisos por notificação, nem a frase nem o botão', async () => {
+    mockQueries.doses = [];
+    const form = stockFormOf(toSchedules([course(0)], today, [])[0], today);
+    await mount(
+      <MedicationStockSection medication={course(0)} form={form} initial={form} today={today} onChange={jest.fn()} onRestocked={jest.fn()} />,
+    );
+    expect(renderer!.root.findAll((node) => node.props.title === 'Abrir os avisos')).toHaveLength(0);
   });
 });
 

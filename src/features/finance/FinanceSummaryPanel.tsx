@@ -22,7 +22,7 @@ import {
 import { formatBRL } from '@/domain/money';
 import { BarRow } from '@/features/market/BarRow';
 import { BudgetSection } from '@/features/finance/BudgetSection';
-import { MarketMonthLink } from '@/features/finance/MarketMonthLink';
+import { MarketMonthTotal } from '@/features/finance/MarketMonthTotal';
 import { SplitSection } from '@/features/finance/SplitSection';
 import { useHousehold } from '@/lib/auth';
 import {
@@ -164,7 +164,7 @@ export function FinanceSummaryPanel() {
             </Card>
           </Section>
 
-          <MarketMonthLink month={month} receipts={marketReceipts.data} entries={entries} />
+          <MarketMonthTotal month={month} receipts={marketReceipts.data} entries={entries} />
 
           {places.length > 1 ? (
             <Section title="Onde mais gastou">

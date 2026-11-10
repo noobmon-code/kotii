@@ -181,7 +181,7 @@ afterEach(async () => {
   client.clear();
 });
 
-describe('Finanças > Notas com mais de 200 notas', () => {
+describe('Compras > Notas com mais de 200 notas', () => {
   it('"Para revisar" traz todos os rascunhos, também o de mais de um ano; o histórico vem por mês, 50 de cada vez, contando o que falta', async () => {
     await open();
     const text = page();

@@ -43,3 +43,21 @@ export function aiUsageRows(rows: { kind: string; used: number; lim: number }[],
       };
     });
 }
+
+/** A primeira letra em minúscula: o nome do uso no meio da frase ("o limite de mensagens com o Nuke"). */
+const midSentence = (label: string) => label.charAt(0).toLowerCase() + label.slice(1);
+
+/**
+ * O que a linha "Uso da IA neste mês" diz fechada, em Configurações → Sobre o Kotii (as barras ficam para quando ela
+ * abre): o limite que acabou, ou o que está perto do fim, que é o que a pessoa precisa saber sem abrir; com tudo
+ * longe do limite, só o que ela mostra.
+ */
+export function aiUsageSubtitle(rows: AiUsageRow[]): string {
+  const over = rows.filter((row) => row.level === 'acabou');
+  if (over.length === 1) return `Acabou o limite de ${midSentence(over[0].label)}`;
+  if (over.length > 1) return `${over.length} limites acabaram neste mês`;
+  const near = rows.filter((row) => row.level === 'perto');
+  if (near.length === 1) return `Perto do limite de ${midSentence(near[0].label)}`;
+  if (near.length > 1) return `${near.length} usos perto do limite`;
+  return 'Quanto a casa já usou do limite do mês';
+}

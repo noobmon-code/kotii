@@ -1235,6 +1235,12 @@ export function noCategoryItems(category: string, month: string): string {
  * daqui (o Resumo conta); num mês passado não há nada assim, e a frase não fala disso. No Resumo, "aqui" seria o
  * próprio Resumo: lá a frase diz o nome da tela, "no Mercado do mês", e "lá".
  */
+/**
+ * A linha do Mercado do mês no Resumo de Finanças, sem as notas na mão: onde ver o mês por inteiro (a linha não
+ * abre a tela, que tem uma entrada só, em Compras → Notas).
+ */
+export const MARKET_MONTH_WHERE = 'Por categoria, por item e por mercado, em Compras > Notas';
+
 export function marketVsSummary(month: string, today: string, where: 'mes' | 'resumo'): string {
   const start = where === 'mes' ? 'Diferente da barra “Mercado” do Resumo: aqui' : 'Diferente da barra “Mercado”: no Mercado do mês';
   const there = where === 'mes' ? '' : ' lá';

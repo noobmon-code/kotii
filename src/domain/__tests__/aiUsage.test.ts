@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { aiUsageRows } from '../aiUsage';
+import { aiUsageRows, aiUsageSubtitle } from '../aiUsage';
 
 describe('aiUsageRows', () => {
   it('rotula cada uso e avisa quando está perto ou acabou', () => {
@@ -37,5 +37,33 @@ describe('aiUsageRows', () => {
 
   it('com Finanças desligada, a linha do consultor não aparece, mesmo vindo do servidor: ele está atrás da chave', () => {
     expect(aiUsageRows(withAdvisor, { finance: false }).map((r) => r.kind)).toEqual(['chat']);
+  });
+});
+
+describe('aiUsageSubtitle (a linha fechada em Configurações → Sobre o Kotii)', () => {
+  const rows = (...used: [string, number, number][]) => aiUsageRows(used.map(([kind, u, lim]) => ({ kind, used: u, lim })), { finance: true });
+
+  it('o limite que acabou vem primeiro, pelo nome; dois ou mais, pela conta', () => {
+    expect(aiUsageSubtitle(rows(['chat', 300, 300], ['photo', 90, 100]))).toBe('Acabou o limite de mensagens com o Nuke');
+    expect(aiUsageSubtitle(rows(['menu', 20, 20]))).toBe('Acabou o limite de cardápios montados pelo Nuke');
+    expect(aiUsageSubtitle(rows(['chat', 300, 300], ['nfce', 200, 200]))).toBe('2 limites acabaram neste mês');
+  });
+
+  it('sem limite acabado, o que está perto do fim', () => {
+    expect(aiUsageSubtitle(rows(['chat', 12, 300], ['photo', 85, 100]))).toBe('Perto do limite de leituras de foto (notas e saúde)');
+    expect(aiUsageSubtitle(rows(['photo', 85, 100], ['nfce', 170, 200]))).toBe('2 usos perto do limite');
+  });
+
+  it('com tudo longe do limite, ou sem uso nenhum na resposta, só o que a linha mostra aberta', () => {
+    expect(aiUsageSubtitle(rows(['chat', 12, 300]))).toBe('Quanto a casa já usou do limite do mês');
+    expect(aiUsageSubtitle([])).toBe('Quanto a casa já usou do limite do mês');
+  });
+
+  it('com Finanças desligada, o consultor perto do limite não aparece nem na linha fechada', () => {
+    const answer = [
+      { kind: 'chat', used: 0, lim: 300 },
+      { kind: 'finance', used: 100, lim: 100 },
+    ];
+    expect(aiUsageSubtitle(aiUsageRows(answer, { finance: false }))).toBe('Quanto a casa já usou do limite do mês');
   });
 });

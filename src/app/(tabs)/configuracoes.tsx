@@ -53,7 +53,8 @@ const chevron = <Icon name="chevron-right" color="textMuted" />;
  * ao mais raro, com as saídas no fim: Casa (moradores, convite, pessoas e pets sem celular, clima da casa, suas
  * casas), Avisos, Você (perfil e tema), Sobre o Kotii (uso da IA, preços compartilhados, termos e recado), Conta
  * (sair, sair da casa, apagar a conta) e, só para quem tem acesso, Manutenção do app. Fica curta: os avisos, o perfil
- * e o recado são linhas que abrem telas próprias (/avisos, /perfil, /recado); só a casa e o tema ficam abertos aqui.
+ * e o recado são linhas que abrem telas próprias (/avisos, /perfil, /recado), e o uso da IA e os preços
+ * compartilhados são linhas que abrem ali mesmo, ao tocar (como o "Convidar"); só a casa e o tema ficam abertos aqui.
  * Sem cartão de topo (a barra de abas já diz a aba): o título da página é só para o leitor de tela.
  */
 export default function SettingsScreen() {
@@ -76,12 +77,14 @@ export default function SettingsScreen() {
   const isOwner = me.role === 'owner';
   const heir = members.find((m) => m.user_id !== me.user_id);
   const otherHouse = households.find((h) => h.id !== house.id);
+  // A explicação diz de qual saída fala ("sair desta casa"): na categoria Conta, ela vem logo depois de "Sair da
+  // conta", que não apaga nada.
   const leaveHint = [
-    heir ? null : 'Você é a única pessoa aqui: sair apaga a casa.',
+    heir ? null : 'Você é a única pessoa aqui: sair desta casa apaga a casa.',
     otherHouse
-      ? `Depois de sair, o app abre em "${otherHouse.name}".`
+      ? `Depois de sair desta casa, o app abre em "${otherHouse.name}".`
       : heir
-        ? 'Saindo, você pode criar outra casa ou entrar em uma com um código.'
+        ? 'Saindo desta casa, você pode criar outra ou entrar em uma com um código.'
         : null,
   ]
     .filter(Boolean)
@@ -225,7 +228,8 @@ export default function SettingsScreen() {
             </ListCard>
           </Group>
 
-          {/* As fichas de quem não usa o app nascem só aqui (a Saúde filtra e edita, mas não cria). */}
+          {/* A lista das fichas de quem não usa o app, e onde elas se cadastram (Saúde → Cuidados filtra e edita, mas
+              não tem mais "Adicionar"; os formulários com o seletor de pessoa ainda cadastram alguém na hora). */}
           <Group title="Pessoas e pets sem celular">
             <Text variant="muted">
               Crianças, idosos e pets que não usam o app: remédios, vacinas, consultas e documentos ficam no nome deles.
@@ -332,22 +336,27 @@ export default function SettingsScreen() {
       </Section>
 
       <Section title="Conta">
-        <Button
-          title="Sair da conta"
-          variant="danger"
-          icon="logout"
-          onPress={() => confirmAction('Sair da conta', signOutQuestion(), 'Sair', () => signOut())}
-        />
-        {leaveHint ? <Text variant="muted">{leaveHint}</Text> : null}
-        <Button title="Sair desta casa" variant="secondary" icon="home-export-outline" loading={leave.isPending} onPress={confirmLeave} />
-        {/* A tela explica antes o que fica com cada casa e pede a senha de novo. */}
-        <Button
-          title="Apagar minha conta"
-          variant="ghost"
-          compact
-          icon="account-remove-outline"
-          onPress={() => router.push('/apagar-conta')}
-        />
+        <View style={styles.groups}>
+          <Button
+            title="Sair da conta"
+            variant="danger"
+            icon="logout"
+            onPress={() => confirmAction('Sair da conta', signOutQuestion(), 'Sair', () => signOut())}
+          />
+          {/* A explicação fica junto do botão que ela explica, e longe de "Sair da conta". */}
+          <View style={styles.group}>
+            {leaveHint ? <Text variant="muted">{leaveHint}</Text> : null}
+            <Button title="Sair desta casa" variant="secondary" icon="home-export-outline" loading={leave.isPending} onPress={confirmLeave} />
+          </View>
+          {/* A tela explica antes o que fica com cada casa e pede a senha de novo. */}
+          <Button
+            title="Apagar minha conta"
+            variant="ghost"
+            compact
+            icon="account-remove-outline"
+            onPress={() => router.push('/apagar-conta')}
+          />
+        </View>
       </Section>
 
       {/* Só para quem mantém o app (app_admins: os números de uso, só totais) e para quem modera os nomes dos mercados. */}
