@@ -4,13 +4,15 @@ import { useCallback, useRef, useState } from 'react';
 import { MAX_RECEIPT_PHOTOS, pickReceiptImages, useCreateManualReceipt, useScanReceipt, type ScanSource } from '@/data/receipts';
 import { useHouseholdId } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
-import { ActionSheet } from '@/ui/ActionSheet';
+import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
 import { BusyOverlay } from '@/ui/BusyOverlay';
 import { notify } from '@/ui/dialogs';
 
 /**
  * Fluxo "nota -> revisão". `open()` mostra as opções (QR code, câmera,
  * galeria, manual); `element` precisa ser renderizado pela tela.
+ * `actions` são essas mesmas opções, para a tela que as põe na pergunta dela
+ * (o "Finalizar compra" da lista: um menu só, sem abrir um depois do outro).
  * `readPhotos(source, chave)` lê pela foto uma nota cuja chave já se conhece
  * (do QR code). `replace`: a revisão toma o lugar da tela atual (a do QR).
  */
@@ -89,6 +91,13 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
     });
   }, [manual]);
 
+  const actions: SheetAction[] = [
+    { label: 'Ler o QR code da nota', icon: 'qrcode-scan', onPress: () => router.push('/nota/qrcode') },
+    { label: 'Tirar foto da nota', icon: 'camera-outline', onPress: () => readPhotos('camera') },
+    { label: `Escolher da galeria (até ${MAX_RECEIPT_PHOTOS} fotos)`, icon: 'image-outline', onPress: () => readPhotos('library') },
+    { label: 'Digitar manualmente', icon: 'pencil-outline', onPress: startManual },
+  ];
+
   const element = (
     <>
       <ActionSheet
@@ -96,12 +105,7 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
         onClose={() => setSheetOpen(false)}
         title="Adicionar nota fiscal"
         message="Pelo QR code, os itens vêm direto da Sefaz; pela foto, a IA lê a nota. Você revisa antes de salvar."
-        actions={[
-          { label: 'Ler o QR code da nota', icon: 'qrcode-scan', onPress: () => router.push('/nota/qrcode') },
-          { label: 'Tirar foto da nota', icon: 'camera-outline', onPress: () => readPhotos('camera') },
-          { label: `Escolher da galeria (até ${MAX_RECEIPT_PHOTOS} fotos)`, icon: 'image-outline', onPress: () => readPhotos('library') },
-          { label: 'Digitar manualmente', icon: 'pencil-outline', onPress: startManual },
-        ]}
+        actions={actions}
       />
       <ActionSheet
         visible={parts.length > 0}
@@ -121,5 +125,5 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
     </>
   );
 
-  return { open: () => setSheetOpen(true), readPhotos, element, busy: scan.isPending || manual.isPending };
+  return { open: () => setSheetOpen(true), actions, readPhotos, element, busy: scan.isPending || manual.isPending };
 }

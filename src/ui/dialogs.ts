@@ -8,15 +8,20 @@ export function notify(title: string, message?: string) {
 }
 
 /**
- * O aviso que fala do que a tela mostra, chamado depois de o React desenhá-la: sai no quadro seguinte, que já a
- * mostra. Na web, só depois de esse quadro ser pintado: o alert trava a página como ela estava pintada, e o navegador
- * pode ainda não ter pintado o que o React acabou de desenhar.
+ * Roda no quadro seguinte ao que o React acabou de desenhar e, na web, só depois de esse quadro ser pintado: o
+ * alert e o confirm do navegador travam a página como ela estava pintada, e o navegador pode ainda não ter pintado
+ * o que o React acabou de desenhar (a tela de antes continuaria na frente do aviso).
  */
-export function notifyAfterPaint(title: string, message?: string) {
+export function afterPaint(run: () => void) {
   requestAnimationFrame(() => {
-    if (Platform.OS === 'web') setTimeout(() => notify(title, message), 0);
-    else notify(title, message);
+    if (Platform.OS === 'web') setTimeout(run, 0);
+    else run();
   });
+}
+
+/** O aviso que fala do que a tela mostra, chamado depois de o React desenhá-la (ver afterPaint). */
+export function notifyAfterPaint(title: string, message?: string) {
+  afterPaint(() => notify(title, message));
 }
 
 export function confirmAction(

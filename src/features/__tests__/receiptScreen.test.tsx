@@ -8,6 +8,7 @@ import ReceiptScreen from '@/app/nota/[id]';
 import { fetchPantryNear } from '@/data/home';
 import { PayerChips } from '@/features/finance/PayerChips';
 import { FEATURES } from '@/lib/features';
+import { stopWaitingForReceipt, takeConfirmedReceipt, waitForReceipt } from '@/lib/finishPurchase';
 import { formatBRL } from '@/domain/money';
 import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
@@ -46,7 +47,7 @@ const mockMarket: { products: Row[]; pantryNear: Row[]; listItems: Row[]; stores
 const mockPriceHistory: { points: Row[] } = { points: [] };
 
 jest.mock('expo-router', () => ({
-  router: { push: jest.fn(), back: jest.fn() },
+  router: { push: jest.fn(), back: jest.fn(), replace: jest.fn(), canGoBack: jest.fn(() => true) },
   Stack: { Screen: () => null },
   useLocalSearchParams: () => ({ id: 'r1' }),
 }));
@@ -368,6 +369,9 @@ beforeEach(() => {
   jest.mocked(askYesNo).mockImplementation(async (title) => answers[title] ?? false);
   jest.mocked(notify).mockReset();
   jest.mocked(router.back).mockReset();
+  jest.mocked(router.replace).mockReset();
+  jest.mocked(router.canGoBack).mockReset();
+  jest.mocked(router.canGoBack).mockReturnValue(true);
   jest.mocked(fetchPantryNear).mockClear();
 });
 
@@ -2213,6 +2217,43 @@ describe('a lista de compras na revisão: o mesmo item, de qualquer marca', () =
     mockLearning.enabled = [];
     await open();
     expect(mockLearning.enabled.at(-1)).toBe(false);
+  });
+
+  describe('aberta pelo "Finalizar compra" da lista', () => {
+    beforeEach(() => stopWaitingForReceipt('lista1'));
+
+    it('confirmar entrega à lista o que a nota fez e volta para ela; o aviso fica para a lista dizer', async () => {
+      mockMarket.listItems = [listItem('l1', 'Café em pó', 'cafe_cha', true), listItem('l3', 'Leite desnatado', 'laticinios', true)];
+      await open();
+      // A lista abriu o leitor (o QR code, a foto ou a pendente da Sefaz, que trocam de tela até chegar aqui).
+      waitForReceipt('lista1');
+      await press(button('Confirmar nota'));
+      expect(mockDb.rpcs.map(({ fn }) => fn)).toEqual(['confirm_receipt']);
+      expect(notify).not.toHaveBeenCalled();
+      expect(router.back).toHaveBeenCalledTimes(1);
+      // As três compras foram para a despensa. O café do carrinho saiu da lista; o leite (a nota não diz se é
+      // desnatado) fica no carrinho, para a pessoa ver.
+      const handed = takeConfirmedReceipt('lista1');
+      expect(handed).toMatchObject({ onlineAtTap: true, pantryCount: 3, removedListItems: ['l1'] });
+      expect(handed!.confirmedAt).toBeGreaterThanOrEqual(handed!.tappedAt);
+    });
+
+    it('sem lista esperando, o "Nota salva" de sempre, daqui', async () => {
+      mockMarket.listItems = [listItem('l1', 'Café em pó', 'cafe_cha', true)];
+      await open();
+      await press(button('Confirmar nota'));
+      expect(notify).toHaveBeenCalledWith('Nota salva', '3 itens foram para a despensa. 1 item saiu da lista.');
+      expect(router.back).toHaveBeenCalledTimes(1);
+      expect(takeConfirmedReceipt('lista1')).toBeNull();
+    });
+
+    it('sem tela para voltar (no navegador, a página recarregada), vai para as notas da casa', async () => {
+      jest.mocked(router.canGoBack).mockReturnValue(false);
+      await open();
+      await press(button('Confirmar nota'));
+      expect(router.back).not.toHaveBeenCalled();
+      expect(router.replace).toHaveBeenCalledWith({ pathname: '/compras', params: { aba: 'notas' } });
+    });
   });
 });
 
