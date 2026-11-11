@@ -35,7 +35,7 @@ describe('as rotas de Finanças', () => {
     for (const screen of screens) expect([screen, declared.get(screen)]).toEqual([screen, 'inHousehold && FEATURES.finance']);
   });
 
-  it('a chave sai desligada nesta versão', () => {
-    expect(FEATURES.finance).toBe(false);
+  it('a chave sai ligada nesta versão', () => {
+    expect(FEATURES.finance).toBe(true);
   });
 });

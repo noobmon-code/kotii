@@ -8,6 +8,7 @@ import { productCategoryNote } from '@/domain/productCategory';
 import { NO_SAVED_PRICES_OFFLINE, SAVED_PRICES_ERROR, SAVED_PRICES_OFFLINE } from '@/domain/storePrices';
 import { PriceHistorySection } from '@/features/market/PriceHistorySection';
 import { Loading } from '@/ui/primitives';
+import { FEATURES } from '@/lib/features';
 
 // A tela do produto de verdade, com as consultas de verdade de src/data/market.ts e um QueryClient com os
 // padrões do app. Só a rede é trocada: um "banco" em memória atrás do cliente do Supabase. O que se confere
@@ -123,6 +124,8 @@ const backOnline = async () => {
 };
 
 beforeEach(() => {
+  // Os testes partem da chave de Finanças desligada; os que a querem ligada ligam no próprio teste.
+  jest.replaceProperty(FEATURES, 'finance', false);
   // Como no app (lib/queryClient), sem a segunda tentativa, que só faria o teste esperar.
   client = new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, retry: false, gcTime: Infinity }, mutations: { networkMode: 'always', gcTime: Infinity } } });
   mockDb.tables = { products: products(), stores: stores(), latest_prices: [], receipt_items: lines() };

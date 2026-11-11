@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { act, create } from 'react-test-renderer';
@@ -34,6 +34,11 @@ jest.mock('@/lib/supabase', () => ({
   supabase: { functions: { invoke: (name: string, options: { body: Record<string, unknown> }) => mockInvoke(name, options) } },
 }));
 jest.mock('expo-router', () => ({ router: { back: jest.fn(), navigate: jest.fn() } }));
+
+beforeEach(() => {
+  // Os testes partem da chave de Finanças desligada; os que a querem ligada ligam no próprio teste.
+  jest.replaceProperty(FEATURES, 'finance', false);
+});
 
 afterEach(() => {
   // A chave de Finanças ligada num teste não passa para o seguinte, mesmo quando ele falha no meio.

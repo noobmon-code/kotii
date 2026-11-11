@@ -10,6 +10,7 @@ import { CategoryIcon } from '@/ui/primitives';
 
 import { MergeProductsModal } from '../MergeProductsModal';
 import { MergeSuggestionsCard } from '../MergeSuggestionsCard';
+import { FEATURES } from '@/lib/features';
 
 // A confirmação de juntar e o cartão "Parecem o mesmo produto" de verdade, com as buscas trocadas por respostas
 // prontas: o que se confere aqui é o que a pessoa lê e o que cada toque manda fazer. A leitura da confirmação
@@ -181,6 +182,8 @@ const kept = () => client.getQueryCache().findAll({ queryKey: ['mergeFacts'] });
 const lastConfirm = () => jest.mocked(confirmAction).mock.calls.at(-1)!;
 
 beforeEach(() => {
+  // Os testes partem da chave de Finanças desligada; os que a querem ligada ligam no próprio teste.
+  jest.replaceProperty(FEATURES, 'finance', false);
   jest.clearAllMocks();
   onClose = jest.fn<() => void>();
   onMerged = jest.fn<(keptId: string) => void>();

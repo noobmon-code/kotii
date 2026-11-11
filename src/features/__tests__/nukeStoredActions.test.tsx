@@ -78,6 +78,8 @@ async function mount() {
 }
 
 beforeEach(() => {
+  // Os testes partem da chave de Finanças desligada; os que a querem ligada ligam no próprio teste.
+  jest.replaceProperty(FEATURES, 'finance', false);
   mockState.messages = STORED;
   mockState.ran = [];
 });

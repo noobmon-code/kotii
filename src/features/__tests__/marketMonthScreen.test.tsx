@@ -279,6 +279,8 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+  // Os testes partem da chave de Finanças desligada; os que a querem ligada ligam no próprio teste.
+  jest.replaceProperty(FEATURES, 'finance', false);
   mockState.query = loaded(HOUSE);
   mockState.params = {};
   mockState.asked = [];

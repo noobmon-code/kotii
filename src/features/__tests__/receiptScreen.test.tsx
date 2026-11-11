@@ -347,6 +347,8 @@ const PRICE_QUERIES = [['latestPrices'], ['priceHistory', 'p1'], ['spending', '2
 const invalidated = () => PRICE_QUERIES.filter((key) => client.getQueryState(key)?.isInvalidated).map((key) => key[0]);
 
 beforeEach(() => {
+  // Os testes partem da chave de Finanças desligada; os que a querem ligada ligam no próprio teste.
+  jest.replaceProperty(FEATURES, 'finance', false);
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { networkMode: 'always', gcTime: Infinity } } });
   for (const key of PRICE_QUERIES) client.setQueryData(key, []);
   mockDb.stores = [{ id: 's1', name: 'Assaí' }];
