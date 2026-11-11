@@ -184,6 +184,8 @@ const luz = () => ({
 });
 
 beforeEach(() => {
+  // Os testes partem da chave de Finanças desligada; os que a querem ligada ligam no próprio teste.
+  jest.replaceProperty(FEATURES, 'finance', false);
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
   mockDb.asked = [];
   // Uma conta que vence hoje: com Finanças ligada, a Hoje a mostraria.

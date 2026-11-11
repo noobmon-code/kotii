@@ -88,6 +88,8 @@ async function render() {
 const tripSwitch = () => tree.root.findAllByType(Switch).find((s) => s.props.accessibilityLabel === 'Avisos de alguém indo ao mercado');
 
 beforeEach(() => {
+  // Os testes partem da chave de Finanças desligada; os que a querem ligada ligam no próprio teste.
+  jest.replaceProperty(FEATURES, 'finance', false);
   client = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity } } });
   Object.assign(mockDevice, { reminders: true, tripPush: true, read: async () => true });
   mockSupplies.available = undefined;

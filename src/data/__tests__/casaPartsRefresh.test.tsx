@@ -112,6 +112,8 @@ const mountedKeys = () =>
   ].sort();
 
 beforeEach(() => {
+  // Os testes partem da chave de Finanças desligada; os que a querem ligada ligam no próprio teste.
+  jest.replaceProperty(FEATURES, 'finance', false);
   mockServer.reads = {};
   delete mockParams.aba;
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

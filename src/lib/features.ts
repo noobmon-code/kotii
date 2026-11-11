@@ -10,4 +10,4 @@
  * Lida sempre na hora do uso (dentro da função ou da tela), nunca guardada numa constante ao carregar o módulo:
  * os testes ligam a chave com `jest.replaceProperty(FEATURES, 'finance', true)`.
  */
-export const FEATURES: { readonly finance: boolean } = { finance: false };
+export const FEATURES: { readonly finance: boolean } = { finance: true };

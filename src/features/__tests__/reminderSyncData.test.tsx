@@ -167,6 +167,8 @@ async function mount() {
 }
 
 beforeEach(() => {
+  // Os testes partem da chave de Finanças desligada; os que a querem ligada ligam no próprio teste.
+  jest.replaceProperty(FEATURES, 'finance', false);
   Object.assign(mockState, {
     today: '2026-10-12',
     medications: undefined,

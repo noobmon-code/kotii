@@ -144,6 +144,11 @@ const requests = (table: string) => mockDb.asked.filter((request) => request.tab
 /** Depois de qual id cada pedido continuou: null no primeiro de cada leitura. */
 const cursors = (table: string) => requests(table).map((request) => request.filters.find((filter) => filter.op === 'gt')?.value ?? null);
 
+beforeEach(() => {
+  // Os testes partem da chave de Finanças desligada; os que a querem ligada ligam no próprio teste.
+  jest.replaceProperty(FEATURES, 'finance', false);
+});
+
 afterEach(() => {
   mockDb.tables = { receipts: [], receipt_items: [], bill_payments: [], expenses: [] };
   mockDb.cap = 1000;
