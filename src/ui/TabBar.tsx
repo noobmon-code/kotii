@@ -27,17 +27,21 @@ export const TAB_BAR_HEIGHT = 72;
 /** A margem de baixo da pílula: a área segura, ou um respiro onde não há. */
 export const tabBarBottomGap = (insets: Pick<EdgeInsets, 'bottom'>) => Math.max(insets.bottom, space.md);
 
-// As medidas do lado: num celular de 360, cada aba tem (360 - 32 - 2 - 2 * 4) / 5 = 63,6 e o rótulo, 63,6 - 12 = 51,6,
-// o bastante para "Compras", o rótulo mais largo (46,6 em Nunito 11 ExtraBold), que passa 2 de cada lado do círculo
-// da aba aberta (TAB_ACTIVE_SIZE). "Configurações" (74,8) não cabe: na
-// barra a aba é "Ajustes", e "Configurações" fica como título da tela. Com a fonte grande do aparelho, o rótulo cresce
-// só até 1,2x e encolhe até 85% para caber, em vez de ser cortado. Com a chave de Finanças ligada (lib/features), são
-// seis abas e o rótulo tem (360 - 42) / 6 - 12 = 41: "Compras" e "Finanças" encolhem no aparelho (no navegador, que
-// não encolhe o texto, o fim pode ser cortado).
+// As medidas do lado, com as seis abas (Finanças ligada, lib/features): num celular de 360, cada aba tem
+// (360 - 32 - 2 - 2 * 4) / 6 = 53 e o rótulo, 53 - 4 = 49, o bastante para "Compras", o rótulo mais largo (46,6 em
+// Nunito 11 ExtraBold), e para "Finanças" (45,2), sem encolher nem cortar, também no navegador, que não encolhe o
+// texto. O círculo da aba aberta (TAB_ACTIVE_SIZE, 55) passa 1 de cada lado da aba, por trás das vizinhas, e o rótulo
+// largo passa um pouco da curva dele embaixo, como no kit. "Configurações" (74,8) não cabe: na barra a aba é
+// "Ajustes", e "Configurações" fica como título da tela. Com a fonte grande do aparelho, o rótulo cresce só até 1,2x
+// e encolhe até 85% para caber, em vez de ser cortado. Sem Finanças são cinco abas, de 63,6, com folga.
 /** O recuo da barra, dos lados. */
 export const TAB_BAR_PADDING = 4;
-/** O recuo do rótulo de cada aba, dos lados. */
-export const TAB_PILL_PADDING = 6;
+/**
+ * O recuo do rótulo de cada aba, dos lados: só o bastante para dois rótulos vizinhos não se tocarem. Era 6 quando o
+ * destaque era uma pílula em volta do rótulo; com o círculo solto por trás, 6 de cada lado só tirava espaço do
+ * rótulo, e com seis abas "Compras" e "Finanças" não cabiam num celular de 360 a 393.
+ */
+export const TAB_PILL_PADDING = 2;
 /**
  * O destaque da aba aberta: um círculo de 55, sempre redondo. Um rótulo mais largo que ele ("Compras") passa um
  * pouco da borda, como no kit, em vez de esticar o círculo ou ser cortado.
