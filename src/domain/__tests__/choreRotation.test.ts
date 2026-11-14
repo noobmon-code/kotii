@@ -243,11 +243,11 @@ describe('aviso depois de concluir', () => {
   it('com pontos creditados, comemora e diz quem é o próximo', () => {
     expect(completionMessage({ completed: true, points: 10, person_id: 'p-lia', next_person_id: 'p-beto' }, people)).toEqual({
       title: '+10 pontos para Lia!',
-      message: 'Próxima vez: Beto. O saldo fica em Casa → Tarefas → Pontos das crianças.',
+      message: 'Próxima vez: Beto. O saldo fica em Casa → Dia a dia → Pontos das crianças.',
     });
     expect(completionMessage({ completed: true, points: 1, person_id: 'p-lia', next_person_id: null }, people)).toEqual({
       title: '+1 ponto para Lia!',
-      message: 'O saldo fica em Casa → Tarefas → Pontos das crianças.',
+      message: 'O saldo fica em Casa → Dia a dia → Pontos das crianças.',
     });
   });
 
@@ -267,7 +267,7 @@ describe('aviso depois de concluir', () => {
     const credited = { completed: true, points: 10, person_id: 'p-ana', next_person_id: 'p-beto' };
     const moved = {
       title: '+10 pontos para Ana Clara!',
-      message: 'A vez já tinha passado para Ana Clara. Próxima vez: Beto. O saldo fica em Casa → Tarefas → Pontos das crianças.',
+      message: 'A vez já tinha passado para Ana Clara. Próxima vez: Beto. O saldo fica em Casa → Dia a dia → Pontos das crianças.',
     };
     expect(completionMessage(credited, people, ofLia)).toEqual(moved);
     // A linha mostrava a vez de um morador, ou de ninguém.
@@ -282,7 +282,7 @@ describe('aviso depois de concluir', () => {
 
   it('a vez era a que a linha mostrava: o aviso de sempre', () => {
     const credited = { completed: true, points: 10, person_id: 'p-lia', next_person_id: 'p-beto' };
-    const usual = { title: '+10 pontos para Lia!', message: 'Próxima vez: Beto. O saldo fica em Casa → Tarefas → Pontos das crianças.' };
+    const usual = { title: '+10 pontos para Lia!', message: 'Próxima vez: Beto. O saldo fica em Casa → Dia a dia → Pontos das crianças.' };
     expect(completionMessage(credited, people, ofLia)).toEqual(usual);
     // Sem a linha (quem chama não mostrou a vez), nada a comparar.
     expect(completionMessage(credited, people)).toEqual(usual);
@@ -290,7 +290,7 @@ describe('aviso depois de concluir', () => {
     // Beto saiu da casa e segue na ordem, sem o app: a linha (de antes) o mostrava como morador. É a mesma pessoa.
     expect(completionMessage({ ...credited, person_id: 'p-beto', next_person_id: 'p-carla' }, people, ofBeto)).toEqual({
       title: '+10 pontos para Beto!',
-      message: 'Próxima vez: Carla. O saldo fica em Casa → Tarefas → Pontos das crianças.',
+      message: 'Próxima vez: Carla. O saldo fica em Casa → Dia a dia → Pontos das crianças.',
     });
   });
 
@@ -304,11 +304,11 @@ describe('aviso depois de concluir', () => {
   it('fora de rodízio não há vez: a tarefa que trocou de criança em outro celular só comemora', () => {
     expect(completionMessage({ completed: true, points: 5, person_id: 'p-ana', next_person_id: null }, people, ofLia)).toEqual({
       title: '+5 pontos para Ana Clara!',
-      message: 'O saldo fica em Casa → Tarefas → Pontos das crianças.',
+      message: 'O saldo fica em Casa → Dia a dia → Pontos das crianças.',
     });
     // Banco de antes do rodízio: a resposta nem traz next_person_id.
     expect(completionMessage({ completed: true, points: 5, person_id: 'p-ana' }, people, ofLia)?.message).toBe(
-      'O saldo fica em Casa → Tarefas → Pontos das crianças.',
+      'O saldo fica em Casa → Dia a dia → Pontos das crianças.',
     );
   });
 });

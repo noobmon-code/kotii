@@ -5,7 +5,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import HouseScreen from '@/app/(tabs)/casa';
 import { ListRow, Screen } from '@/ui/primitives';
 
-// A aba Casa de verdade, no segmento Tarefas, com a lista de tarefas e os hooks de dados de verdade; só o Supabase é
+// A aba Casa de verdade, no Dia a dia (as Tarefas), com a lista de tarefas e os hooks de dados de verdade; só o Supabase é
 // de mentira (e as outras abas ficam de fora). O que se confere aqui: puxar para atualizar busca de novo, com as
 // tarefas, as ordens do rodízio e as fichas, e a lista não fica dizendo quem vem depois num rodízio que já acabou.
 
@@ -26,7 +26,8 @@ const mockServer: { order: string[]; reads: Record<string, number> } = { order: 
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn(), setParams: jest.fn() },
-  useLocalSearchParams: () => ({ aba: 'tarefas' }),
+  useLocalSearchParams: () => ({ aba: 'dia', dia: 'tarefas' }),
+  useFocusEffect: () => undefined,
 }));
 jest.mock('react-native-safe-area-context', () => {
   const { View } = jest.requireActual<typeof import('react-native')>('react-native');
@@ -44,6 +45,7 @@ jest.mock('@/lib/session', () => ({ endSessionIfGone: async () => false }));
 jest.mock('@/features/AgendaPanel', () => ({ AgendaPanel: () => null, agendaQueryKeys: () => [] }));
 jest.mock('@/features/DocumentsSection', () => ({ DocumentsSection: () => null }));
 jest.mock('@/features/EquipmentPanel', () => ({ EquipmentPanel: () => null }));
+jest.mock('@/features/finance/FinancePanel', () => ({ FinancePanel: () => null, financeQueryKeys: () => [] }));
 jest.mock('@/lib/supabase', () => {
   // Uma consulta do supabase-js: responde quando alguém espera por ela, pela tabela.
   const query = (table: string) => {
@@ -137,7 +139,7 @@ afterEach(async () => {
   client.clear();
 });
 
-describe('Casa › Tarefas: puxar para atualizar', () => {
+describe('Casa › Dia a dia › Tarefas: puxar para atualizar', () => {
   it('busca também as ordens e as fichas: o rodízio encerrado em outro celular deixa de dizer quem vem depois', async () => {
     const screen = await open();
     expect(screen.subtitle()).toMatch(/· Todo dia · Vez de Carla · depois Lia$/);

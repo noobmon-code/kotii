@@ -174,6 +174,8 @@ function AppNavigator() {
         {/* As telas de Finanças: só numa casa e com a chave ligada (lib/features). Desligada, nenhuma delas
             existe no navegador, e nenhum endereço ou botão chega a elas. */}
         <Stack.Protected guard={inHousehold && FEATURES.finance}>
+          {/* O endereço da antiga aba Finanças (favoritos, o app instalado): troca para Casa → Finanças. */}
+          <Stack.Screen name="financas" options={{ headerShown: false }} />
           <Stack.Screen name="orcamento" options={{ title: 'Orçamento do mês', presentation: 'modal' }} />
           <Stack.Screen name="conta/[id]" options={{ title: 'Conta', presentation: 'modal' }} />
           <Stack.Screen name="gasto/[id]" options={{ title: 'Gasto', presentation: 'modal' }} />

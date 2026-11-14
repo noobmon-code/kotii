@@ -141,7 +141,7 @@ const MAINTENANCE: Chore = {
   kid_id: 'p-lia',
   points: 10,
 };
-const BALANCE = 'O saldo fica em Casa → Tarefas → Pontos das crianças.';
+const BALANCE = 'O saldo fica em Casa → Dia a dia → Pontos das crianças.';
 
 let client: QueryClient;
 let renderer: ReactTestRenderer | undefined;

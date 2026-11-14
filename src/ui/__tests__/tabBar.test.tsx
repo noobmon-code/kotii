@@ -33,8 +33,7 @@ jest.mock('expo-image', () => ({ Image: () => null }));
  * A largura de cada rótulo em Nunito 11 (Bold nas abas fechadas, ExtraBold na aberta), medida nos TTF de
  * @expo-google-fonts/nunito somando o avanço de cada letra (tabelas cmap e hmtx, sem kerning): Hoje 23,7 e 24,1;
  * Compras 45,8 e 46,6; Casa 24,9 e 25,2; Saúde 31,9 e 32,4; Ajustes 38,3 e 39,1. "Configurações" mede 73,3 e 74,8
- * e não cabe: na barra a aba é "Ajustes" (o título da tela continua "Configurações"). Com a chave de Finanças
- * ligada, "Finanças" mede 44,5 e 45,2.
+ * e não cabe: na barra a aba é "Ajustes" (o título da tela continua "Configurações").
  */
 const LABEL_WIDTHS: Record<string, [bold: number, heavy: number]> = {
   Hoje: [23.65, 24.1],
@@ -44,12 +43,12 @@ const LABEL_WIDTHS: Record<string, [bold: number, heavy: number]> = {
   Ajustes: [38.32, 39.08],
 };
 const CONFIGURACOES_WIDTH = 74.8;
+/** "Finanças", de quando foi uma aba (hoje é uma parte da Casa): 44,5 e 45,2. Fica como a medida de uma sexta aba. */
+const FINANCAS_WIDTH = 45.23;
 /** O rótulo mais largo da barra, "Compras", arredondado para cima. */
 const LONGEST_LABEL = Math.ceil(Math.max(...Object.values(LABEL_WIDTHS).flat()));
 
-/** O espaço do rótulo numa tela de `width`: a barra tem a margem da tela, a borda e o recuo; a pílula, o recuo dela. */
-const labelRoom = (width: number, tabs = 5) => (width - 2 * space.lg - 2 - 2 * TAB_BAR_PADDING) / tabs - 2 * TAB_PILL_PADDING;
-
+// A barra do app: cinco abas, com a chave de Finanças ligada ou não (Finanças é uma parte da Casa).
 const TABS = [
   { name: 'index', title: 'Hoje', path: '' },
   { name: 'compras', title: 'Compras', path: 'compras' },
@@ -58,7 +57,12 @@ const TABS = [
   { name: 'configuracoes', title: 'Configurações', label: 'Ajustes', path: 'configuracoes' },
 ];
 /** O que a barra escreve em cada aba: o rótulo próprio (tabBarLabel), ou o título. */
-const shownLabel = (tab: (typeof TABS)[number]) => tab.label ?? tab.title;
+const shownLabel = (tab: { title: string; label?: string }) => tab.label ?? tab.title;
+
+/** A largura de cada aba numa tela de `width`: a barra tem a margem da tela, a borda e o recuo. */
+const tabWidth = (width: number, tabs = TABS.length) => (width - 2 * space.lg - 2 - 2 * TAB_BAR_PADDING) / tabs;
+/** O espaço do rótulo: a aba menos o recuo dele, dos dois lados. */
+const labelRoom = (width: number, tabs = TABS.length) => tabWidth(width, tabs) - 2 * TAB_PILL_PADDING;
 
 describe('o rótulo das abas', () => {
   it('todos os rótulos da barra estão medidos, e o mais largo, "Compras", cabe inteiro num celular de 360', () => {
@@ -70,16 +74,32 @@ describe('o rótulo das abas', () => {
   it('"Configurações" não caberia: por isso a barra diz "Ajustes"', () => {
     expect(CONFIGURACOES_WIDTH).toBeGreaterThan(labelRoom(360));
     expect(CONFIGURACOES_WIDTH * TAB_LABEL_MIN_SCALE).toBeGreaterThan(labelRoom(360));
+    // Nem num celular de 393: o rótulo teria 66,2.
+    expect(CONFIGURACOES_WIDTH).toBeGreaterThan(labelRoom(393));
   });
 
   it('com a fonte grande do aparelho, o rótulo encolhe até caber em vez de ser cortado', () => {
     expect(LONGEST_LABEL * TAB_LABEL_MAX_SCALE * TAB_LABEL_MIN_SCALE).toBeLessThanOrEqual(labelRoom(360));
   });
 
-  it('com a chave de Finanças ligada (seis abas), "Compras" encolhe até caber no aparelho', () => {
-    expect(LONGEST_LABEL).toBeGreaterThan(labelRoom(360, 6));
-    expect(LONGEST_LABEL * TAB_LABEL_MIN_SCALE).toBeLessThanOrEqual(labelRoom(360, 6));
+  it('com as cinco abas, todo rótulo cabe inteiro num celular de 360 e até num de 320, sem encolher (o navegador não encolhe)', () => {
+    expect(TABS).toHaveLength(5);
+    expect(tabWidth(360)).toBeCloseTo(63.6, 5);
+    expect(labelRoom(360)).toBeCloseTo(59.6, 5);
+    expect(labelRoom(320)).toBeCloseTo(51.6, 5);
+    expect(LONGEST_LABEL).toBeLessThanOrEqual(labelRoom(320));
+    // Dois rótulos vizinhos nunca se tocam: o recuo de cada lado é o espaço entre eles.
+    expect(TAB_PILL_PADDING).toBeGreaterThanOrEqual(2);
   });
+
+  it('uma sexta aba ainda caberia num celular de 360 (foi assim quando Finanças era uma aba)', () => {
+    expect(tabWidth(360, 6)).toBe(53);
+    expect(labelRoom(360, 6)).toBe(49);
+    for (const width of [LONGEST_LABEL, FINANCAS_WIDTH]) expect(width).toBeLessThanOrEqual(labelRoom(360, 6));
+    // Com o recuo de 6 de antes (a pílula em volta do rótulo), sobravam 41 e os dois eram cortados no navegador.
+    expect(tabWidth(360, 6) - 2 * 6).toBeLessThan(FINANCAS_WIDTH);
+  });
+
 });
 
 describe('a barra do app', () => {
@@ -89,21 +109,24 @@ describe('a barra do app', () => {
     ([, name, title, label]) => ({ name, title, label }),
   );
 
-  it('Hoje, Compras, Casa, Saúde e Configurações ("Ajustes" na barra), com Finanças entre Casa e Saúde quando a chave liga', () => {
+  it('Hoje, Compras, Casa, Saúde e Configurações ("Ajustes" na barra): Finanças não é uma aba, é uma parte da Casa', () => {
     expect(declared).toEqual([
       { name: 'index', title: 'Hoje', label: undefined },
       { name: 'compras', title: 'Compras', label: undefined },
       { name: 'casa', title: 'Casa', label: undefined },
-      { name: 'financas', title: 'Finanças', label: undefined },
       { name: 'saude', title: 'Saúde', label: undefined },
       { name: 'configuracoes', title: 'Configurações', label: 'Ajustes' },
     ]);
-    // A tabela do teste é a barra com a chave desligada.
-    expect(TABS.map(({ name, title, label }) => ({ name, title, label }))).toEqual(declared.filter((tab) => tab.name !== 'financas'));
+    // A tabela do teste é a barra do app: todas as abas que o layout declara.
+    expect(TABS.map(({ name, title, label }) => ({ name, title, label }))).toEqual(declared);
+    // Nenhuma aba fica atrás de uma chave: a barra é a mesma com Finanças ligada ou não.
+    expect(layout).not.toContain('Tabs.Protected');
+    expect(layout).not.toContain('financas');
   });
 
   it('cada aba tem o seu ícone: o carrinho em Compras e a engrenagem em Configurações', () => {
-    expect(declared.map((tab) => TAB_ICONS[tab.name])).toEqual(['sun', 'cart', 'home', 'wallet', 'heart', 'gear']);
+    expect(declared.map((tab) => TAB_ICONS[tab.name])).toEqual(['sun', 'cart', 'home', 'heart', 'gear']);
+    expect(Object.keys(TAB_ICONS)).toEqual(declared.map((tab) => tab.name));
   });
 });
 
@@ -205,7 +228,7 @@ describe('a barra de abas', () => {
   it('cada aba leva o endereço da tela, como a barra padrão', async () => {
     const { root } = await renderTabs();
     expect(tabs(root).map((tab) => tab.props.href)).toEqual(['/', '/compras', '/casa', '/saude', '/configuracoes']);
-    expect(tabs(root).map(hostRole)).toEqual(Array(5).fill('tab'));
+    expect(tabs(root).map(hostRole)).toEqual(Array(TABS.length).fill('tab'));
   });
 
   it('a aba aberta fica num círculo de vidro de 55, como no kit, e só ela', async () => {
@@ -231,10 +254,22 @@ describe('a barra de abas', () => {
     expect(style.boxShadow).toBe(`${shadows.inset}, inset -1px -1px 1px ${PALETTES.light.glassEdge}`);
     expect(TAB_ACTIVE_SIZE).toBe(55);
     expect(TAB_ACTIVE_TINT).toBe(0.12);
-    // Cabe na altura da barra, e o rótulo mais largo passa um pouco do círculo sem sair da aba (63,6 num 360).
+    // Cabe na altura da barra. O rótulo mais largo cabe na largura do círculo, mas passa da curva dele embaixo, como
+    // no kit (no pé do rótulo o círculo já tem só 39 de largura), sem sair da aba (63,6 num 360).
     expect(TAB_ACTIVE_SIZE).toBeLessThan(TAB_BAR_HEIGHT - 2);
-    expect(LONGEST_LABEL).toBeGreaterThan(TAB_ACTIVE_SIZE - 2 * TAB_PILL_PADDING);
+    const radius = TAB_ACTIVE_SIZE / 2;
+    // A aba, de cima para baixo: 8 de recuo, o ícone, 2 de espaço e a linha de 15 do rótulo.
+    const labelFoot = 8 + TAB_ICON_BOX + 2 + 15 - radius;
+    const widthAtLabelFoot = 2 * Math.sqrt(radius ** 2 - labelFoot ** 2);
+    expect(Math.round(widthAtLabelFoot)).toBe(39);
+    expect(LONGEST_LABEL).toBeLessThan(TAB_ACTIVE_SIZE);
+    expect(LONGEST_LABEL).toBeGreaterThan(widthAtLabelFoot);
     expect(LONGEST_LABEL).toBeLessThanOrEqual(labelRoom(360));
+    // O círculo cabe dentro da aba num celular de 360; num de 320 (55,6 por aba) ainda cabe, por um triz. Com uma
+    // sexta aba passaria 1 de cada lado, por trás das vizinhas (nada o corta: não há overflow).
+    expect(TAB_ACTIVE_SIZE).toBeLessThan(tabWidth(360));
+    expect(TAB_ACTIVE_SIZE).toBeLessThan(tabWidth(320));
+    expect(TAB_ACTIVE_SIZE - tabWidth(360, 6)).toBe(2);
 
     // Trocar de aba leva o círculo junto.
     await act(async () => press(tabs(root)[2], click()));
@@ -282,7 +317,7 @@ describe('a barra de abas', () => {
     const { root } = await renderTabs();
     expect(tabs(root).map((tab) => tab.props.accessibilityLabel)).toEqual(TABS.map(shownLabel));
     // Link na web, mas ainda uma aba para o leitor de tela.
-    expect(tabs(root).map(hostRole)).toEqual(Array(5).fill('tab'));
+    expect(tabs(root).map(hostRole)).toEqual(Array(TABS.length).fill('tab'));
 
     for (const key of ['ctrlKey', 'metaKey', 'shiftKey', 'altKey']) {
       const event = click({ [key]: true });

@@ -60,7 +60,7 @@ function dayLabel(date: string, today: string): string {
 }
 
 /**
- * O que a agenda busca, para o "puxar para atualizar" de quem a mostra (Casa → Agenda): as consultas, as vacinas, as
+ * O que a agenda busca, para o "puxar para atualizar" de quem a mostra (Casa → Dia a dia → Agenda): as consultas, as vacinas, as
  * fichas (os aniversários e os nomes), as tarefas e manutenções, os documentos, as garantias e os compromissos, com
  * as mudanças de cada dia. As contas, só com a chave de Finanças ligada (lib/features).
  */
@@ -80,7 +80,7 @@ export function agendaQueryKeys(finance: boolean): string[] {
 
 /**
  * A agenda da casa: "Novo compromisso" no alto (no dia escolhido), o mês, os dias com o que há em cada um e o dia
- * escolhido. Mostrada em Casa → Agenda e na tela /agenda (a da pílula "Ver a agenda" da tela Hoje).
+ * escolhido. Mostrada em Casa → Dia a dia → Agenda e na tela /agenda (a da pílula "Ver a agenda" da tela Hoje).
  */
 export function AgendaPanel() {
   const c = useColors();
