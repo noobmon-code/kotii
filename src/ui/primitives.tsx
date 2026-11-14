@@ -395,10 +395,22 @@ export function AddCircle({ onPress, label, disabled }: { onPress?: () => void; 
  * Texto de ação azul, sem caixa ("Pôr tudo na lista"). O toque passa do texto (18) até 44 de altura: mais para cima,
  * porque embaixo, a 8, já começa o cartão da seção.
  */
-export function LinkButton({ title, onPress, disabled }: { title: string; onPress: () => void; disabled?: boolean }) {
+export function LinkButton({
+  title,
+  onPress,
+  disabled,
+  accessibilityLabel,
+}: {
+  title: string;
+  onPress: () => void;
+  disabled?: boolean;
+  /** O que o leitor de tela diz; sem ele, lê o título. Para o link curto ("Pular") dizer de quê. */
+  accessibilityLabel?: string;
+}) {
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
       accessibilityState={{ disabled }}
       hitSlop={LINK_HIT_SLOP}
       disabled={disabled}

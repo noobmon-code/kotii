@@ -2,13 +2,14 @@
 // cada função conta o uso antes de chamar a IA e devolve se a IA falhar. A
 // devolução vai com a chave de serviço: quem usa o app não consegue baixar o
 // próprio contador. A nota pelo QR code (nfce) não usa IA, mas faz o servidor
-// buscar a Sefaz: entra no mesmo limite.
+// buscar a Sefaz: entra no mesmo limite. A foto de produto ('product', o
+// "Escanear" do app) tem a cota dela, separada da foto de nota e de saúde.
 
 import { createClient } from '@supabase/supabase-js';
 
 import { secretKey } from './apiKeys.ts';
 
-export type AiKind = 'chat' | 'photo' | 'menu' | 'nfce' | 'finance';
+export type AiKind = 'chat' | 'photo' | 'menu' | 'nfce' | 'finance' | 'product';
 
 interface RpcClient {
   rpc(fn: string, args: Record<string, unknown>): PromiseLike<{ data: unknown; error: unknown }>;
@@ -29,6 +30,8 @@ const LIMIT_MESSAGE: Record<AiKind, (limit: number) => string> = {
   nfce: (limit) =>
     `A casa já leu ${limit} notas pelo QR code este mês. O limite volta no dia 1º; até lá, dá para tirar foto da nota ou digitar.`,
   finance: (limit) => `Você já usou as ${limit} mensagens com o consultor financeiro deste mês. O limite volta no dia 1º.`,
+  product: (limit) =>
+    `A casa já usou as ${limit} fotos de produto deste mês. O limite volta no dia 1º; até lá, dá para ler o código de barras ou digitar.`,
 };
 
 export class QuotaError extends Error {

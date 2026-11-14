@@ -42,7 +42,7 @@ export const DASHBOARD_MONTHS = 6;
 // Vocabulário
 
 /** Os usos da IA, na ordem de Configurações. */
-export const APP_AI_KINDS: readonly AiKind[] = ['chat', 'photo', 'menu', 'nfce', 'finance'];
+export const APP_AI_KINDS: readonly AiKind[] = ['chat', 'photo', 'menu', 'nfce', 'finance', 'product'];
 
 /** As funções que o painel conta, na ordem da rpc, com o nome que a tela mostra. */
 export const APP_FEATURES = [
@@ -106,6 +106,7 @@ const AI_KIND_NOUNS: Record<AiKind, string> = {
   menu: 'cardápios do Nuke',
   nfce: 'notas pelo QR code',
   finance: 'mensagens com o consultor financeiro',
+  product: 'fotos de produto',
 };
 
 /** A liberação do consultor financeiro em beta_access. */

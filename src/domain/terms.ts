@@ -6,14 +6,14 @@
 import { formatBRDate } from './dates';
 
 /** Data da versão do texto (AAAA-MM-DD). Muda a cada mudança no texto. */
-export const TERMS_VERSION = '2026-11-01';
+export const TERMS_VERSION = '2026-11-14';
 
 /**
  * A versão que a pessoa aceita (AAAA-MM-DD). Só muda numa mudança importante (o que é guardado, compartilhado
  * entre casas ou mandado para a IA ou outros serviços, quem responde pelos dados, quem pode ter conta): aí o
  * aviso da tela Hoje volta para todo mundo. Corrigir uma palavra muda só a TERMS_VERSION.
  */
-export const TERMS_ACCEPT_VERSION = '2026-10-24';
+export const TERMS_ACCEPT_VERSION = '2026-11-14';
 
 /** O aviso dos termos: para quem nunca aceitou nenhuma versão, ou para quem aceitou uma anterior. */
 export type TermsNotice = 'primeira' | 'mudou';
@@ -92,9 +92,10 @@ export const TERMS_SECTIONS: TermsSection[] = [
   {
     title: 'Inteligência artificial',
     paragraphs: [
-      'Algumas funções usam IA: ler a foto de uma nota fiscal, de um exame, de uma ficha de treino ou de um plano de dieta, sugerir o produto de cada item da nota e conversar com o Nuke (que também monta o cardápio da semana). Nesses casos a foto, ou a sua mensagem, é enviada a um provedor de IA para ser lida: a Anthropic (Claude) ou a OpenRouter, que repassa ao modelo configurado. Esses provedores ficam fora do Brasil, então essas fotos e mensagens são tratadas no exterior.',
+      'Algumas funções usam IA: ler a foto de uma nota fiscal, de um exame, de uma ficha de treino ou de um plano de dieta, dizer o que há na foto que você tira no "Escanear" (uma nota, um produto ou uma prateleira com vários produtos), sugerir o produto de cada item da nota e conversar com o Nuke (que também monta o cardápio da semana). Nesses casos a foto, ou a sua mensagem, é enviada a um provedor de IA para ser lida: a Anthropic (Claude) ou a OpenRouter, que repassa ao modelo configurado. Esses provedores ficam fora do Brasil, então essas fotos e mensagens são tratadas no exterior.',
       'Junto com cada mensagem ao Nuke vai um resumo da casa: o nome da casa, o seu nome e os dos moradores; os remédios do dia e quem toma cada um, o estoque e as receitas dos remédios; as consultas e de quem é cada uma; os compromissos e aniversários da semana; as tarefas e quem faz; a despensa e os itens vencendo; gás, água e ração; as listas e o cardápio; as contas, os gastos do mês e o orçamento; os documentos e as garantias.',
       'A IA pode errar. O que ela lê de uma foto vira um rascunho, que a casa vê e que você revisa antes de valer (a foto fica guardada), e o Nuke só põe algo na lista, cria uma tarefa ou lança um gasto quando você toca para confirmar. A conversa com o Nuke fica guardada só no seu aparelho. As fotos de documentos não passam por IA.',
+      'A foto de um produto ou de uma prateleira, tirada no "Escanear", vai para a IA só para ela dizer quais produtos aparecem. Essa foto pode mostrar o que há na sua casa, então enquadre só os produtos. Ela não fica guardada: é apagada logo depois de lida. Os produtos achados aparecem na tela para você conferir, e só entram na despensa ou na lista quando você toca para guardar.',
       'Um recado a quem faz o Kotii (um problema, uma sugestão ou um elogio sobre o app) pode sair de dois jeitos. Quando você fala do próprio app com o Nuke, ou pede para mandar um recado, ele prepara o recado e mostra o texto, que só vai depois do seu toque em "Enviar". Em Configurações, você mesmo escreve o recado, e ele vai direto, sem passar por IA. Dos dois jeitos, o recado fica guardado com a sua conta, e quem mantém o Kotii lê o texto, o tipo de aparelho e a versão do app, e vê o seu e-mail para poder responder. Nada da casa vai junto além do que estiver escrito no recado.',
       'O uso de IA tem limite por mês; a aba Família mostra quanto já foi usado.',
     ],
