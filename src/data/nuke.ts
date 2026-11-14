@@ -23,6 +23,7 @@ import { describeDocumentStatus, documentsNeedingAttention } from '@/domain/docu
 import { describeWarranty, warrantyStatus } from '@/domain/equipment';
 import { calendarLines } from '@/domain/familyEvents';
 import { monthLabel, monthRange, previousMonth, shiftMonth, summarize } from '@/domain/finance';
+import { financeAddress } from '@/domain/tabs';
 import { upcomingAppointments } from '@/domain/health';
 import { doseKey, dosesForDay } from '@/domain/medications';
 import { refillSummary } from '@/domain/medicationStock';
@@ -245,17 +246,18 @@ export function useAskNuke() {
 }
 
 // As telas têm os nomes que a função `nuke` conhece (não muda com o app): "compras", "despensa" e "notas" são as
-// partes da aba Compras, e "familia" é a aba Configurações, que juntou a Família e a tela de Configurações. A parte
-// vai sempre no endereço, para abrir nela mesmo com a aba já montada em outra.
+// partes da aba Compras; "tarefas" é Casa → Dia a dia, "financas" e "contas" são Casa → Finanças (o resumo e as
+// contas); e "familia" é a aba Configurações, que juntou a Família e a tela de Configurações. A parte vai sempre no
+// endereço, para abrir nela mesmo com a aba já montada em outra.
 const SCREEN_ROUTES: Record<NukeScreen, () => void> = {
   hoje: () => router.navigate('/'),
   compras: () => router.navigate({ pathname: '/compras', params: { aba: 'listas' } }),
   cardapio: () => router.navigate('/cardapio'),
   despensa: () => router.navigate({ pathname: '/compras', params: { aba: 'despensa' } }),
-  tarefas: () => router.navigate({ pathname: '/casa', params: { aba: 'tarefas' } }),
+  tarefas: () => router.navigate({ pathname: '/casa', params: { aba: 'dia', dia: 'tarefas' } }),
   aparelhos: () => router.navigate({ pathname: '/casa', params: { aba: 'aparelhos' } }),
-  financas: () => router.navigate({ pathname: '/financas', params: { aba: 'resumo' } }),
-  contas: () => router.navigate({ pathname: '/financas', params: { aba: 'contas' } }),
+  financas: () => router.navigate(financeAddress('resumo')),
+  contas: () => router.navigate(financeAddress('contas')),
   notas: () => router.navigate({ pathname: '/compras', params: { aba: 'notas' } }),
   precos: () => router.navigate('/precos'),
   saude: () => router.navigate('/saude'),

@@ -20,6 +20,7 @@ import {
   type FinanceCategory,
 } from '@/domain/finance';
 import { formatBRL } from '@/domain/money';
+import { financeAddress } from '@/domain/tabs';
 import { BarRow } from '@/features/market/BarRow';
 import { BudgetSection } from '@/features/finance/BudgetSection';
 import { MarketMonthTotal } from '@/features/finance/MarketMonthTotal';
@@ -143,7 +144,8 @@ export function FinanceSummaryPanel() {
               </Text>
             ) : null}
           </View>
-          <Button title="Ver contas" variant="ghost" compact onPress={() => router.setParams({ aba: 'contas' })} />
+          {/* As contas são a outra parte de Casa → Finanças: o painel está dentro da aba, e só troca o parâmetro. */}
+          <Button title="Ver contas" variant="ghost" compact onPress={() => router.setParams(financeAddress('contas').params)} />
         </Card>
       ) : null}
 

@@ -1,10 +1,29 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { CASA_TABS, COMPRAS_TABS, healthParts, movedFromCasa, movedFromFinance, PLANOS, SAUDE_TABS, tabFromParam } from '../tabs';
+import {
+  CASA_NARROW_WIDTH,
+  CASA_ROOMY_WIDTH,
+  CASA_TABS,
+  casaParts,
+  casaTabs,
+  casaTabsFit,
+  COMPRAS_TABS,
+  DIA_A_DIA,
+  financeAddress,
+  FINANCAS,
+  healthParts,
+  movedFinanceTab,
+  movedFromCasa,
+  movedFromFinance,
+  PLANOS,
+  SAUDE_TABS,
+  tabFromParam,
+} from '../tabs';
 
 // As partes das abas Compras, Casa e Saúde na URL (?aba=), e para onde vão os endereços antigos: a Casa de antes
-// tinha as compras e a despensa, Finanças tinha as notas e a Saúde tinha o treino e a dieta cada um numa parte.
-// Favoritos e o app instalado na tela inicial guardam esses endereços.
+// tinha as compras e a despensa, e depois as tarefas e a agenda cada uma numa parte; Finanças era uma aba, que
+// tinha as notas; e a Saúde tinha o treino e a dieta cada um numa parte. Favoritos e o app instalado na tela inicial
+// guardam esses endereços.
 
 describe('a parte pedida na URL', () => {
   it('Compras: Listas, Notas e Despensa; sem parte, ou com uma que não existe, as Listas', () => {
@@ -18,11 +37,68 @@ describe('a parte pedida na URL', () => {
     expect(tabFromParam(COMPRAS_TABS, ['notas', 'despensa'])).toBe('notas');
   });
 
-  it('Casa: Tarefas, Agenda, Aparelhos e Documentos; sem parte, ou com uma que não existe, as Tarefas', () => {
-    expect(CASA_TABS.map((tab) => tab.label)).toEqual(['Tarefas', 'Agenda', 'Aparelhos', 'Documentos']);
-    for (const tab of CASA_TABS) expect(tabFromParam(CASA_TABS, tab.value)).toBe(tab.value);
-    expect(tabFromParam(CASA_TABS, undefined)).toBe('tarefas');
-    expect(tabFromParam(CASA_TABS, 'Agenda')).toBe('tarefas');
+});
+
+describe('a Casa: a parte, o dia a dia e as finanças na URL', () => {
+  const opens = (aba: string | string[] | undefined, dia?: string | string[], financas?: string | string[], finance = true) =>
+    casaParts(aba, dia, financas, finance);
+
+  it('Dia a dia, Finanças, Aparelhos e Documentos; sem parte, ou com uma que não existe, o Dia a dia', () => {
+    expect(CASA_TABS.map((tab) => tab.label)).toEqual(['Dia a dia', 'Finanças', 'Aparelhos', 'Documentos']);
+    for (const tab of CASA_TABS) expect(opens(tab.value)).toEqual({ tab: tab.value, day: 'tarefas', money: 'resumo', moved: false });
+    for (const aba of [undefined, '', 'Agenda', 'rotina', 'qualquer']) expect([aba, opens(aba).tab]).toEqual([aba, 'dia']);
+    expect(opens(['aparelhos', 'documentos']).tab).toBe('aparelhos');
+  });
+
+  it('o Dia a dia abre nas tarefas, e a agenda é a segunda (?dia=)', () => {
+    expect(DIA_A_DIA.map((part) => part.label)).toEqual(['Tarefas', 'Agenda']);
+    expect(opens('dia').day).toBe('tarefas');
+    expect(opens(undefined).day).toBe('tarefas');
+    expect(opens('dia', 'agenda')).toEqual({ tab: 'dia', day: 'agenda', money: 'resumo', moved: false });
+    expect(opens('dia', 'calendario').day).toBe('tarefas');
+    expect(opens('dia', ['agenda', 'tarefas']).day).toBe('agenda');
+    // As outras partes guardam o que estava escolhido (voltar ao Dia a dia reabre na agenda).
+    expect(opens('aparelhos', 'agenda')).toEqual({ tab: 'aparelhos', day: 'agenda', money: 'resumo', moved: false });
+  });
+
+  it('Finanças abre no resumo, e as contas são a segunda (?financas=)', () => {
+    expect(FINANCAS.map((part) => part.label)).toEqual(['Resumo', 'Contas']);
+    expect(opens('financas')).toEqual({ tab: 'financas', day: 'tarefas', money: 'resumo', moved: false });
+    expect(opens('financas', undefined, 'contas').money).toBe('contas');
+    expect(opens('financas', undefined, 'notas').money).toBe('resumo');
+    expect(opens('dia', 'agenda', 'contas')).toEqual({ tab: 'dia', day: 'agenda', money: 'contas', moved: false });
+  });
+
+  it('sem a chave de Finanças a parte não existe: três partes, e ?aba=financas abre o Dia a dia', () => {
+    expect(casaTabs(true)).toEqual(CASA_TABS);
+    expect(casaTabs(false).map((tab) => tab.label)).toEqual(['Dia a dia', 'Aparelhos', 'Documentos']);
+    expect(opens('financas', undefined, 'contas', false).tab).toBe('dia');
+    expect(opens('documentos', undefined, undefined, false).tab).toBe('documentos');
+  });
+
+  it('/casa?aba=tarefas e /casa?aba=agenda, de quando cada uma era uma parte, abrem o Dia a dia naquela', () => {
+    expect(opens('tarefas')).toEqual({ tab: 'dia', day: 'tarefas', money: 'resumo', moved: true });
+    expect(opens('agenda')).toEqual({ tab: 'dia', day: 'agenda', money: 'resumo', moved: true });
+    expect(opens(['agenda'])).toEqual({ tab: 'dia', day: 'agenda', money: 'resumo', moved: true });
+    // O endereço antigo diz qual: um ?dia= que venha junto não muda nada. Vale também sem a chave de Finanças.
+    expect(opens('agenda', 'tarefas')).toEqual({ tab: 'dia', day: 'agenda', money: 'resumo', moved: true });
+    expect(opens('tarefas', 'agenda', undefined, false)).toEqual({ tab: 'dia', day: 'tarefas', money: 'resumo', moved: true });
+  });
+
+  it('o seletor das quatro partes se ajusta à largura: normal, apertado abaixo de 375 e justo abaixo de 340', () => {
+    expect([CASA_NARROW_WIDTH, CASA_ROOMY_WIDTH]).toEqual([340, 375]);
+    expect([320, 339, 340, 360, 374, 375, 390, 720].map((width) => casaTabsFit(4, width))).toEqual([
+      'tight',
+      'tight',
+      'dense',
+      'dense',
+      'dense',
+      'normal',
+      'normal',
+      'normal',
+    ]);
+    // Três partes (sem Finanças) cabem sempre do tamanho normal.
+    expect([320, 360, 390].map((width) => casaTabsFit(3, width))).toEqual(['normal', 'normal', 'normal']);
   });
 });
 
@@ -63,14 +139,23 @@ describe('os endereços antigos', () => {
     expect(movedFromCasa(['despensa'])).toEqual({ pathname: '/compras', aba: 'despensa' });
   });
 
-  it('as partes de hoje da Casa, e as que não existem, ficam na Casa', () => {
-    for (const aba of [undefined, '', 'tarefas', 'agenda', 'aparelhos', 'documentos', 'notas', 'listas', 'qualquer']) {
+  it('as partes de hoje da Casa, as de antes que continuam nela e as que não existem ficam na Casa', () => {
+    for (const aba of [undefined, '', 'dia', 'financas', 'tarefas', 'agenda', 'aparelhos', 'documentos', 'notas', 'listas', 'qualquer']) {
       expect([aba, movedFromCasa(aba)]).toEqual([aba, null]);
     }
   });
 
-  it('/financas?aba=notas vai para Compras → Notas; o resto de Finanças fica lá', () => {
+  it('/financas?aba=notas vai para Compras → Notas; o resto de Finanças não foi para Compras', () => {
     expect(movedFromFinance('notas')).toEqual({ pathname: '/compras', aba: 'notas' });
     for (const aba of [undefined, 'resumo', 'contas', 'despensa']) expect([aba, movedFromFinance(aba)]).toEqual([aba, null]);
+  });
+
+  it('/financas, a aba de antes, vai para Casa → Finanças: no resumo, ou nas contas com ?aba=contas', () => {
+    const resumo = { casa: { pathname: '/casa', params: { aba: 'financas', financas: 'resumo' } } };
+    for (const aba of [undefined, '', 'resumo', 'qualquer', 'despensa']) expect([aba, movedFinanceTab(aba)]).toEqual([aba, resumo]);
+    expect(movedFinanceTab('contas')).toEqual({ casa: { pathname: '/casa', params: { aba: 'financas', financas: 'contas' } } });
+    expect(movedFinanceTab(['contas', 'resumo'])).toEqual({ casa: financeAddress('contas') });
+    // As notas continuam indo para Compras.
+    expect(movedFinanceTab('notas')).toEqual({ compras: { pathname: '/compras', aba: 'notas' } });
   });
 });

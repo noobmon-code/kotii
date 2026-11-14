@@ -23,6 +23,7 @@ import {
 import type { FinCategoryRule } from '@/domain/bankRules';
 import { toISODate } from '@/domain/dates';
 import { getFinanceCategory, type FinanceCategory } from '@/domain/finance';
+import { financeAddress } from '@/domain/tabs';
 import {
   buildFinanceSnapshot,
   parseFinanceActions,
@@ -624,10 +625,11 @@ export function financeScreenHref(screen: FinanceScreen): Href {
       return '/consultor';
     case 'orcamento':
       return '/orcamento';
+    // Finanças é uma parte da Casa: o resumo e as contas ficam em Casa → Finanças.
     case 'financas':
-      return { pathname: '/financas', params: { aba: 'resumo' } };
+      return financeAddress('resumo');
     case 'contas':
-      return { pathname: '/financas', params: { aba: 'contas' } };
+      return financeAddress('contas');
     case 'notas':
       // As notas saíram de Finanças: ficam em Compras → Notas.
       return { pathname: '/compras', params: { aba: 'notas' } };

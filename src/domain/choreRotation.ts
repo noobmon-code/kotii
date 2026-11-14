@@ -208,7 +208,7 @@ export function completionMessage(
   if (kid && result.points > 0) {
     return {
       title: `+${pointsLabel(result.points)} para ${kid}!`,
-      message: [moved, next ? nextTurnMessage(next) : null, 'O saldo fica em Casa → Tarefas → Pontos das crianças.'].filter(Boolean).join(' '),
+      message: [moved, next ? nextTurnMessage(next) : null, 'O saldo fica em Casa → Dia a dia → Pontos das crianças.'].filter(Boolean).join(' '),
     };
   }
   if (moved) return { title: moved, ...(next ? { message: nextTurnMessage(next) } : {}) };

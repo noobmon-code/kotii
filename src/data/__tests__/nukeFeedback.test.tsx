@@ -158,7 +158,8 @@ describe('as telas que o Nuke abre, nos lugares novos', () => {
     ['compras', { pathname: '/compras', params: { aba: 'listas' } }],
     ['despensa', { pathname: '/compras', params: { aba: 'despensa' } }],
     ['notas', { pathname: '/compras', params: { aba: 'notas' } }],
-    ['tarefas', { pathname: '/casa', params: { aba: 'tarefas' } }],
+    // As tarefas ficam em Casa → Dia a dia.
+    ['tarefas', { pathname: '/casa', params: { aba: 'dia', dia: 'tarefas' } }],
     ['aparelhos', { pathname: '/casa', params: { aba: 'aparelhos' } }],
     ['precos', '/precos'],
     ['cardapio', '/cardapio'],
@@ -167,6 +168,16 @@ describe('as telas que o Nuke abre, nos lugares novos', () => {
     // A Família virou a aba Configurações: a função continua chamando a tela de "familia".
     ['familia', '/configuracoes'],
   ] as [NukeScreen, unknown][])('"%s" fecha a conversa e abre %j', async (screen, href) => {
+    await runner()(open(screen));
+    expect(router.back).toHaveBeenCalledTimes(1);
+    expect(router.navigate).toHaveBeenCalledWith(href);
+  });
+
+  it.each([
+    ['financas', { pathname: '/casa', params: { aba: 'financas', financas: 'resumo' } }],
+    ['contas', { pathname: '/casa', params: { aba: 'financas', financas: 'contas' } }],
+  ] as [NukeScreen, unknown][])('com Finanças ligada, "%s" abre a parte Finanças da aba Casa: %j', async (screen, href) => {
+    jest.replaceProperty(FEATURES, 'finance', true);
     await runner()(open(screen));
     expect(router.back).toHaveBeenCalledTimes(1);
     expect(router.navigate).toHaveBeenCalledWith(href);

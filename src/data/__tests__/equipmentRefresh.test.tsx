@@ -67,6 +67,7 @@ const mockServer: { tables: Record<string, () => Answer>; reads: Record<string, 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn(), setParams: jest.fn() },
   useLocalSearchParams: () => ({ aba: 'aparelhos' }),
+  useFocusEffect: () => undefined,
 }));
 jest.mock('react-native-safe-area-context', () => {
   const { View } = jest.requireActual<typeof import('react-native')>('react-native');
@@ -84,6 +85,7 @@ jest.mock('@/lib/session', () => ({ endSessionIfGone: async () => false }));
 jest.mock('@/features/AgendaPanel', () => ({ AgendaPanel: () => null, agendaQueryKeys: () => [] }));
 jest.mock('@/features/DocumentsSection', () => ({ DocumentsSection: () => null }));
 jest.mock('@/features/ChoresPanel', () => ({ ChoresPanel: () => null }));
+jest.mock('@/features/finance/FinancePanel', () => ({ FinancePanel: () => null, financeQueryKeys: () => [] }));
 jest.mock('@/lib/supabase', () => {
   // Uma consulta do supabase-js: responde quando alguém espera por ela, pela tabela.
   const query = (table: string) => {

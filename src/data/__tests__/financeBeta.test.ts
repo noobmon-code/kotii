@@ -205,11 +205,11 @@ describe('leitura paginada', () => {
 });
 
 describe('telas sugeridas pelo consultor', () => {
-  it('contas e notas abrem a aba certa de Finanças', () => {
+  it('o resumo e as contas abrem na parte Finanças da aba Casa, e as notas em Compras', () => {
     expect(financeScreenHref('consultor')).toBe('/consultor');
     expect(financeScreenHref('orcamento')).toBe('/orcamento');
-    expect(financeScreenHref('financas')).toEqual({ pathname: '/financas', params: { aba: 'resumo' } });
-    expect(financeScreenHref('contas')).toEqual({ pathname: '/financas', params: { aba: 'contas' } });
+    expect(financeScreenHref('financas')).toEqual({ pathname: '/casa', params: { aba: 'financas', financas: 'resumo' } });
+    expect(financeScreenHref('contas')).toEqual({ pathname: '/casa', params: { aba: 'financas', financas: 'contas' } });
     // As notas saíram de Finanças: ficam em Compras → Notas.
     expect(financeScreenHref('notas')).toEqual({ pathname: '/compras', params: { aba: 'notas' } });
   });

@@ -9,6 +9,7 @@ import { describeChoreStatus } from '@/domain/chores';
 import { describeDocumentStatus, getDocumentKind } from '@/domain/documents';
 import { describeWarranty, getEquipmentCategory } from '@/domain/equipment';
 import { getFinanceCategory } from '@/domain/finance';
+import { financeAddress } from '@/domain/tabs';
 import { doseKey } from '@/domain/medications';
 import { MEALS, type MenuItem } from '@/domain/menu';
 import { describeExpiry } from '@/domain/pantry';
@@ -158,7 +159,7 @@ export function useTodayRow(context: TodayRowContext): (item: TodayItem) => Reac
             left={<IconBadge icon={getFinanceCategory(line.category).icon} tone={line.status === 'estourou' ? 'danger' : 'warning'} />}
             title={`${getFinanceCategory(line.category).label}: ${line.status === 'estourou' ? 'passou do limite' : 'perto do limite'}`}
             subtitle={describeBudget(line)}
-            onPress={() => router.push({ pathname: '/financas', params: { aba: 'resumo' } })}
+            onPress={() => router.push(financeAddress('resumo'))}
           />
         );
       }

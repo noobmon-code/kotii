@@ -1,12 +1,13 @@
 import { describe, expect, it } from '@jest/globals';
-import { readdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 import { FEATURES } from '@/lib/features';
 
-// As rotas de Finanças ficam atrás da chave (lib/features) nos dois navegadores. Uma rota que o layout não declara
-// entra no navegador sozinha (o Expo Router acrescenta as que faltam), sem guarda nenhuma: por isso cada tela de
-// Finanças, a aba inclusive, tem de estar declarada dentro de um Protected cuja guarda consulta FEATURES.finance.
+// As rotas de Finanças ficam atrás da chave (lib/features). Uma rota que o layout não declara entra no navegador
+// sozinha (o Expo Router acrescenta as que faltam), sem guarda nenhuma: por isso cada tela de Finanças, o endereço
+// antigo da aba inclusive (/financas, que hoje só leva à parte Finanças da aba Casa), tem de estar declarada dentro
+// de um Protected cuja guarda consulta FEATURES.finance.
 
 const APP = join(__dirname, '..', '..', 'app');
 const read = (file: string) => readFileSync(join(APP, file), 'utf8');
@@ -21,8 +22,13 @@ function guards(source: string): Map<string, string> {
 }
 
 describe('as rotas de Finanças', () => {
-  it('a aba só entra com a chave', () => {
-    expect(guards(read('(tabs)/_layout.tsx')).get('financas')).toBe('FEATURES.finance');
+  it('Finanças não é mais uma aba: o endereço antigo, /financas, é uma rota do navegador de fora, atrás da chave', () => {
+    expect(existsSync(join(APP, '(tabs)', 'financas.tsx'))).toBe(false);
+    expect(read('(tabs)/_layout.tsx')).not.toContain('name="financas"');
+    expect(existsSync(join(APP, 'financas.tsx'))).toBe(true);
+    expect(guards(read('_layout.tsx')).get('financas')).toBe('inHousehold && FEATURES.finance');
+    // Ela só redireciona (domain/tabs): não desenha tela nenhuma de Finanças.
+    expect(read('financas.tsx')).toMatch(/<Redirect href=/);
   });
 
   it('as telas de Finanças só abrem numa casa e com a chave, o consultor inteiro inclusive', () => {

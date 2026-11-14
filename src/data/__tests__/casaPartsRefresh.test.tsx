@@ -8,18 +8,18 @@ import { AgendaPanel, agendaQueryKeys } from '@/features/AgendaPanel';
 import { FEATURES } from '@/lib/features';
 import { Screen } from '@/ui/primitives';
 
-// A aba Casa de verdade, nas partes Agenda e Documentos, com os painéis e os hooks de dados de verdade; só o
-// Supabase é de mentira (e as Tarefas e os Aparelhos ficam de fora: têm os testes deles, choresRefresh e
-// equipmentRefresh). O que se confere aqui: puxar para atualizar busca de novo tudo o que a parte aberta mostra, e
-// só isso; com a chave de Finanças desligada (lib/features), nem a agenda nem o puxar pedem as contas; e a lista
-// do puxar da Agenda (agendaQueryKeys) é a das buscas que o painel faz.
+// A aba Casa de verdade, na Agenda (do Dia a dia), em Finanças e nos Documentos, com os painéis e os hooks de dados
+// de verdade; só o Supabase é de mentira (e as Tarefas e os Aparelhos ficam de fora: têm os testes deles,
+// choresRefresh e equipmentRefresh). O que se confere aqui: puxar para atualizar busca de novo tudo o que a parte
+// aberta mostra, e só isso; com a chave de Finanças desligada (lib/features), nem a agenda nem o puxar pedem as
+// contas, e a parte Finanças não existe; e a lista do puxar da Agenda (agendaQueryKeys) é a das buscas que o painel faz.
 
 type Answer = { data: unknown; error: unknown };
 
 // O servidor de mentira: toda tabela responde vazia; `reads`, as buscas feitas, por tabela.
 const mockServer: { reads: Record<string, number> } = { reads: {} };
-// A parte aberta (?aba=).
-const mockParams: { aba?: string } = {};
+// A parte aberta (?aba=) e o que está aberto dentro dela (?dia=, ?financas=).
+const mockParams: { aba?: string; dia?: string; financas?: string } = {};
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn(), setParams: jest.fn(), replace: jest.fn() },
@@ -36,7 +36,11 @@ jest.mock('expo-image-picker', () => ({}));
 jest.mock('@/ui/art', () => ({ Logo: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn(), confirmAction: jest.fn() }));
-jest.mock('@/lib/auth', () => ({ useHousehold: () => ({ data: { members: [] } }) }));
+// Sem sessão, a liberação do consultor (beta) nem é perguntada.
+jest.mock('@/lib/auth', () => ({
+  useAuth: () => ({ session: null }),
+  useHousehold: () => ({ data: { household: { id: 'casa-1' }, members: [] } }),
+}));
 jest.mock('@/lib/session', () => ({ endSessionIfGone: async () => false }));
 // As outras partes da aba não entram nesta história.
 jest.mock('@/features/ChoresPanel', () => ({ ChoresPanel: () => null }));
@@ -116,6 +120,8 @@ beforeEach(() => {
   jest.replaceProperty(FEATURES, 'finance', false);
   mockServer.reads = {};
   delete mockParams.aba;
+  delete mockParams.dia;
+  delete mockParams.financas;
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 });
 
@@ -123,13 +129,14 @@ afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
   client.clear();
-  // A chave de Finanças volta a ser a de verdade (desligada).
+  // A chave de Finanças volta a ser a de verdade.
   jest.restoreAllMocks();
 });
 
-describe('Casa → Agenda: puxar para atualizar', () => {
+describe('Casa → Dia a dia → Agenda: puxar para atualizar', () => {
   it('busca de novo tudo o que a agenda junta; com Finanças desligada, as contas nunca são pedidas', async () => {
-    mockParams.aba = 'agenda';
+    mockParams.aba = 'dia';
+    mockParams.dia = 'agenda';
     await open(<HouseScreen />);
     expect(mockServer.reads.bills).toBeUndefined();
     expect(await refresh()).toEqual(AGENDA_TABLES);
@@ -137,10 +144,44 @@ describe('Casa → Agenda: puxar para atualizar', () => {
 
   it('com a chave de Finanças ligada, as contas entram na agenda e no puxar', async () => {
     jest.replaceProperty(FEATURES, 'finance', true);
-    mockParams.aba = 'agenda';
+    mockParams.aba = 'dia';
+    mockParams.dia = 'agenda';
     await open(<HouseScreen />);
     expect(mockServer.reads.bills).toBe(1);
     expect(await refresh()).toEqual([...AGENDA_TABLES, 'bills'].sort());
+  });
+
+  it('o endereço de antes (/casa?aba=agenda) abre a mesma agenda, e o puxar é o dela', async () => {
+    mockParams.aba = 'agenda';
+    await open(<HouseScreen />);
+    expect(await refresh()).toEqual(AGENDA_TABLES);
+  });
+});
+
+describe('Casa → Finanças: puxar para atualizar', () => {
+  it('no Resumo, busca de novo os gastos do mês e as contas, e nada das outras partes', async () => {
+    jest.replaceProperty(FEATURES, 'finance', true);
+    mockParams.aba = 'financas';
+    await open(<HouseScreen />);
+    const again = await refresh();
+    expect(again).toContain('bills');
+    expect(again).toContain('expenses');
+    for (const table of ['chores', 'documents', 'equipment', 'appointments', 'vaccines', 'family_events']) expect(again).not.toContain(table);
+  });
+
+  it('nas Contas, as contas e os pagamentos recentes (o selo "Acima do normal"), sem os gastos do mês', async () => {
+    jest.replaceProperty(FEATURES, 'finance', true);
+    mockParams.aba = 'financas';
+    mockParams.financas = 'contas';
+    await open(<HouseScreen />);
+    expect(await refresh()).toEqual(['bill_payments', 'bills']);
+  });
+
+  it('com a chave desligada a parte não existe: ?aba=financas abre o Dia a dia, e nenhuma tabela de Finanças é pedida', async () => {
+    mockParams.aba = 'financas';
+    await open(<HouseScreen />);
+    await refresh();
+    for (const table of ['bills', 'bill_payments', 'expenses', 'budgets']) expect(mockServer.reads[table]).toBeUndefined();
   });
 });
 

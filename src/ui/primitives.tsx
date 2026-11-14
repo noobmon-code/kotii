@@ -589,6 +589,7 @@ export function Segmented<T extends string>({
   value,
   onChange,
   widths = 'equal',
+  fit = 'normal',
 }: {
   options: readonly { value: T; label: string }[];
   value: T;
@@ -598,6 +599,12 @@ export function Segmented<T extends string>({
    * para quando um rótulo comprido não cabe na parte igual ("Documentos" na Casa, num celular de 360).
    */
   widths?: 'equal' | 'content';
+  /**
+   * Para quando as partes juntas não cabem com folga na largura (as quatro da Casa, num celular estreito); sem isto,
+   * o seletor corta os rótulos com "…". `dense` (apertado): os rótulos um ponto menores e metade do recuo de cada
+   * parte. `tight` (justo): os rótulos dois pontos menores, para a tela de 320.
+   */
+  fit?: 'normal' | 'dense' | 'tight';
 }) {
   const c = useColors();
   // O item aberto é um cartão branco; à noite, um cinza um pouco mais claro que o fundo.
@@ -615,10 +622,15 @@ export function Segmented<T extends string>({
             style={[
               styles.segment,
               widths === 'content' ? styles.segmentByContent : styles.segmentEqual,
+              fit !== 'normal' && styles.segmentDense,
               selected && { backgroundColor: selectedBg },
               selected && styles.segmentSelected,
             ]}>
-            <Text variant="label" color={selected ? 'text' : 'textMuted'} numberOfLines={1}>
+            <Text
+              variant="label"
+              color={selected ? 'text' : 'textMuted'}
+              numberOfLines={1}
+              style={fit === 'dense' ? styles.segmentDenseLabel : fit === 'tight' ? styles.segmentTightLabel : undefined}>
               {o.label}
             </Text>
           </Pressable>
@@ -988,6 +1000,9 @@ const styles = StyleSheet.create({
   segmentEqual: { flex: 1 },
   // A base é o rótulo, e a sobra vai por igual para cada parte; sem sobra (a tela estreita), elas encolhem juntas.
   segmentByContent: { flexGrow: 1, flexShrink: 1, flexBasis: 'auto', paddingHorizontal: space.xs },
+  segmentDense: { paddingHorizontal: space.xs / 2 },
+  segmentDenseLabel: { fontSize: 14 },
+  segmentTightLabel: { fontSize: 13 },
   segmentSelected: {
     shadowColor: '#784028',
     shadowOpacity: 0.1,
