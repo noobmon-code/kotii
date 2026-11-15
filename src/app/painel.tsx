@@ -25,6 +25,7 @@ import { StatGrid } from '@/features/admin/StatGrid';
 import { UsageBars } from '@/features/admin/UsageBars';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { errorMessage } from '@/lib/supabase';
+import { useAreaWidth } from '@/ui/desktop';
 import { Card, EmptyState, ErrorNotice, Icon, LinkButton, Loading, Row, Screen, Section, Segmented, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -43,8 +44,9 @@ export default function AppDashboardScreen() {
   const { aba } = useLocalSearchParams<{ aba?: string }>();
   // A aba vive na URL: recarregar a página não a perde, e trocar de aba não empilha telas (setParams).
   const tab = panelTabFromParam(aba);
-  const { width, height } = useWindowDimensions();
-  const layout = panelLayout(width);
+  const { height } = useWindowDimensions();
+  // A largura que o painel tem: no computador, dentro de uma casa, a barra lateral fica ao lado dele (ui/desktop).
+  const layout = panelLayout(useAreaWidth());
   // A altura das duas partes dos recados: null na janela alta o bastante, onde a tela fica parada e elas enchem o
   // resto; numa janela mais baixa, a tela rola (os filtros saem de vista) e elas têm uma altura fixa.
   const paneHeight = layout.masterDetail ? panelPaneHeight(height) : null;

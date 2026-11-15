@@ -6,6 +6,7 @@ import { useDocuments } from '@/data/house';
 import { todayISO } from '@/domain/dates';
 import { describeDocumentStatus, documentStatus, getDocumentKind } from '@/domain/documents';
 import type { HomeDocument } from '@/lib/types';
+import { Columns } from '@/ui/desktop';
 import { Badge, Button, EmptyState, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -36,38 +37,45 @@ export function DocumentsSection() {
 
   return (
     <View style={styles.gap}>
-      <Button title="Novo documento" icon="plus" onPress={() => router.push({ pathname: '/documento/[id]', params: { id: 'novo' } })} />
-      {failed ? <ErrorNotice error={failed.error} onRetry={() => failed.refetch()} /> : null}
-      {!failed && (documents.isPending || people.isPending) ? <Loading /> : null}
-      {documents.data && !documents.data.length ? (
-        <EmptyState
-          icon="folder-account-outline"
-          title="Nenhum documento"
-          message="RG, CNH, passaporte, seguro, contrato, IPTU… Foto e validade à mão, com aviso para renovar antes de vencer."
-        />
-      ) : null}
-      {groups.map((group) => (
-        <ListCard key={group.key}>
-          <Text variant="label" style={styles.groupTitle}>
-            {group.title}
-          </Text>
-          {group.items.map((doc) => {
-            const status = documentStatus(doc.expires_on, doc.remind_days, today);
-            const kind = getDocumentKind(doc.kind);
-            const urgent = status.kind === 'vencido' || status.kind === 'renovar';
-            return (
-              <ListRow
-                key={doc.id}
-                left={<IconBadge icon={kind.icon} tone={status.kind === 'vencido' ? 'danger' : status.kind === 'renovar' ? 'warning' : 'neutral'} />}
-                title={doc.title}
-                subtitle={[doc.number, describeDocumentStatus(status, doc.expires_on)].filter(Boolean).join(' · ')}
-                right={urgent ? <Badge label={status.kind === 'vencido' ? 'Vencido' : 'Renovar'} tone={status.kind === 'vencido' ? 'danger' : 'warning'} /> : null}
-                onPress={() => router.push({ pathname: '/documento/[id]', params: { id: doc.id } })}
-              />
-            );
-          })}
-        </ListCard>
-      ))}
+      {/* No computador (ui/desktop), os documentos ficam na coluna principal e "Novo documento", na do lado. */}
+      <Columns
+        gap={space.lg}
+        sideFirst
+        side={
+            <Button title="Novo documento" icon="plus" onPress={() => router.push({ pathname: '/documento/[id]', params: { id: 'novo' } })} />
+        }>
+        {failed ? <ErrorNotice error={failed.error} onRetry={() => failed.refetch()} /> : null}
+        {!failed && (documents.isPending || people.isPending) ? <Loading /> : null}
+        {documents.data && !documents.data.length ? (
+          <EmptyState
+            icon="folder-account-outline"
+            title="Nenhum documento"
+            message="RG, CNH, passaporte, seguro, contrato, IPTU… Foto e validade à mão, com aviso para renovar antes de vencer."
+          />
+        ) : null}
+        {groups.map((group) => (
+          <ListCard key={group.key}>
+            <Text variant="label" style={styles.groupTitle}>
+              {group.title}
+            </Text>
+            {group.items.map((doc) => {
+              const status = documentStatus(doc.expires_on, doc.remind_days, today);
+              const kind = getDocumentKind(doc.kind);
+              const urgent = status.kind === 'vencido' || status.kind === 'renovar';
+              return (
+                <ListRow
+                  key={doc.id}
+                  left={<IconBadge icon={kind.icon} tone={status.kind === 'vencido' ? 'danger' : status.kind === 'renovar' ? 'warning' : 'neutral'} />}
+                  title={doc.title}
+                  subtitle={[doc.number, describeDocumentStatus(status, doc.expires_on)].filter(Boolean).join(' · ')}
+                  right={urgent ? <Badge label={status.kind === 'vencido' ? 'Vencido' : 'Renovar'} tone={status.kind === 'vencido' ? 'danger' : 'warning'} /> : null}
+                  onPress={() => router.push({ pathname: '/documento/[id]', params: { id: doc.id } })}
+                />
+              );
+            })}
+          </ListCard>
+        ))}
+      </Columns>
     </View>
   );
 }

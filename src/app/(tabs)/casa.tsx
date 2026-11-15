@@ -22,7 +22,9 @@ import { DocumentsSection } from '@/features/DocumentsSection';
 import { EquipmentPanel } from '@/features/EquipmentPanel';
 import { FinancePanel, financeQueryKeys } from '@/features/finance/FinancePanel';
 import { MovedSubTab } from '@/features/MovedSubTab';
+import { DESKTOP_PANEL_SIDE_WIDTH, DESKTOP_TABS_WIDTH } from '@/domain/desktop';
 import { FEATURES } from '@/lib/features';
+import { Columns, useDesktop } from '@/ui/desktop';
 import { Screen, Segmented } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -50,6 +52,7 @@ function HouseTabs({ aba, dia, financas }: Params) {
   const { tab, day, money, moved } = casaParts(aba, dia, financas, finance);
   const tabs = casaTabs(finance);
   const { width } = useWindowDimensions();
+  const desktop = useDesktop();
 
   // O endereço antigo vira o de agora (sem passar pelo histórico: setParams troca os parâmetros da própria aba).
   // A tela já mostra o Dia a dia na parte certa antes disso; a troca é para o endereço, e o que ler o ?aba= depois,
@@ -105,16 +108,30 @@ function HouseTabs({ aba, dia, financas }: Params) {
   const refreshing = showsChores ? chores.isRefetching : tab === 'aparelhos' ? equipment.isRefetching : refreshingMany;
 
   return (
-    <Screen fab heading="Casa" refreshing={refreshing} onRefresh={refresh}>
+    <Screen fab wide heading="Casa" refreshing={refreshing} onRefresh={refresh}>
       {/* "Documentos" não cabe numa parte igual às outras num celular de 360: cada parte do tamanho do rótulo. E as
           quatro juntas não cabem com folga num celular estreito: ali o seletor aperta (domain/tabs). */}
-      <Segmented value={tab} onChange={setTab} options={tabs} widths="content" fit={casaTabsFit(tabs.length, width)} />
+      <Segmented
+        value={tab}
+        onChange={setTab}
+        options={tabs}
+        widths="content"
+        fit={casaTabsFit(tabs.length, width)}
+        desktopWidth={DESKTOP_TABS_WIDTH}
+      />
       {tab === 'dia' ? (
-        <View style={styles.part}>
-          {/* Fora dos painéis: o seletor fica na tela também enquanto as tarefas ou a agenda carregam. */}
-          <Segmented value={day} onChange={setDay} options={DIA_A_DIA} />
-          {day === 'tarefas' ? <ChoresPanel /> : <AgendaPanel />}
-        </View>
+        desktop ? (
+          // No computador (ui/desktop) o Dia a dia cabe inteiro: as tarefas e, ao lado, a agenda, sem o seletor.
+          <Columns gap={space.lg} sideWidth={DESKTOP_PANEL_SIDE_WIDTH} side={<AgendaPanel />}>
+            <ChoresPanel />
+          </Columns>
+        ) : (
+          <View style={styles.part}>
+            {/* Fora dos painéis: o seletor fica na tela também enquanto as tarefas ou a agenda carregam. */}
+            <Segmented value={day} onChange={setDay} options={DIA_A_DIA} />
+            {day === 'tarefas' ? <ChoresPanel /> : <AgendaPanel />}
+          </View>
+        )
       ) : null}
       {tab === 'financas' ? <FinancePanel part={money} onChange={setMoney} /> : null}
       {tab === 'aparelhos' ? <EquipmentPanel /> : null}

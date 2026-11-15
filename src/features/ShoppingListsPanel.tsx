@@ -8,6 +8,7 @@ import { StaleNotice } from '@/features/health/StaleNotice';
 import { isNetworkFailure } from '@/lib/networkErrors';
 import type { ListKind } from '@/lib/types';
 import { errorMessage } from '@/lib/supabase';
+import { Columns } from '@/ui/desktop';
 import { notify } from '@/ui/dialogs';
 import { moveFocus } from '@/ui/focus';
 import {
@@ -79,111 +80,118 @@ export function ShoppingListsPanel() {
       {lists.isError ? (
         <StaleNotice message={isNetworkFailure(lists.error) ? LISTS_OFFLINE : undefined} onRetry={() => lists.refetch()} />
       ) : null}
-      {/* A ação principal da parte é um botão primário no alto (os atalhos de azulejo ficam só na tela Hoje); o
-          formulário toma o lugar dele enquanto está aberto. Como o botão tocado sai da tela, o foco não pode ficar
-          sem lugar: o campo do nome o recebe ao abrir (e a pessoa já digita) e "Cancelar" o devolve ao botão; sem
-          isso, a web voltava ao começo da página e o VoiceOver/TalkBack perdia o lugar. Preços e Cardápio são
-          outras telas, não criar: botões secundários logo abaixo. */}
-      {creating ? (
-        <Card style={styles.gap}>
-          <Text variant="heading">Nova lista</Text>
-          <Row style={styles.wrap}>
-            {LIST_KINDS.map((k) => (
-              <Chip key={k.value} label={k.label} icon={k.icon} selected={kind === k.value} onPress={() => setKind(k.value)} />
-            ))}
-          </Row>
-          <TextField value={name} onChangeText={setName} placeholder="Nome (ex.: Compras do mês)" onSubmitEditing={create} autoFocus />
-          <Row>
-            <Button
-              title="Cancelar"
-              variant="secondary"
-              onPress={() => {
-                setCreating(false);
-                moveFocus(newListButton);
-              }}
-              style={styles.flex}
-            />
-            <Button title="Criar" onPress={create} loading={createList.isPending} style={styles.flex} />
-          </Row>
-        </Card>
-      ) : (
-        <Button ref={newListButton} title="Nova lista" icon="plus" onPress={() => setCreating(true)} />
-      )}
-      <Row style={styles.links}>
-        <Button title="Preços" icon="chart-line" variant="secondary" style={styles.link} onPress={() => router.push('/precos')} />
-        <Button
-          title="Cardápio"
-          accessibilityLabel="Cardápio da semana"
-          icon="silverware-fork-knife"
-          variant="secondary"
-          style={styles.link}
-          onPress={() => router.push('/cardapio')}
-        />
-      </Row>
-
-      {lists.data.length === 0 && !creating ? (
-        // Todas arquivadas: a casa já teve listas.
-        archived.data?.length ? (
-          <EmptyState icon="cart-outline" title="Nenhuma lista aberta" message="Crie uma lista nova ou reabra uma das arquivadas." />
-        ) : (
-          <EmptyState
-            icon="cart-outline"
-            title="Nenhuma lista ainda"
-            message="Crie uma lista e toda a família vê e marca os itens em tempo real."
-          />
-        )
-      ) : lists.data.length ? (
-        <Section title="Suas listas">
-          <ListCard>
-            {lists.data.map((l) => (
-              <ListRow
-                key={l.id}
-                left={<CategoryIcon category={KIND_ART[l.kind] ?? 'outros'} size={44} />}
-                title={l.name}
-                subtitle={l.total === 0 ? 'Vazia' : `${l.pending} de ${l.total} ${l.total === 1 ? 'item' : 'itens'} pendentes`}
-                right={<Icon name="chevron-right" color="textMuted" />}
-                onPress={() => router.push({ pathname: '/lista/[id]', params: { id: l.id } })}
+      {/* No computador (ui/desktop), as listas ficam na coluna principal e as ações do alto, na do lado. */}
+      <Columns
+        gap={space.lg}
+        sideFirst
+        side={
+          <>
+            {/* A ação principal da parte é um botão primário no alto (os atalhos de azulejo ficam só na tela Hoje); o
+                formulário toma o lugar dele enquanto está aberto. Como o botão tocado sai da tela, o foco não pode ficar
+                sem lugar: o campo do nome o recebe ao abrir (e a pessoa já digita) e "Cancelar" o devolve ao botão; sem
+                isso, a web voltava ao começo da página e o VoiceOver/TalkBack perdia o lugar. Preços e Cardápio são
+                outras telas, não criar: botões secundários logo abaixo. */}
+            {creating ? (
+              <Card style={styles.gap}>
+                <Text variant="heading">Nova lista</Text>
+                <Row style={styles.wrap}>
+                  {LIST_KINDS.map((k) => (
+                    <Chip key={k.value} label={k.label} icon={k.icon} selected={kind === k.value} onPress={() => setKind(k.value)} />
+                  ))}
+                </Row>
+                <TextField value={name} onChangeText={setName} placeholder="Nome (ex.: Compras do mês)" onSubmitEditing={create} autoFocus />
+                <Row>
+                  <Button
+                    title="Cancelar"
+                    variant="secondary"
+                    onPress={() => {
+                      setCreating(false);
+                      moveFocus(newListButton);
+                    }}
+                    style={styles.flex}
+                  />
+                  <Button title="Criar" onPress={create} loading={createList.isPending} style={styles.flex} />
+                </Row>
+              </Card>
+            ) : (
+              <Button ref={newListButton} title="Nova lista" icon="plus" onPress={() => setCreating(true)} />
+            )}
+            <Row style={styles.links}>
+              <Button title="Preços" icon="chart-line" variant="secondary" style={styles.link} onPress={() => router.push('/precos')} />
+              <Button
+                title="Cardápio"
+                accessibilityLabel="Cardápio da semana"
+                icon="silverware-fork-knife"
+                variant="secondary"
+                style={styles.link}
+                onPress={() => router.push('/cardapio')}
               />
-            ))}
-          </ListCard>
-        </Section>
-      ) : null}
-
-      {archived.data?.length ? (
-        <View style={styles.gapSm}>
-          <Button
-            title={showArchived ? 'Esconder as arquivadas' : 'Listas arquivadas'}
-            icon="archive-outline"
-            variant="ghost"
-            compact
-            onPress={() => setShowArchived((open) => !open)}
-          />
-          {showArchived ? (
+            </Row>
+          </>
+        }>
+        {lists.data.length === 0 && !creating ? (
+          // Todas arquivadas: a casa já teve listas.
+          archived.data?.length ? (
+            <EmptyState icon="cart-outline" title="Nenhuma lista aberta" message="Crie uma lista nova ou reabra uma das arquivadas." />
+          ) : (
+            <EmptyState
+              icon="cart-outline"
+              title="Nenhuma lista ainda"
+              message="Crie uma lista e toda a família vê e marca os itens em tempo real."
+            />
+          )
+        ) : lists.data.length ? (
+          <Section title="Suas listas">
             <ListCard>
-              {archived.data.map((l) => (
+              {lists.data.map((l) => (
                 <ListRow
                   key={l.id}
-                  left={<CategoryIcon category={KIND_ART[l.kind] ?? 'outros'} size={36} />}
+                  left={<CategoryIcon category={KIND_ART[l.kind] ?? 'outros'} size={44} />}
                   title={l.name}
-                  subtitle={l.archived_at ? `Arquivada em ${formatShortDate(toISODate(new Date(l.archived_at)))}` : undefined}
-                  right={
-                    <Button
-                      title="Reabrir"
-                      accessibilityLabel={`Reabrir a lista ${l.name}`}
-                      variant="secondary"
-                      compact
-                      loading={reopen.isPending && reopen.variables === l.id}
-                      onPress={() => reopen.mutate(l.id, { onError: (err) => notify('Não deu para reabrir a lista', errorMessage(err)) })}
-                    />
-                  }
+                  subtitle={l.total === 0 ? 'Vazia' : `${l.pending} de ${l.total} ${l.total === 1 ? 'item' : 'itens'} pendentes`}
+                  right={<Icon name="chevron-right" color="textMuted" />}
                   onPress={() => router.push({ pathname: '/lista/[id]', params: { id: l.id } })}
                 />
               ))}
             </ListCard>
-          ) : null}
-        </View>
-      ) : null}
+          </Section>
+        ) : null}
 
+        {archived.data?.length ? (
+          <View style={styles.gapSm}>
+            <Button
+              title={showArchived ? 'Esconder as arquivadas' : 'Listas arquivadas'}
+              icon="archive-outline"
+              variant="ghost"
+              compact
+              onPress={() => setShowArchived((open) => !open)}
+            />
+            {showArchived ? (
+              <ListCard>
+                {archived.data.map((l) => (
+                  <ListRow
+                    key={l.id}
+                    left={<CategoryIcon category={KIND_ART[l.kind] ?? 'outros'} size={36} />}
+                    title={l.name}
+                    subtitle={l.archived_at ? `Arquivada em ${formatShortDate(toISODate(new Date(l.archived_at)))}` : undefined}
+                    right={
+                      <Button
+                        title="Reabrir"
+                        accessibilityLabel={`Reabrir a lista ${l.name}`}
+                        variant="secondary"
+                        compact
+                        loading={reopen.isPending && reopen.variables === l.id}
+                        onPress={() => reopen.mutate(l.id, { onError: (err) => notify('Não deu para reabrir a lista', errorMessage(err)) })}
+                      />
+                    }
+                    onPress={() => router.push({ pathname: '/lista/[id]', params: { id: l.id } })}
+                  />
+                ))}
+              </ListCard>
+            ) : null}
+          </View>
+        ) : null}
+      </Columns>
     </View>
   );
 }

@@ -5,10 +5,16 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'rea
 import HouseScreen from '@/app/(tabs)/casa';
 import ShoppingScreen from '@/app/(tabs)/compras';
 import HealthScreen from '@/app/(tabs)/saude';
-import { Dimensions, StyleSheet } from 'react-native';
+import { Dimensions, Platform, StyleSheet } from 'react-native';
 
+import { DESKTOP_PANEL_SIDE_WIDTH, DESKTOP_TABS_WIDTH } from '@/domain/desktop';
 import { CASA_NARROW_WIDTH, CASA_ROOMY_WIDTH, CASA_TABS, casaTabs, casaTabsFit, DIA_A_DIA, FINANCAS, SAUDE_TABS } from '@/domain/tabs';
+import { AgendaPanel } from '@/features/AgendaPanel';
+import { ChoresPanel } from '@/features/ChoresPanel';
+import { BillsPanel } from '@/features/finance/BillsPanel';
+import { FinanceSummaryPanel } from '@/features/finance/FinanceSummaryPanel';
 import { FEATURES } from '@/lib/features';
+import { Columns } from '@/ui/desktop';
 import { Screen, Segmented } from '@/ui/primitives';
 import { SCREEN_PADDING, space } from '@/ui/theme';
 
@@ -234,5 +240,83 @@ describe('as partes da Saúde num celular de 360', () => {
     expect(Math.max(...Object.values(LABELS))).toBeLessThanOrEqual(room / SAUDE_TABS.length);
     await mount(<HealthScreen />);
     expect(renderer!.root.findAllByType(Segmented)[0].props.widths).toBeUndefined();
+  });
+});
+
+describe('as abas no computador', () => {
+  /** O navegador numa janela larga (ui/desktop). */
+  const desktop = async () => {
+    jest.replaceProperty(Platform, 'OS', 'web');
+    await setWidth(1440);
+  };
+  const segmentLabels = () =>
+    renderer!.root.findAllByType(Segmented).map((segmented) => segmented.props.options.map((option: { label: string }) => option.label));
+
+  it.each([
+    ['Compras', <ShoppingScreen key="compras" />],
+    ['Casa', <HouseScreen key="casa" />],
+    ['Saúde', <HealthScreen key="saude" />],
+  ])('%s usa a largura do computador, e o seletor das partes não se estica por ela', async (_name, screen) => {
+    await desktop();
+    await mount(screen);
+    expect(renderer!.root.findByType(Screen).props.wide).toBe(true);
+    const tabs = renderer!.root.findAllByType(Segmented)[0];
+    expect(tabs.props.desktopWidth).toBe(DESKTOP_TABS_WIDTH);
+    const box = tabs.findAll((node) => (node.type as unknown) === 'View')[0];
+    expect(StyleSheet.flatten(box.props.style)).toMatchObject({ maxWidth: DESKTOP_TABS_WIDTH, alignSelf: 'flex-start' });
+  });
+
+  it('no celular, as mesmas telas ficam na largura de sempre', async () => {
+    await mount(<HouseScreen />);
+    const tabs = renderer!.root.findAllByType(Segmented)[0];
+    expect(StyleSheet.flatten(tabs.findAll((node) => (node.type as unknown) === 'View')[0].props.style).maxWidth).toBeUndefined();
+    expect(renderer!.root.findAllByType(Columns)).toHaveLength(0);
+  });
+
+  it('o Dia a dia cabe inteiro: as tarefas e, ao lado, a agenda, sem o seletor de dentro', async () => {
+    await desktop();
+    await mount(<HouseScreen />);
+    expect(segmentLabels()).toEqual([['Dia a dia', 'Finanças', 'Aparelhos', 'Documentos']]);
+    expect(renderer!.root.findAllByType(ChoresPanel)).toHaveLength(1);
+    expect(renderer!.root.findAllByType(AgendaPanel)).toHaveLength(1);
+    const columns = renderer!.root.findByType(Columns);
+    expect(columns.props.sideWidth).toBe(DESKTOP_PANEL_SIDE_WIDTH);
+    // A agenda é a coluna do lado; as tarefas, a principal.
+    expect(columns.props.side.type).toBe(AgendaPanel);
+    expect(columns.props.children.type).toBe(ChoresPanel);
+  });
+
+  it('com ?dia=agenda (o endereço do celular), o computador mostra as duas do mesmo jeito', async () => {
+    await desktop();
+    Object.assign(mockParams, { aba: 'dia', dia: 'agenda' });
+    await mount(<HouseScreen />);
+    expect(renderer!.root.findAllByType(ChoresPanel)).toHaveLength(1);
+    expect(renderer!.root.findAllByType(AgendaPanel)).toHaveLength(1);
+  });
+
+  it('no celular, o Dia a dia mostra uma de cada vez', async () => {
+    await mount(<HouseScreen />);
+    expect(renderer!.root.findAllByType(ChoresPanel)).toHaveLength(1);
+    expect(renderer!.root.findAllByType(AgendaPanel)).toHaveLength(0);
+  });
+
+  it('Finanças cabe inteira: o resumo e, ao lado, as contas, sem o seletor de dentro', async () => {
+    await desktop();
+    Object.assign(mockParams, { aba: 'financas' });
+    await mount(<HouseScreen />);
+    expect(segmentLabels()).toEqual([['Dia a dia', 'Finanças', 'Aparelhos', 'Documentos']]);
+    const summary = renderer!.root.findByType(FinanceSummaryPanel);
+    // Com as contas ao lado, o resumo não repete o cartão que leva até elas.
+    expect(summary.props.billsBeside).toBe(true);
+    const columns = renderer!.root.findByType(Columns);
+    expect(columns.props.side.type).toBe(BillsPanel);
+    expect(columns.props.sideWidth).toBe(DESKTOP_PANEL_SIDE_WIDTH);
+  });
+
+  it('no celular, Finanças mostra uma parte de cada vez, e o resumo leva até as contas', async () => {
+    Object.assign(mockParams, { aba: 'financas' });
+    await mount(<HouseScreen />);
+    expect(renderer!.root.findByType(FinanceSummaryPanel).props.billsBeside).toBeUndefined();
+    expect(renderer!.root.findAllByType(BillsPanel)).toHaveLength(0);
   });
 });

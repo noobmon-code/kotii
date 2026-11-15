@@ -4,6 +4,7 @@ import { StyleSheet, View } from 'react-native';
 import { usePeople } from '@/data/health';
 import { useMedications } from '@/data/home';
 import { todayISO } from '@/domain/dates';
+import { Columns } from '@/ui/desktop';
 import { Button, ErrorNotice, Loading } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 import { MedicationList, MedicationRefills, MedicationsToday, useRefills } from './MedicationSections';
@@ -43,14 +44,20 @@ export function MedicationsPanel({ personId, onPersonChange }: { personId: strin
     <View style={styles.gap}>
       {failed.length ? <StaleNotice onRetry={() => failed.forEach((q) => void q.refetch())} /> : null}
       {choosing ? <PersonChips people={people.data} value={person?.id ?? null} onChange={onPersonChange} allLabel="Todos" /> : null}
-      <Button
-        title="Novo remédio"
-        icon="plus"
-        onPress={() => router.push({ pathname: '/remedio/[id]', params: { id: 'novo', pessoa: person?.id ?? '' } })}
-      />
-      <MedicationsToday today={today} personId={person?.id ?? null} />
-      <MedicationRefills rows={rows} />
-      <MedicationList medications={shown} personId={person?.id ?? null} />
+      {/* No computador (ui/desktop), os remédios ficam na coluna principal e "Novo remédio", na do lado. */}
+      <Columns
+        sideFirst
+        side={
+          <Button
+            title="Novo remédio"
+            icon="plus"
+            onPress={() => router.push({ pathname: '/remedio/[id]', params: { id: 'novo', pessoa: person?.id ?? '' } })}
+          />
+        }>
+        <MedicationsToday today={today} personId={person?.id ?? null} />
+        <MedicationRefills rows={rows} />
+        <MedicationList medications={shown} personId={person?.id ?? null} />
+      </Columns>
     </View>
   );
 }

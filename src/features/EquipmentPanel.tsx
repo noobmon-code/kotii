@@ -10,6 +10,7 @@ import { describeWarranty, getEquipmentCategory, warrantyStatus } from '@/domain
 import { lastServiceMention } from '@/domain/providers';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import type { ServiceJob } from '@/lib/types';
+import { Columns } from '@/ui/desktop';
 import { Badge, Button, EmptyState, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Row } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -46,64 +47,71 @@ export function EquipmentPanel() {
   return (
     <View style={styles.gap}>
       {equipment.isError ? <StaleNotice onRetry={() => equipment.refetch()} /> : null}
-      <Row style={styles.actions}>
-        {/* A ação principal da parte é o botão primário; "Prestadores" é outra tela, secundário ao lado. */}
-        <Button
-          title="Novo aparelho"
-          icon="plus"
-          style={styles.action}
-          onPress={() => router.push({ pathname: '/aparelho/[id]', params: { id: 'novo' } })}
-        />
-        {providersMissing ? null : (
-          <Button
-            title="Prestadores"
-            icon="account-wrench-outline"
-            variant="secondary"
-            style={styles.action}
-            onPress={() => router.push('/prestadores')}
-          />
-        )}
-      </Row>
-      {equipment.data.length === 0 ? (
-        <EmptyState
-          icon="tools"
-          title="Nenhum aparelho"
-          message="Ar-condicionado, geladeira, carro, caixa d'água… Guarde nota e garantia, e o app lembra das manutenções (limpar filtro, trocar refil, revisão)."
-        />
-      ) : (
-        <ListCard>
-          {equipment.data.map((item) => {
-            const category = getEquipmentCategory(item.category);
-            const warranty = warrantyStatus(item.warranty_until, today);
-            const next = nextMaintenance.get(item.id);
-            const nextStatus = next ? choreStatus(next.due_on, today) : null;
-            const details = [
-              item.location,
-              next && nextStatus ? `${next.title}: ${describeChoreStatus(nextStatus).toLowerCase()}` : null,
-              warranty.kind === 'vigente' || warranty.kind === 'acabando' ? describeWarranty(warranty) : null,
-            ].filter(Boolean);
-            // O último serviço só entra quando a linha ainda não está cheia.
-            const last = lastService.get(item.id);
-            if (last && details.length < 3) details.push(lastServiceMention(last));
-            return (
-              <ListRow
-                key={item.id}
-                left={<IconBadge icon={category.icon} tone={nextStatus?.kind === 'atrasada' ? 'danger' : 'primary'} />}
-                title={item.name}
-                subtitle={details.join(' · ')}
-                right={
-                  warranty.kind === 'acabando' ? (
-                    <Badge label="Garantia acabando" tone="warning" />
-                  ) : nextStatus?.kind === 'atrasada' ? (
-                    <Badge label="Manutenção atrasada" tone="danger" />
-                  ) : null
-                }
-                onPress={() => router.push({ pathname: '/aparelho/[id]', params: { id: item.id } })}
+      {/* No computador (ui/desktop), os aparelhos ficam na coluna principal e as ações, na do lado. */}
+      <Columns
+        gap={space.lg}
+        sideFirst
+        side={
+            <Row style={styles.actions}>
+              {/* A ação principal da parte é o botão primário; "Prestadores" é outra tela, secundário ao lado. */}
+              <Button
+                title="Novo aparelho"
+                icon="plus"
+                style={styles.action}
+                onPress={() => router.push({ pathname: '/aparelho/[id]', params: { id: 'novo' } })}
               />
-            );
-          })}
-        </ListCard>
-      )}
+              {providersMissing ? null : (
+                <Button
+                  title="Prestadores"
+                  icon="account-wrench-outline"
+                  variant="secondary"
+                  style={styles.action}
+                  onPress={() => router.push('/prestadores')}
+                />
+              )}
+            </Row>
+        }>
+        {equipment.data.length === 0 ? (
+          <EmptyState
+            icon="tools"
+            title="Nenhum aparelho"
+            message="Ar-condicionado, geladeira, carro, caixa d'água… Guarde nota e garantia, e o app lembra das manutenções (limpar filtro, trocar refil, revisão)."
+          />
+        ) : (
+          <ListCard>
+            {equipment.data.map((item) => {
+              const category = getEquipmentCategory(item.category);
+              const warranty = warrantyStatus(item.warranty_until, today);
+              const next = nextMaintenance.get(item.id);
+              const nextStatus = next ? choreStatus(next.due_on, today) : null;
+              const details = [
+                item.location,
+                next && nextStatus ? `${next.title}: ${describeChoreStatus(nextStatus).toLowerCase()}` : null,
+                warranty.kind === 'vigente' || warranty.kind === 'acabando' ? describeWarranty(warranty) : null,
+              ].filter(Boolean);
+              // O último serviço só entra quando a linha ainda não está cheia.
+              const last = lastService.get(item.id);
+              if (last && details.length < 3) details.push(lastServiceMention(last));
+              return (
+                <ListRow
+                  key={item.id}
+                  left={<IconBadge icon={category.icon} tone={nextStatus?.kind === 'atrasada' ? 'danger' : 'primary'} />}
+                  title={item.name}
+                  subtitle={details.join(' · ')}
+                  right={
+                    warranty.kind === 'acabando' ? (
+                      <Badge label="Garantia acabando" tone="warning" />
+                    ) : nextStatus?.kind === 'atrasada' ? (
+                      <Badge label="Manutenção atrasada" tone="danger" />
+                    ) : null
+                  }
+                  onPress={() => router.push({ pathname: '/aparelho/[id]', params: { id: item.id } })}
+                />
+              );
+            })}
+          </ListCard>
+        )}
+      </Columns>
     </View>
   );
 }

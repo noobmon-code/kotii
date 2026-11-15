@@ -4,15 +4,19 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { NukeButton } from '@/features/nuke/NukeButton';
 import { useReminderSync } from '@/features/useReminderSync';
+import { useDesktop } from '@/ui/desktop';
 import { TAB_BAR_HEIGHT, TabBar, tabBarBottomGap } from '@/ui/TabBar';
 import { space } from '@/ui/theme';
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
+  // No computador (domain/desktop) as abas e o Nuke estão na barra lateral, ao lado de todas as telas (app/_layout):
+  // aqui não há pílula nem botão flutuante.
+  const desktop = useDesktop();
   useReminderSync();
   return (
     <View style={{ flex: 1 }}>
-      <Tabs screenOptions={{ headerShown: false }} tabBar={(props) => <TabBar {...props} />}>
+      <Tabs screenOptions={{ headerShown: false }} tabBar={(props) => (desktop ? null : <TabBar {...props} />)}>
         <Tabs.Screen name="index" options={{ title: 'Hoje' }} />
         {/* Compras é o ciclo do que entra na casa (lista, compra, nota, despensa); Casa, o que a mantém funcionando:
             o dia a dia, as finanças (que já foram uma aba e hoje são uma parte dela), os aparelhos e os documentos. */}
@@ -23,7 +27,9 @@ export default function TabsLayout() {
             e o do leitor de tela) continua "Configurações". O endereço é o de antes, /configuracoes. */}
         <Tabs.Screen name="configuracoes" options={{ title: 'Configurações', tabBarLabel: 'Ajustes' }} />
       </Tabs>
-      <NukeButton style={{ position: 'absolute', right: space.lg, bottom: TAB_BAR_HEIGHT + tabBarBottomGap(insets) + space.md }} />
+      {desktop ? null : (
+        <NukeButton style={{ position: 'absolute', right: space.lg, bottom: TAB_BAR_HEIGHT + tabBarBottomGap(insets) + space.md }} />
+      )}
     </View>
   );
 }

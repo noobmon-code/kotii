@@ -5,7 +5,9 @@ import type { ReactNode } from 'react';
 import { StyleSheet, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { DESKTOP_CONTENT_WIDTH, SIDEBAR_SPACE } from '@/domain/desktop';
 import type { Sky } from '@/domain/sky';
+import { useDesktop } from '@/ui/desktop';
 import { AngledGradient, type GradientStop } from '@/ui/gradient';
 import { MAX_WIDTH, SCREEN_PADDING, useColors, useScheme } from '@/ui/theme';
 
@@ -67,10 +69,12 @@ export interface WashLayer {
  * Na janela mais larga que a coluna do conteúdo (tablet deitado, navegador do computador), o véu acabaria numa linha
  * dura na borda da coluna, onde começa o fundo liso, e no pé dele, onde a coluna larga ainda tem cor: dois véus da
  * cor do fundo por cima esmaecem os lados e o pé até sumir. No celular o véu já some antes das bordas: nada.
+ * `columnWidth` é a largura da coluna do conteúdo (a das abas no computador é mais larga) e `windowWidth`, a do
+ * lugar em que ela fica (no computador, a janela menos a barra lateral).
  */
-export function washEdges(windowWidth: number, background: string): WashLayer[] {
-  if (windowWidth <= MAX_WIDTH) return [];
-  const edge = EDGE_FADE / MAX_WIDTH;
+export function washEdges(windowWidth: number, background: string, columnWidth = MAX_WIDTH): WashLayer[] {
+  if (windowWidth <= columnWidth) return [];
+  const edge = EDGE_FADE / columnWidth;
   return [
     {
       angle: 90,
@@ -81,21 +85,36 @@ export function washEdges(windowWidth: number, background: string): WashLayer[] 
         { offset: 1, color: background, opacity: 1 },
       ],
     },
-    {
-      angle: 180,
-      stops: [
-        { offset: FOOT_FADE, color: background, opacity: 0 },
-        { offset: 1, color: background, opacity: 1 },
-      ],
-    },
+    washFoot(background),
   ];
+}
+
+/** O esmaecimento do pé do véu, sozinho. */
+function washFoot(background: string): WashLayer {
+  return {
+    angle: 180,
+    stops: [
+      { offset: FOOT_FADE, color: background, opacity: 0 },
+      { offset: 1, color: background, opacity: 1 },
+    ],
+  };
+}
+
+/**
+ * Os esmaecimentos do véu no computador: a coluna das abas é larga e ainda tem cor no pé do véu, então o pé esmaece
+ * sempre; os lados, só quando a coluna não ocupa todo o lugar ao lado da barra lateral (a janela bem larga).
+ */
+export function desktopWashEdges(windowWidth: number, background: string): WashLayer[] {
+  const edges = washEdges(windowWidth - SIDEBAR_SPACE, background, DESKTOP_CONTENT_WIDTH);
+  return edges.length ? edges : [washFoot(background)];
 }
 
 export function SkyHeader({ sky, children }: { sky: Sky; children: ReactNode }) {
   const insets = useSafeAreaInsets();
   const dark = useScheme() === 'dark';
   const c = useColors();
-  const edges = washEdges(useWindowDimensions().width, c.background);
+  const { width } = useWindowDimensions();
+  const edges = useDesktop() ? desktopWashEdges(width, c.background) : washEdges(width, c.background);
   const top = Math.max(insets.top, MIN_TOP);
   return (
     // Sem a margem da tela: o véu vai de uma borda à outra e começa no alto, atrás da barra de estado.

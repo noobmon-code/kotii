@@ -5,6 +5,7 @@ import { StyleSheet, View } from 'react-native';
 
 import { useMedications } from '@/data/home';
 import { todayISO } from '@/domain/dates';
+import { DESKTOP_SIDE_WIDTH, DESKTOP_TABS_WIDTH } from '@/domain/desktop';
 import { healthParts, PLANOS, SAUDE_TABS, type Plano, type SaudeTab } from '@/domain/tabs';
 import { CarePanel } from '@/features/health/CarePanel';
 import { HealthAddButton } from '@/features/health/HealthAddButton';
@@ -14,6 +15,7 @@ import { MedicationsPanel } from '@/features/health/MedicationsPanel';
 import { PlansPanel } from '@/features/health/PlansPanel';
 import type { PlanKind } from '@/features/health/usePlanImport';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
+import { Columns } from '@/ui/desktop';
 import { Card, EmptyState, Screen, Segmented } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -55,15 +57,15 @@ export default function HealthScreen() {
   const setPerson = (id: string | null) => router.setParams({ pessoa: id ?? '' });
 
   return (
-    <Screen fab heading="Saúde" refreshing={refreshing} onRefresh={refresh}>
-      <Segmented value={tab} onChange={setTab} options={SAUDE_TABS} />
+    <Screen fab wide heading="Saúde" refreshing={refreshing} onRefresh={refresh}>
+      <Segmented value={tab} onChange={setTab} options={SAUDE_TABS} desktopWidth={DESKTOP_TABS_WIDTH} />
       {tab === 'resumo' ? <SummaryPanel today={today} /> : null}
       {tab === 'remedios' ? <MedicationsPanel personId={personId} onPersonChange={setPerson} /> : null}
       {tab === 'cuidados' ? <CarePanel personId={personId} onPersonChange={setPerson} /> : null}
       {tab === 'planos' ? (
         <View style={styles.plans}>
           {/* Fora do painel: o seletor fica na tela também enquanto o plano carrega, ou quando a busca falha. */}
-          <Segmented value={plan} onChange={setPlan} options={PLANOS} />
+          <Segmented value={plan} onChange={setPlan} options={PLANOS} desktopWidth={DESKTOP_SIDE_WIDTH} />
           <PlansPanel kind={PLAN_KIND[plan]} personId={personId} onPersonChange={setPerson} />
         </View>
       ) : null}
@@ -87,23 +89,31 @@ function SummaryPanel({ today }: { today: string }) {
 
   return (
     <View style={styles.gap}>
-      {/* Quatro coisas de mesmo peso para criar: um botão primário no alto, "Adicionar", que pergunta qual (o
-          padrão de criar de todas as partes; azulejos só na tela Hoje). O remédio vem primeiro, como a parte dele
-          vem antes dos Cuidados. Sem remédio cadastrado, é por aqui que se chega ao primeiro. */}
-      <HealthAddButton kinds={['remedio', 'consulta', 'vacina', 'exame']} />
-      <MedicationsToday today={today} />
-      {/* Aqui entram também os parados há mais de duas semanas (selo neutro), que a tela Hoje não lista: é o caminho até "Atualizar estoque". */}
-      <MedicationRefills rows={refills.rows} />
-      <HealthTodaySections overview={overview} today={today} />
-      {empty ? (
-        <Card>
-          <EmptyState
-            icon="heart-pulse"
-            title="Nada pendente"
-            message="Consultas, vacinas, remédios e o treino do dia aparecem aqui. As pessoas e os pets da casa se cadastram em Configurações."
-          />
-        </Card>
-      ) : null}
+      {/* No computador (ui/desktop), o que pede atenção fica na coluna principal e o "Adicionar", na do lado. */}
+      <Columns
+        sideFirst
+        side={
+          <>
+            {/* Quatro coisas de mesmo peso para criar: um botão primário no alto, "Adicionar", que pergunta qual (o
+                padrão de criar de todas as partes; azulejos só na tela Hoje). O remédio vem primeiro, como a parte dele
+                vem antes dos Cuidados. Sem remédio cadastrado, é por aqui que se chega ao primeiro. */}
+            <HealthAddButton kinds={['remedio', 'consulta', 'vacina', 'exame']} />
+          </>
+        }>
+        <MedicationsToday today={today} />
+        {/* Aqui entram também os parados há mais de duas semanas (selo neutro), que a tela Hoje não lista: é o caminho até "Atualizar estoque". */}
+        <MedicationRefills rows={refills.rows} />
+        <HealthTodaySections overview={overview} today={today} />
+        {empty ? (
+          <Card>
+            <EmptyState
+              icon="heart-pulse"
+              title="Nada pendente"
+              message="Consultas, vacinas, remédios e o treino do dia aparecem aqui. As pessoas e os pets da casa se cadastram em Configurações."
+            />
+          </Card>
+        ) : null}
+      </Columns>
     </View>
   );
 }
