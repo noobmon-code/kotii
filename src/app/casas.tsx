@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useRef, useState } from 'react';
 import { StyleSheet } from 'react-native';
 
@@ -7,6 +7,7 @@ import { PLACE_NOT_SAVED_TITLE, placeNotSavedMessage } from '@/domain/housePlace
 import { HousePlacePicker, useNewHousePlace } from '@/features/HousePlacePicker';
 import { useAuth, useHousehold } from '@/lib/auth';
 import { FEATURES } from '@/lib/features';
+import { clearPendingInvite } from '@/lib/onboarding';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { Badge, Button, Card, IconBadge, ListCard, ListRow, Loading, Screen, Section, Segmented, Text, TextField } from '@/ui/primitives';
@@ -27,9 +28,11 @@ export default function HouseholdsScreen() {
   const household = useHousehold();
   const switchTo = useSwitchHousehold(userId);
   const add = useAddHousehold(userId);
-  const [mode, setMode] = useState<Mode>('criar');
+  // `codigo`: veio pelo link de um convite (app/convite) já morando numa casa: abre em "Tenho um código", preenchido.
+  const { codigo } = useLocalSearchParams<{ codigo?: string }>();
+  const [mode, setMode] = useState<Mode>(codigo ? 'entrar' : 'criar');
   const [name, setName] = useState('');
-  const [code, setCode] = useState('');
+  const [code, setCode] = useState(codigo ?? '');
   const [displayName, setDisplayName] = useState<string | null>(null);
   // Onde fica a casa nova (opcional, só ao criar): salvo nela depois de ela existir.
   const newPlace = useNewHousePlace(mode === 'criar');
@@ -79,6 +82,7 @@ export default function HouseholdsScreen() {
           ? { mode, name: name.trim(), displayName: yourName.trim(), place: where.place }
           : { mode, code: code.trim(), displayName: yourName.trim() },
       );
+      if (mode === 'entrar') clearPendingInvite();
       router.replace('/');
       if (added.placeNotSaved) notify(PLACE_NOT_SAVED_TITLE, placeNotSavedMessage(added.placeNotSaved));
     } catch (err) {

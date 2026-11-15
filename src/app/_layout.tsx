@@ -13,6 +13,7 @@ import { useEffect } from 'react';
 import { AuthProvider, openedByRecoveryLink, useAuth, useHousehold } from '@/lib/auth';
 import { FEATURES } from '@/lib/features';
 import { clearLinkNotice, useLinkNotice } from '@/lib/linkNotice';
+import { markHadAccount } from '@/lib/onboarding';
 import { useRecovery } from '@/lib/passwordRecovery';
 import { configureNotifications } from '@/lib/reminders';
 import { persistOptions, queryClient } from '@/lib/queryClient';
@@ -68,6 +69,10 @@ function AppNavigator() {
   // aparece): um aviso só, depois que a tela já está desenhada.
   const linkNotice = useLinkNotice();
   const signedIn = Boolean(session);
+  // Uma conta entrou neste aparelho: a tela de entrar do começo novo abre direto em "Entrar" daqui em diante.
+  useEffect(() => {
+    if (signedIn) markHadAccount();
+  }, [signedIn]);
   useEffect(() => {
     if (resolving || !signedIn || !linkNotice) return;
     const timer = setTimeout(() => {
@@ -169,6 +174,8 @@ function AppNavigator() {
           <Stack.Screen name="perfil" options={{ title: 'Perfil' }} />
           <Stack.Screen name="recado" options={{ title: 'Mandar recado' }} />
           <Stack.Screen name="moderacao" options={{ title: 'Nomes dos mercados' }} />
+          {/* A prévia do começo de uma conta nova, para quem mantém o app (Configurações → Manutenção do app). */}
+          <Stack.Screen name="primeira-vez" options={{ title: 'Prévia do começo' }} />
           {/* O endereço da antiga aba Família (favoritos, o app instalado): troca para a aba Configurações. */}
           <Stack.Screen name="familia" options={{ headerShown: false }} />
         </Stack.Protected>
@@ -193,6 +200,9 @@ function AppNavigator() {
         </Stack.Protected>
         {/* Os termos abrem em qualquer estado (sem conta, criando a senha nova, sem casa ou numa casa). Ficam por
             último: com uma guarda desligada, o app volta para a primeira tela disponível, que nunca é esta. */}
+        {/* O link do convite também abre em qualquer estado: guarda o código e segue para entrar, para as boas-vindas
+            ou para "Suas casas". Fica no fim, como os termos. */}
+        <Stack.Screen name="convite/[codigo]" options={{ headerShown: false }} />
         <Stack.Screen name="termos" options={{ title: 'Termos de uso' }} />
       </Stack>
     </ThemeProvider>

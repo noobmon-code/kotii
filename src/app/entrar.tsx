@@ -3,18 +3,22 @@ import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 
 import { acceptTermsAtSignIn } from '@/data/terms';
+import { CONFIRM_EMAIL_RESENT, CONFIRM_EMAIL_TITLE } from '@/domain/onboarding';
 import { TERMS_CONSENT, TERMS_TITLE } from '@/domain/terms';
 import { SESSION_ENDED } from '@/lib/accessErrors';
 import { resendWaitSeconds, translateAuthError } from '@/lib/authErrors';
 import { FEATURES } from '@/lib/features';
 import { clearLinkNotice, linkNotice, useLinkNotice } from '@/lib/linkNotice';
+import { useHadAccount, usePendingInvite } from '@/lib/onboarding';
 import { finishRecovery, startRecovery } from '@/lib/passwordRecovery';
 import { useSessionEnded } from '@/lib/session';
 import { supabase } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
+import { AccountForm, ConfirmEmailStep, useResendWait } from '@/features/onboarding/AccountForm';
+import { WelcomeStep } from '@/features/onboarding/WelcomeStep';
 import { Logo } from '@/ui/art';
 import { NukeLive } from '@/ui/NukeLive';
-import { Button, Card, Icon, Row, Screen, Segmented, Text, TextField } from '@/ui/primitives';
+import { Button, Card, Icon, Loading, Row, Screen, Segmented, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 type Mode = 'entrar' | 'criar';
@@ -41,6 +45,15 @@ export default function SignInScreen() {
   const [now, setNow] = useState(() => Date.now());
   // A sessão acabou sem a pessoa tocar em "Sair": diz por que o app voltou para cá.
   const sessionEnded = useSessionEnded();
+  // O começo novo (lib/features): as boas-vindas para o aparelho que nunca teve conta, criar a conta ou entrar um de cada
+  // vez, e a confirmação do e-mail numa tela. Desligado, a tela é a de antes.
+  const newFlow = FEATURES.onboarding;
+  const hadAccount = useHadAccount();
+  const pendingInvite = usePendingInvite();
+  const [welcomeDone, setWelcomeDone] = useState(false);
+  /** O e-mail da conta que acabou de ser criada e espera a confirmação (o link do e-mail). */
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const confirmWait = useResendWait();
 
   const wait = resendAt !== null && resendAt > now ? Math.ceil((resendAt - now) / 1000) : 0;
   const waiting = wait > 0;
@@ -70,6 +83,7 @@ export default function SignInScreen() {
         if (error) throw error;
         // Com o e-mail a confirmar ainda não há sessão: o aceite fica para a primeira entrada.
         if (data.session) void acceptTermsAtSignIn(data.session.user.id, true);
+        else if (FEATURES.onboarding) setConfirming(trimmed);
         else {
           notify('Confirme seu e-mail', 'Enviamos um link de confirmação. Depois é só entrar.');
           setMode('entrar');
@@ -77,6 +91,23 @@ export default function SignInScreen() {
       }
     } catch (err) {
       notify('Não foi possível continuar', translateAuthError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Mandar de novo o e-mail de confirmação. Pedido cedo demais, o link do e-mail anterior ainda vale: a espera começa
+  // do mesmo jeito.
+  async function resendConfirmation() {
+    if (!confirming) return;
+    setBusy(true);
+    try {
+      const { error } = await supabase.auth.resend({ type: 'signup', email: confirming });
+      if (error && resendWaitSeconds(error) === null) throw error;
+      confirmWait.start();
+      notify(CONFIRM_EMAIL_TITLE, CONFIRM_EMAIL_RESENT);
+    } catch (err) {
+      notify('Não deu para enviar o e-mail', translateAuthError(err));
     } finally {
       setBusy(false);
     }
@@ -144,14 +175,17 @@ export default function SignInScreen() {
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <Screen edges={['top', 'bottom']}>
-        <View style={styles.hero}>
-          <NukeLive size={132} hop />
-          <Logo size={36} />
-          <Text variant="body" style={styles.center}>
-            {/* As contas são de Finanças: sem ela (lib/features), a apresentação não as promete. */}
-            {`A casa em ordem, sem esforço: compras, ${FEATURES.finance ? 'contas, ' : ''}tarefas e saúde da família num lugar só.`}
-          </Text>
-        </View>
+        {/* No começo novo, cada passo traz o próprio topo; a recuperação da senha segue com o de antes. */}
+        {!newFlow || recovery ? (
+          <View style={styles.hero}>
+            <NukeLive size={132} hop />
+            <Logo size={36} />
+            <Text variant="body" style={styles.center}>
+              {/* As contas são de Finanças: sem ela (lib/features), a apresentação não as promete. */}
+              {`A casa em ordem, sem esforço: compras, ${FEATURES.finance ? 'contas, ' : ''}tarefas e saúde da família num lugar só.`}
+            </Text>
+          </View>
+        ) : null}
         {sessionEnded ? (
           <Card>
             <Row>
@@ -231,6 +265,54 @@ export default function SignInScreen() {
               }}
             />
           </View>
+        ) : newFlow ? (
+          confirming ? (
+            <ConfirmEmailStep
+              email={confirming}
+              onDone={() => {
+                // O e-mail com que a conta foi criada (sem espaços, em minúsculas), pronto para entrar.
+                setEmail(confirming);
+                setConfirming(null);
+                setMode('entrar');
+              }}
+              onResend={() => void resendConfirmation()}
+              onChange={() => {
+                setConfirming(null);
+                setMode('criar');
+              }}
+              resendWait={confirmWait.wait}
+              busy={busy}
+            />
+          ) : !welcomeDone && hadAccount === undefined ? (
+            <Loading />
+          ) : !welcomeDone && !hadAccount ? (
+            <WelcomeStep
+              invited={Boolean(pendingInvite)}
+              onCreate={() => {
+                setMode('criar');
+                setWelcomeDone(true);
+              }}
+              onSignIn={() => {
+                setMode('entrar');
+                setWelcomeDone(true);
+              }}
+            />
+          ) : (
+            <AccountForm
+              mode={mode}
+              email={email}
+              password={password}
+              onEmail={setEmail}
+              onPassword={setPassword}
+              onSubmit={() => void submit()}
+              onSwitch={() => setMode(mode === 'criar' ? 'entrar' : 'criar')}
+              onForgot={() => {
+                setCode('');
+                setRecovery('email');
+              }}
+              busy={busy}
+            />
+          )
         ) : (
           <>
             <Segmented

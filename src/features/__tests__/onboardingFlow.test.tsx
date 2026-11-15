@@ -1,0 +1,487 @@
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { router } from 'expo-router';
+import type { ReactElement } from 'react';
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+
+import InviteLinkScreen from '@/app/convite/[codigo]';
+import WelcomeScreen from '@/app/bem-vindo';
+import SignInScreen from '@/app/entrar';
+import OnboardingPreviewScreen from '@/app/primeira-vez';
+import {
+  CHOICE_INVITE,
+  CHOICE_NEW,
+  CHOICE_TITLE,
+  CODE_TITLE,
+  CONFIRM_EMAIL_DONE,
+  CONFIRM_EMAIL_RESENT,
+  CONFIRM_EMAIL_TITLE,
+  confirmEmailText,
+  FIRST_LIST_DONE,
+  FIRST_LIST_SKIP,
+  FIRST_LIST_TEXT,
+  HOUSE_PLACE_ROW,
+  HOUSE_TITLE,
+  INSTALL_IOS_SIGN_IN,
+  INSTALL_TITLE,
+  INVITE_TITLE,
+  INVITE_WHATSAPP,
+  INVITED_TITLE,
+  JOINED_OK,
+  JOINED_TITLE,
+  joinedText,
+  NAME_TITLE,
+  PASSWORD_HINT,
+  PREVIEW_NOTICE,
+  PREVIEW_ONLY_ADMINS,
+  SIGN_IN_TITLE,
+  SIGN_UP_TITLE,
+  WELCOME_CREATE,
+  WELCOME_TITLE,
+  welcomeLines,
+} from '@/domain/onboarding';
+import { FirstListFlow } from '@/features/onboarding/FirstListFlow';
+import { OnboardingContinuation } from '@/features/onboarding/OnboardingContinuation';
+import { FEATURES } from '@/lib/features';
+import { clearOnboardingNext, clearPendingInvite, markHadAccount, savePendingInvite, setOnboardingNext } from '@/lib/onboarding';
+import { notify } from '@/ui/dialogs';
+
+// O começo novo (domain/onboarding, features/onboarding), com o banco e o Supabase de mentira: as boas-vindas e a conta
+// (app/entrar com a chave ligada), o nome, a pergunta e a casa (app/bem-vindo), a prévia de quem mantém o app
+// (app/primeira-vez: as telas de conta não mandam nada; a casa é de verdade), o passo seguinte na tela Hoje (a
+// primeira lista ou "Você entrou na casa!"), a faixa da primeira lista com o convite e a tela de início, e o link do
+// convite (app/convite). Com a chave desligada, as telas são as de antes (createHousePlace.test.tsx, termsScreens).
+
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
+);
+
+// "mock" no nome: o jest.mock só enxerga variáveis assim.
+const mockParams: Record<string, string | undefined> = {};
+const mockRedirect: { href: unknown } = { href: null };
+const mockFocus = { focused: true };
+jest.mock('expo-router', () => ({
+  router: { push: jest.fn(), replace: jest.fn(), back: jest.fn(), setParams: jest.fn(), canGoBack: () => true },
+  useLocalSearchParams: () => mockParams,
+  useIsFocused: () => mockFocus.focused,
+  Redirect: ({ href }: { href: unknown }) => {
+    mockRedirect.href = href;
+    return null;
+  },
+}));
+
+/** O banco: create_household devolve a casa nova; join_household, a casa do código. */
+const mockRpc = jest.fn(async (name: string, _args: Record<string, unknown>): Promise<{ data: unknown; error: unknown }> => ({
+  data: { id: name === 'create_household' ? 'nova' : 'dela', name: name === 'create_household' ? 'Casa da Ana' : 'Casa da Bia' },
+  error: null,
+}));
+/** O que o Supabase responde ao criar a conta, ao entrar e ao mandar o e-mail de novo. */
+const mockAuth = {
+  signUp: jest.fn(async (): Promise<{ data: { user: { id: string }; session: { user: { id: string } } | null }; error: null }> => ({
+    data: { user: { id: 'u2' }, session: null },
+    error: null,
+  })),
+  signInWithPassword: jest.fn(async () => ({ data: { user: { id: 'u1' }, session: { user: { id: 'u1' } } }, error: null })),
+  resend: jest.fn(async (_args: unknown) => ({ data: {}, error: null })),
+};
+jest.mock('@/lib/supabase', () => ({
+  supabase: {
+    get auth() {
+      return mockAuth;
+    },
+    rpc: (name: string, args: Record<string, unknown>) => mockRpc(name, args),
+  },
+  errorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
+}));
+jest.mock('@/lib/activeHousehold', () => ({ setActiveHousehold: async () => undefined }));
+jest.mock('@/data/terms', () => ({ acceptTermsAtSignIn: jest.fn(async () => undefined) }));
+jest.mock('@/lib/linkNotice', () => ({ clearLinkNotice: jest.fn(), linkNotice: () => null, useLinkNotice: () => null }));
+jest.mock('@/lib/passwordRecovery', () => ({ finishRecovery: jest.fn(), startRecovery: jest.fn() }));
+jest.mock('@/lib/session', () => ({ useSessionEnded: () => false }));
+// O que data/household traz e não entra aqui (fila da lista, fotos, Nuke, lembretes).
+jest.mock('@/data/images', () => ({ functionErrorMessage: async () => 'erro' }));
+jest.mock('@/data/listPhotos', () => ({ photoQueueBusy: () => false, waitingCounts: () => ({}) }));
+const mockOpenMarketList = jest.fn(async () => ({ id: 'mercado' }));
+jest.mock('@/data/market', () => ({
+  listQueueBusy: () => false,
+  useOpenMarketList: () => ({ mutateAsync: () => mockOpenMarketList() }),
+}));
+jest.mock('@/data/weather', () => ({
+  LOCATION_KEY: ['householdLocation'],
+  findPlaceByCep: jest.fn(),
+  findPlaceByDevice: jest.fn(),
+  saveHouseholdLocationFor: jest.fn(async () => undefined),
+}));
+jest.mock('@/features/nuke/conversation', () => ({ clearConversation: jest.fn(), conversationOwner: jest.fn() }));
+jest.mock('@/lib/pendingReceipts', () => ({ forgetPendingReceiptsOf: jest.fn() }));
+jest.mock('@/lib/queryClient', () => ({ saveNow: jest.fn() }));
+jest.mock('@/lib/reminders', () => ({ disableHouseholdReminders: jest.fn() }));
+/** A conta e a casa aberta (a prévia, a Hoje e o link do convite leem a casa; o começo de verdade não tem casa). */
+const mockAccount = {
+  session: { user: { id: 'ana' } } as { user: { id: string } } | null,
+  household: {
+    household: { id: 'h1', name: 'Casa da Ana', invite_code: 'KM2P9Q', created_by: 'ana' },
+  } as { household: { id: string; name: string; invite_code: string; created_by: string } } | null,
+  pending: false,
+};
+jest.mock('@/lib/auth', () => ({
+  signOut: jest.fn(),
+  useAuth: () => ({ session: mockAccount.session }),
+  useHousehold: () => ({ data: mockAccount.household, isPending: mockAccount.pending }),
+}));
+const mockAdmin = { data: true as boolean | undefined, isPending: false };
+jest.mock('@/data/appDashboard', () => ({ useIsAppAdmin: () => mockAdmin }));
+const mockInstall = { mode: 'hidden' as 'hidden' | 'prompt' | 'ios', install: jest.fn(async () => undefined) };
+jest.mock('@/lib/install', () => ({ useInstallApp: () => ({ ...mockInstall, dismiss: jest.fn() }) }));
+jest.mock('@/lib/openLink', () => ({ openExternal: jest.fn(async () => true) }));
+jest.mock('expo-clipboard', () => ({ getStringAsync: jest.fn(async () => ''), setStringAsync: jest.fn(async () => true) }));
+jest.mock('@/ui/dialogs', () => ({ confirmAction: jest.fn(), notify: jest.fn() }));
+// Os desenhos e o fundo não entram no que se confere aqui.
+jest.mock('@/ui/art', () => ({ Logo: () => null }));
+jest.mock('@/ui/NukeLive', () => ({ NukeLive: () => null }));
+jest.mock('@/ui/NukeArt', () => ({ NukeAvatar: () => null }));
+jest.mock('@/ui/iconArt', () => ({ IconArt: () => null }));
+jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
+
+let renderer: ReactTestRenderer | undefined;
+let queryClient: QueryClient;
+
+const rawText = (node: ReactTestInstance | string): string => (typeof node === 'string' ? node : node.children.map(rawText).join(''));
+/** As letras de uso privado do Unicode: é onde a fonte de ícones guarda os desenhos. */
+const ICON_GLYPHS = new RegExp(
+  `[${String.fromCodePoint(0xe000)}-${String.fromCodePoint(0xf8ff)}]|[${String.fromCodePoint(0xf0000)}-${String.fromCodePoint(0x10ffff)}]`,
+  'gu',
+);
+const page = () => rawText(renderer!.root).replace(ICON_GLYPHS, '');
+
+async function settle() {
+  for (let i = 0; i < 5; i += 1) await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+}
+
+async function mount(screen: ReactElement) {
+  await act(async () => {
+    renderer = create(<QueryClientProvider client={queryClient}>{screen}</QueryClientProvider>);
+  });
+  await settle();
+}
+
+const field = (label: string) =>
+  renderer!.root.findAll((node) => node.props.label === label && typeof node.props.onChangeText === 'function')[0];
+const type = async (label: string, text: string) => {
+  await act(async () => field(label).props.onChangeText(text));
+};
+const button = (title: string) =>
+  renderer!.root.findAll((node) => node.props.title === title && typeof node.props.onPress === 'function')[0];
+const press = async (title: string) => {
+  await act(async () => button(title).props.onPress());
+  await settle();
+};
+/** Um cartão grande (FeatureCard): o leitor de tela lê o título e a frase juntos. */
+const choose = async (card: { title: string; subtitle: string }) => {
+  const node = renderer!.root.findAll(
+    (n) => n.props.accessibilityLabel === `${card.title}. ${card.subtitle}` && typeof n.props.onPress === 'function',
+  )[0];
+  await act(async () => node.props.onPress());
+  await settle();
+};
+/** O que tem esse texto e um toque (as ações do menu de baixo). */
+const pressText = async (label: string) => {
+  const node = renderer!.root.findAll((n) => typeof n.props.onPress === 'function' && rawText(n).replace(ICON_GLYPHS, '') === label)[0];
+  await act(async () => node.props.onPress());
+  await settle();
+};
+const sheet = (title: string) => renderer!.root.findAll((n) => n.props.title === title && typeof n.props.onClose === 'function')[0];
+const calls = (name: string) => mockRpc.mock.calls.filter(([called]) => called === name);
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  for (const key of Object.keys(mockParams)) delete mockParams[key];
+  mockRedirect.href = null;
+  mockFocus.focused = true;
+  mockAccount.session = { user: { id: 'ana' } };
+  mockAccount.household = { household: { id: 'h1', name: 'Casa da Ana', invite_code: 'KM2P9Q', created_by: 'ana' } };
+  mockAccount.pending = false;
+  mockAdmin.data = true;
+  mockAdmin.isPending = false;
+  mockInstall.mode = 'hidden';
+  clearPendingInvite();
+  for (const id of ['nova', 'dela', 'h1']) clearOnboardingNext(id);
+  jest.replaceProperty(FEATURES, 'onboarding', true);
+});
+
+afterEach(async () => {
+  await act(async () => renderer?.unmount());
+  renderer = undefined;
+});
+
+describe('o começo depois da conta (bem-vindo, com a chave ligada)', () => {
+  beforeEach(() => {
+    mockAccount.household = null;
+  });
+
+  it('o nome primeiro, sozinho; sem ele, a tela diz o que falta', async () => {
+    await mount(<WelcomeScreen />);
+    expect(page()).toContain(NAME_TITLE);
+    await press('Continuar');
+    expect(notify).toHaveBeenCalledWith(NAME_TITLE, expect.any(String));
+    expect(page()).not.toContain(CHOICE_TITLE);
+  });
+
+  it('criar a casa: o nome, a pergunta, o nome da casa (o lugar fechado numa linha) e a casa nasce com a lista como passo seguinte', async () => {
+    await mount(<WelcomeScreen />);
+    await type('Seu nome', ' Ana ');
+    await press('Continuar');
+    expect(page()).toContain(CHOICE_TITLE);
+    await choose(CHOICE_NEW);
+    expect(page()).toContain(HOUSE_TITLE);
+    // O lugar é opcional: fica numa linha até a pessoa abrir.
+    expect(page()).toContain(HOUSE_PLACE_ROW.title);
+    expect(field('CEP')).toBeUndefined();
+    await type('Nome da casa', 'Casa da Ana');
+    await press('Criar casa');
+    expect(calls('create_household')).toEqual([['create_household', { p_name: 'Casa da Ana', p_display_name: 'Ana' }]]);
+    expect(await AsyncStorage.getItem('kotii:onboarding-next:nova')).toBe('lista');
+    // O de verdade não troca de tela: a casa chega e o layout abre a Hoje.
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  it('entrar com o código: direto, sem esperar ninguém, e o passo seguinte diz que a pessoa entrou', async () => {
+    await mount(<WelcomeScreen />);
+    await type('Seu nome', 'Bia');
+    await press('Continuar');
+    await choose(CHOICE_INVITE);
+    expect(page()).toContain(CODE_TITLE);
+    await type('Código de convite', 'km2-p9q');
+    await press('Entrar na casa');
+    expect(calls('join_household')).toEqual([['join_household', { p_invite_code: 'KM2P9Q', p_display_name: 'Bia' }]]);
+    expect(await AsyncStorage.getItem('kotii:onboarding-next:dela')).toBe('entrou');
+  });
+
+  it('um código com letras que o convite não usa não chega ao banco', async () => {
+    await mount(<WelcomeScreen />);
+    await type('Seu nome', 'Bia');
+    await press('Continuar');
+    await choose(CHOICE_INVITE);
+    await type('Código de convite', 'OI0123');
+    await press('Entrar na casa');
+    expect(calls('join_household')).toHaveLength(0);
+    expect(notify).toHaveBeenCalledWith('Confira o código', expect.any(String));
+  });
+
+  it('quem veio pelo link do convite pula a pergunta: o código já vem preenchido, e sai do aparelho depois de entrar', async () => {
+    savePendingInvite('KM2P9Q');
+    await mount(<WelcomeScreen />);
+    await type('Seu nome', 'Bia');
+    await press('Continuar');
+    expect(page()).toContain(CODE_TITLE);
+    expect(page()).not.toContain(CHOICE_TITLE);
+    expect(field('Código de convite').props.value).toBe('KM2P9Q');
+    await press('Entrar na casa');
+    expect(calls('join_household')[0][1]).toEqual({ p_invite_code: 'KM2P9Q', p_display_name: 'Bia' });
+    expect(await AsyncStorage.getItem('kotii:pending-invite')).toBeNull();
+  });
+
+  it('com a chave desligada, a tela de antes, já em "Tenho um código" quando há um link de convite', async () => {
+    jest.replaceProperty(FEATURES, 'onboarding', false);
+    savePendingInvite('KM2P9Q');
+    await mount(<WelcomeScreen />);
+    expect(page()).not.toContain(NAME_TITLE);
+    const segmented = renderer!.root.findAll((node) => Array.isArray(node.props.options) && typeof node.props.onChange === 'function')[0];
+    expect(segmented.props.value).toBe('entrar');
+    expect(field('Código de convite').props.value).toBe('KM2P9Q');
+  });
+});
+
+describe('o passo seguinte, na tela Hoje', () => {
+  it('quem criou a casa vai para a lista de mercado com o catálogo aberto, uma vez', async () => {
+    setOnboardingNext('h1', 'lista');
+    await mount(<OnboardingContinuation />);
+    expect(mockOpenMarketList).toHaveBeenCalledTimes(1);
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/lista/[id]', params: { id: 'mercado', primeira: '1' } });
+    expect(await AsyncStorage.getItem('kotii:onboarding-next:h1')).toBeNull();
+  });
+
+  it('com a Hoje fora de vista (outra tela por cima), espera', async () => {
+    mockFocus.focused = false;
+    setOnboardingNext('h1', 'lista');
+    await mount(<OnboardingContinuation />);
+    expect(mockOpenMarketList).not.toHaveBeenCalled();
+    expect(await AsyncStorage.getItem('kotii:onboarding-next:h1')).toBe('lista');
+  });
+
+  it('quem entrou com o código vê o nome da casa (agora é moradora) até tocar em "Começar"', async () => {
+    setOnboardingNext('h1', 'entrou');
+    await mount(<OnboardingContinuation />);
+    expect(page()).toContain(JOINED_TITLE);
+    expect(page()).toContain(joinedText('Casa da Ana'));
+    await pressText(JOINED_OK);
+    expect(page()).not.toContain(JOINED_TITLE);
+    expect(await AsyncStorage.getItem('kotii:onboarding-next:h1')).toBeNull();
+  });
+
+  it('sem passo guardado, nada', async () => {
+    await mount(<OnboardingContinuation />);
+    expect(page()).toBe('');
+    expect(mockOpenMarketList).not.toHaveBeenCalled();
+  });
+});
+
+describe('a faixa da primeira lista', () => {
+  it('"Pronto" chama a casa (o código à vista) e, sem a tela de início para oferecer, termina', async () => {
+    const onFinish = jest.fn();
+    await mount(<FirstListFlow onCatalog={jest.fn()} onFinish={onFinish} />);
+    expect(page()).toContain(FIRST_LIST_TEXT);
+    expect(sheet(INVITE_TITLE).props.visible).toBe(false);
+    await press(FIRST_LIST_DONE);
+    expect(sheet(INVITE_TITLE).props.visible).toBe(true);
+    expect(page()).toContain('KM2P9Q');
+    expect(page()).toContain(INVITE_WHATSAPP);
+    await act(async () => sheet(INVITE_TITLE).props.onClose());
+    expect(onFinish).toHaveBeenCalledTimes(1);
+  });
+
+  it('no iPhone pelo navegador, depois do convite vem a tela de início, com o aviso de entrar de novo pelo ícone', async () => {
+    mockInstall.mode = 'ios';
+    const onFinish = jest.fn();
+    await mount(<FirstListFlow onCatalog={jest.fn()} onFinish={onFinish} />);
+    await press(FIRST_LIST_DONE);
+    await act(async () => sheet(INVITE_TITLE).props.onClose());
+    expect(onFinish).not.toHaveBeenCalled();
+    expect(sheet(INSTALL_TITLE).props.visible).toBe(true);
+    expect(page()).toContain(INSTALL_IOS_SIGN_IN);
+    await act(async () => sheet(INSTALL_TITLE).props.onClose());
+    expect(onFinish).toHaveBeenCalledTimes(1);
+  });
+
+  it('"Agora não" termina sem convite', async () => {
+    const onFinish = jest.fn();
+    await mount(<FirstListFlow onCatalog={jest.fn()} onFinish={onFinish} />);
+    await press(FIRST_LIST_SKIP);
+    expect(onFinish).toHaveBeenCalledTimes(1);
+    expect(sheet(INVITE_TITLE).props.visible).toBe(false);
+  });
+});
+
+describe('o link do convite', () => {
+  it('sem conta: guarda o código e vai para entrar', async () => {
+    mockAccount.session = null;
+    mockParams.codigo = 'km2p9q';
+    await mount(<InviteLinkScreen />);
+    expect(mockRedirect.href).toBe('/entrar');
+    expect(JSON.parse((await AsyncStorage.getItem('kotii:pending-invite'))!)).toMatchObject({ code: 'KM2P9Q' });
+  });
+
+  it('com conta e sem casa, para as boas-vindas; já numa casa, para "Suas casas" com o código', async () => {
+    mockParams.codigo = 'KM2P9Q';
+    mockAccount.household = null;
+    await mount(<InviteLinkScreen />);
+    expect(mockRedirect.href).toBe('/bem-vindo');
+    await act(async () => renderer?.unmount());
+    mockAccount.household = { household: { id: 'h1', name: 'Casa da Ana', invite_code: 'ABC234', created_by: 'ana' } };
+    await mount(<InviteLinkScreen />);
+    expect(mockRedirect.href).toEqual({ pathname: '/casas', params: { codigo: 'KM2P9Q' } });
+  });
+
+  it('um link estragado não guarda nada', async () => {
+    mockAccount.session = null;
+    mockParams.codigo = 'nada';
+    await mount(<InviteLinkScreen />);
+    expect(mockRedirect.href).toBe('/entrar');
+    expect(await AsyncStorage.getItem('kotii:pending-invite')).toBeNull();
+  });
+});
+
+describe('a prévia do começo (para quem mantém o app)', () => {
+  it('só para app_admins', async () => {
+    mockAdmin.data = false;
+    await mount(<OnboardingPreviewScreen />);
+    expect(page()).toContain(PREVIEW_ONLY_ADMINS);
+    expect(page()).not.toContain(WELCOME_TITLE);
+  });
+
+  it('das boas-vindas à casa: as telas de conta não mandam nada; a casa nasce e a Hoje segue', async () => {
+    await mount(<OnboardingPreviewScreen />);
+    expect(page()).toContain(PREVIEW_NOTICE);
+    expect(page()).toContain(WELCOME_TITLE);
+    for (const line of welcomeLines(FEATURES.finance)) expect(page()).toContain(line.text);
+    await press(WELCOME_CREATE);
+    expect(page()).toContain(PASSWORD_HINT);
+    await type('E-mail', 'nova@exemplo.com');
+    await type('Senha', 'segredo1');
+    await press(SIGN_UP_TITLE);
+    expect(page()).toContain(confirmEmailText('nova@exemplo.com'));
+    await press(CONFIRM_EMAIL_DONE);
+    expect(page()).toContain(SIGN_IN_TITLE);
+    await press(SIGN_IN_TITLE);
+    expect(mockAuth.signUp).not.toHaveBeenCalled();
+    expect(mockAuth.signInWithPassword).not.toHaveBeenCalled();
+    await type('Seu nome', 'Ana');
+    await press('Continuar');
+    await choose(CHOICE_NEW);
+    await type('Nome da casa', 'Casa de teste');
+    await press('Criar casa');
+    expect(calls('create_household')).toEqual([['create_household', { p_name: 'Casa de teste', p_display_name: 'Ana' }]]);
+    expect(await AsyncStorage.getItem('kotii:onboarding-next:nova')).toBe('lista');
+    expect(router.replace).toHaveBeenCalledWith('/');
+  });
+
+  it('como quem chegou por um convite: o convite no lugar do título, e o código da casa aberta (nunca um inventado)', async () => {
+    await mount(<OnboardingPreviewScreen />);
+    await press('Ver como quem chegou por um convite');
+    expect(page()).toContain(INVITED_TITLE);
+    await press(WELCOME_CREATE);
+    await type('E-mail', 'nova@exemplo.com');
+    await type('Senha', 'segredo1');
+    await press(SIGN_UP_TITLE);
+    await press(CONFIRM_EMAIL_DONE);
+    await press(SIGN_IN_TITLE);
+    await type('Seu nome', 'Bia');
+    await press('Continuar');
+    expect(field('Código de convite').props.value).toBe('KM2P9Q');
+  });
+});
+
+describe('as boas-vindas e a conta (entrar, com a chave ligada)', () => {
+  beforeEach(() => {
+    mockAccount.session = null;
+    mockAccount.household = null;
+  });
+
+  it('o aparelho que nunca teve conta vê as boas-vindas; criar a conta pede a confirmação numa tela', async () => {
+    await mount(<SignInScreen />);
+    expect(page()).toContain(WELCOME_TITLE);
+    await press(WELCOME_CREATE);
+    // Um modo por vez, com a regra da senha à vista.
+    expect(page()).toContain(PASSWORD_HINT);
+    expect(renderer!.root.findAll((node) => Array.isArray(node.props.options) && typeof node.props.onChange === 'function')).toHaveLength(0);
+    await type('E-mail', ' Nova@Exemplo.com ');
+    await type('Senha', 'segredo1');
+    await press(SIGN_UP_TITLE);
+    expect(mockAuth.signUp).toHaveBeenCalledWith({ email: 'nova@exemplo.com', password: 'segredo1' });
+    expect(page()).toContain(CONFIRM_EMAIL_TITLE);
+    expect(page()).toContain(confirmEmailText('nova@exemplo.com'));
+    await press('Reenviar o e-mail');
+    expect(mockAuth.resend).toHaveBeenCalledWith({ type: 'signup', email: 'nova@exemplo.com' });
+    expect(notify).toHaveBeenCalledWith(CONFIRM_EMAIL_TITLE, CONFIRM_EMAIL_RESENT);
+    await press(CONFIRM_EMAIL_DONE);
+    expect(page()).toContain(SIGN_IN_TITLE);
+    expect(field('E-mail').props.value).toBe('nova@exemplo.com');
+  });
+
+  it('quem chegou pelo link do convite vê o convite nas boas-vindas', async () => {
+    savePendingInvite('KM2P9Q');
+    await mount(<SignInScreen />);
+    expect(page()).toContain(INVITED_TITLE);
+  });
+
+  // Por último: a marca de que o aparelho já teve conta fica na memória até o fim do arquivo.
+  it('o aparelho que já teve conta abre direto em "Entrar"', async () => {
+    markHadAccount();
+    await mount(<SignInScreen />);
+    expect(page()).not.toContain(WELCOME_TITLE);
+    expect(button(SIGN_IN_TITLE)).toBeDefined();
+    expect(button('Esqueci minha senha')).toBeDefined();
+  });
+});

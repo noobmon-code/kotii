@@ -93,6 +93,7 @@ import { ListEstimateCard } from '@/features/ListEstimateCard';
 import { ListItemEditor, type ItemDetails, type PhotoChange } from '@/features/ListItemEditor';
 import { ListMenu, ListMenuButton } from '@/features/ListMenu';
 import { ListShareSheet } from '@/features/ListShareSheet';
+import { FirstListFlow } from '@/features/onboarding/FirstListFlow';
 import { MarketTripAction, MarketTripBanner } from '@/features/MarketTrip';
 import { OfflineNotice } from '@/features/OfflineNotice';
 import { PasteListModal } from '@/features/PasteListModal';
@@ -145,7 +146,10 @@ interface Repeated {
 }
 
 export default function ShoppingListScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  // `primeira=1`: a lista de mercado logo depois de criar a casa no começo (features/onboarding/FirstListFlow), com o
+  // catálogo de itens comuns já aberto e a faixa que leva a chamar a casa.
+  const { id, primeira } = useLocalSearchParams<{ id: string; primeira?: string }>();
+  const firstList = primeira === '1';
   const { session } = useAuth();
   const list = useShoppingList(id);
   const items = useListItems(id);
@@ -181,7 +185,7 @@ export default function ShoppingListScreen() {
   const [name, setName] = useState('');
   const [quantity, setQuantity] = useState(DEFAULT_AMOUNT.quantity);
   const [unit, setUnit] = useState<Unit>(DEFAULT_AMOUNT.unit);
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(firstList);
   // Guardar na despensa: um item (botão do item) ou o carrinho todo (Limpar),
   // com o carrinho como estava no toque. `finishing`: veio do "Finalizar compra" (sem a nota), e por isso termina
   // com a pergunta de encerrar a ida; `notice`: o aviso desse caminho (sem internet).
@@ -941,6 +945,9 @@ export default function ShoppingListScreen() {
       ) : null}
       {/* Alguém da casa (ou a própria pessoa) avisou que está indo às compras desta lista. */}
       <MarketTripBanner listId={list.data.id} />
+      {firstList && !archived ? (
+        <FirstListFlow onCatalog={() => setPickerOpen(true)} onFinish={() => router.setParams({ primeira: undefined })} />
+      ) : null}
 
       {archived ? (
         // A lista arquivada é só para ver: reabrir fica aqui, à vista, e também no menu do cabeçalho.

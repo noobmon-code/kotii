@@ -18,11 +18,14 @@ import { APP_DASHBOARD_TITLE } from '@/domain/appDashboard';
 import { FEEDBACK_FORM_TITLE } from '@/domain/appFeedback';
 import { THEME_CHOICES, THEME_HINT } from '@/domain/appearance';
 import { HOUSE_PLACE_TITLE, housePlaceRowSubtitle, openHouseName } from '@/domain/housePlace';
+import { PREVIEW_SUBTITLE, PREVIEW_TITLE } from '@/domain/onboarding';
 import { MODERATION_TITLE } from '@/domain/storeModeration';
 import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
 import { AiUsageCard } from '@/features/AiUsageCard';
+import { houseInviteText } from '@/features/onboarding/InviteSheet';
 import { SharedPricesAbout } from '@/features/SharedPrices';
 import { signOut, useAuth, useHousehold } from '@/lib/auth';
+import { useNewOnboarding } from '@/lib/onboarding';
 import { REMINDER_PLACE } from '@/lib/reminders';
 import { errorMessage } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -70,6 +73,8 @@ export default function SettingsScreen() {
   const isAdmin = useIsAppAdmin().data === true;
   const moderator = useIsModerator().data === true;
   const location = useHouseholdLocation();
+  // O começo novo (lib/onboarding): o convite compartilhado leva o link do site, além do código.
+  const newOnboarding = useNewOnboarding();
   const [inviteOpen, setInviteOpen] = useState(false);
 
   if (!household.data) return <Loading />;
@@ -141,9 +146,7 @@ export default function SettingsScreen() {
   }
 
   function shareInvite() {
-    Share.share({
-      message: `Entre na nossa casa "${house.name}" no Kotii com o código ${house.invite_code}.`,
-    }).catch(() => undefined);
+    Share.share({ message: houseInviteText(house, newOnboarding) }).catch(() => undefined);
   }
 
   // Código que vazou (ou alguém que saiu e não deve voltar): o antigo para de valer na hora.
@@ -370,6 +373,15 @@ export default function SettingsScreen() {
                 subtitle="Contas, pessoas ativas, Nuke e funções"
                 right={chevron}
                 onPress={() => router.push('/painel')}
+              />
+            ) : null}
+            {isAdmin ? (
+              <ListRow
+                left={<IconBadge icon="account-star-outline" tone="neutral" />}
+                title={PREVIEW_TITLE}
+                subtitle={PREVIEW_SUBTITLE}
+                right={chevron}
+                onPress={() => router.push('/primeira-vez')}
               />
             ) : null}
             {moderator ? (
