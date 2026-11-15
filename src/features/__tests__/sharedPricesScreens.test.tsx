@@ -30,6 +30,10 @@ const mockQueries: Record<'products' | 'history' | 'stores' | 'prices' | 'shared
 /** Quem pediu os preços de outras casas: o cartão de Configurações não pede. */
 const mockSharedPrices = jest.fn(() => mockQueries.shared);
 
+// O começo novo (lib/onboarding) guarda no aparelho o que precisa: aqui, o armazenamento de mentira.
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
+);
 jest.mock('expo-router', () => ({
   router: { push: jest.fn() },
   Stack: { Screen: () => null },

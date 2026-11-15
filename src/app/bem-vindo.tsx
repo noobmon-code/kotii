@@ -6,22 +6,62 @@ import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 import { householdErrorMessage, INVITE_NOT_FOUND, savePlaceOfNewHouse } from '@/data/household';
 import { PLACE_NOT_SAVED_TITLE, placeNotSavedMessage } from '@/domain/housePlace';
 import { HousePlacePicker, useNewHousePlace } from '@/features/HousePlacePicker';
+import { HouseSetupFlow } from '@/features/onboarding/HouseSetupFlow';
 import { signOut } from '@/lib/auth';
+import { FEATURES } from '@/lib/features';
+import { clearPendingInvite, usePendingInvite } from '@/lib/onboarding';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { NukeLive } from '@/ui/NukeLive';
-import { Button, Card, Screen, Segmented, Text, TextField } from '@/ui/primitives';
+import { Button, Card, Loading, Screen, Segmented, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 type Mode = 'criar' | 'entrar';
 
+/**
+ * Sem casa ainda: o começo novo (features/onboarding/HouseSetupFlow) com a chave ligada (lib/features), ou a tela de
+ * antes. Nos dois, o código de um link de convite (lib/onboarding) já vem no "Tenho um código".
+ */
 export default function WelcomeScreen() {
+  const pendingInvite = usePendingInvite();
+  if (!FEATURES.onboarding) return <ClassicWelcome pendingInvite={pendingInvite ?? null} />;
+  return (
+    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <Screen edges={['top', 'bottom']}>
+        {pendingInvite === undefined ? (
+          <Loading />
+        ) : (
+          <HouseSetupFlow
+            pendingInvite={pendingInvite}
+            footer={
+              <>
+                <Button title="Sair" variant="ghost" onPress={() => signOut()} />
+                <Button title="Apagar minha conta" variant="ghost" compact onPress={() => router.push('/apagar-conta')} />
+              </>
+            }
+          />
+        )}
+      </Screen>
+    </KeyboardAvoidingView>
+  );
+}
+
+/** A tela de antes do começo novo: criar a casa ou entrar com o código, tudo num formulário só. */
+function ClassicWelcome({ pendingInvite }: { pendingInvite: string | null }) {
   const queryClient = useQueryClient();
   const [mode, setMode] = useState<Mode>('criar');
   const [displayName, setDisplayName] = useState('');
   const [householdName, setHouseholdName] = useState('');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
+  // O código de um link de convite: a tela já abre em "Tenho um código", com ele preenchido (uma vez; o que a pessoa
+  // digitar depois fica).
+  const [prefilled, setPrefilled] = useState<string | null>(null);
+  if (pendingInvite && prefilled !== pendingInvite) {
+    setPrefilled(pendingInvite);
+    setMode('entrar');
+    setCode(pendingInvite);
+  }
   // Onde fica a casa (opcional, só ao criar): salvo nela depois de ela existir.
   const newPlace = useNewHousePlace(mode === 'criar');
   // Dois toques rápidos (ou o Enter do CEP junto com o botão) criam uma casa só.
@@ -59,6 +99,7 @@ export default function WelcomeScreen() {
       // vez de erro. O PostgREST manda o registro nulo como objeto com campos nulos.
       const houseId = (data as { id?: string | null } | null)?.id;
       if (!houseId) throw new Error(INVITE_NOT_FOUND);
+      if (mode === 'entrar') clearPendingInvite();
       // O lugar vai antes de buscar a casa de novo: com ela, esta tela sai (a guarda do _layout), e o pedido leva o id
       // da casa nova, que ainda não é a aberta neste aparelho. Se a tela sair antes (a casa buscada de novo por conta
       // própria), o pedido segue e o aviso também.

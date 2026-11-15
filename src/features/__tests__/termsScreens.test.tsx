@@ -12,6 +12,10 @@ import { TERMS_CONSENT, TERMS_SECTIONS, TERMS_TITLE, termsVersionLabel } from '@
 /** Se há para onde voltar, e quem escuta as mudanças da pilha (a tela dos termos). */
 let mockCanGoBack = true;
 const mockStateListeners = new Set<() => void>();
+// O começo novo (lib/onboarding) guarda no aparelho o que precisa: aqui, o armazenamento de mentira.
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
+);
 jest.mock('expo-router', () => {
   const navigation = {
     addListener: (_event: string, listener: () => void) => {

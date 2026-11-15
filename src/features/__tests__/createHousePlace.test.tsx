@@ -37,6 +37,10 @@ const mockWeather = {
   findPlaceByDevice: jest.fn(async (): Promise<HouseholdLocation> => PERTO),
   saveHouseholdLocationFor: jest.fn(async (_householdId: string, _place: HouseholdLocation): Promise<void> => undefined),
 };
+// O começo novo (lib/onboarding) guarda no aparelho o que precisa: aqui, o armazenamento de mentira.
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
+);
 jest.mock('@/data/weather', () => ({
   LOCATION_KEY: ['householdLocation'],
   findPlaceByCep: (cep: string) => mockWeather.findPlaceByCep(cep),
@@ -77,7 +81,7 @@ jest.mock('@/lib/auth', () => {
   };
 });
 jest.mock('@/ui/dialogs', () => ({ confirmAction: jest.fn(), notify: jest.fn() }));
-jest.mock('expo-router', () => ({ router: { push: jest.fn(), replace: jest.fn() } }));
+jest.mock('expo-router', () => ({ router: { push: jest.fn(), replace: jest.fn() }, useLocalSearchParams: () => ({}) }));
 jest.mock('@/ui/NukeLive', () => ({ NukeLive: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 

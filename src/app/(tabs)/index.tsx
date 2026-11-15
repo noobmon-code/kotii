@@ -45,6 +45,8 @@ import { useRefills } from '@/features/health/MedicationSections';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
 import { MarketTripBanner } from '@/features/MarketTrip';
+import { InviteSheet } from '@/features/onboarding/InviteSheet';
+import { OnboardingContinuation } from '@/features/onboarding/OnboardingContinuation';
 import { useJustListed } from '@/features/RecentPurchases';
 import { SkyHeader } from '@/features/SkyHeader';
 import { TermsNoticeCard } from '@/features/TermsNotice';
@@ -52,6 +54,7 @@ import { TodayBlock, TodaySuggestions, useTodayRow } from '@/features/TodayBlock
 import { TodayGreeting } from '@/features/TodayGreeting';
 import { useHousehold } from '@/lib/auth';
 import { FEATURES } from '@/lib/features';
+import { useNewOnboarding } from '@/lib/onboarding';
 import { settledData } from '@/lib/settledData';
 import type { Bill } from '@/lib/types';
 import { errorMessage } from '@/lib/supabase';
@@ -129,6 +132,10 @@ export default function TodayScreen() {
   // Itens de todas as listas abertas; os postos agora há pouco somem já no toque.
   const onLists = useMemo(() => (lists.data ?? []).flatMap((l) => l.items), [lists.data]);
   const restocked = useJustListed(lists.data ? onLists : undefined);
+  // O começo novo (lib/onboarding): nos primeiros passos, "Convidar" abre o convite com o link ali mesmo e "Pessoas e
+  // pets" abre o cadastro, em vez de mandar para Configurações.
+  const newOnboarding = useNewOnboarding();
+  const [inviting, setInviting] = useState(false);
   const firstSteps = useFirstSteps({
     householdId: household.data?.household.id,
     members: household.data?.members.length,
@@ -136,6 +143,7 @@ export default function TodayScreen() {
     drafts: receipts.data,
     pantry: pantry.data,
     people: people.data,
+    inviteByLink: newOnboarding,
   });
 
   const queries = [
@@ -290,12 +298,15 @@ export default function TodayScreen() {
     }
   }
 
-  // Cada passo leva aonde ele se faz: o convite e as fichas ficam em Configurações (Casa).
+  // Cada passo leva aonde ele se faz: o convite e as fichas ficam em Configurações (Casa); no começo novo, o convite
+  // abre aqui (o link pelo WhatsApp) e "Pessoas e pets" abre o cadastro de uma pessoa.
   function openStep(step: FirstStepKey) {
     if (step === 'lista') void openMarket();
     else if (step === 'nota') router.push('/escanear');
     // O que a casa já tem: a mesma câmera, só nos produtos, direto para a despensa.
     else if (step === 'despensa') router.push({ pathname: '/escanear', params: { para: 'despensa' } });
+    else if (newOnboarding && step === 'convidar') setInviting(true);
+    else if (newOnboarding && step === 'pessoas') router.push({ pathname: '/pessoa/[id]', params: { id: 'nova', kind: 'pessoa' } });
     else router.push('/configuracoes');
   }
 
@@ -371,6 +382,11 @@ export default function TodayScreen() {
       />
 
       {paying ? <PayBillModal bill={paying} onClose={() => setPaying(null)} /> : null}
+      {/* A casa que acabou de nascer pelo começo: a primeira lista, ou "Você entrou na casa!". */}
+      <OnboardingContinuation />
+      {household.data ? (
+        <InviteSheet visible={inviting} house={household.data.household} onClose={() => setInviting(false)} />
+      ) : null}
     </Screen>
   );
 }

@@ -28,6 +28,7 @@ import {
 import { THEME_HINT } from '@/domain/appearance';
 import { PROFILE_MESSAGES, PROFILE_NAME_HINT, PROFILE_NOT_READY, PROFILE_PRIVACY } from '@/domain/profile';
 import { SHARING_ABOUT, SHARING_SUMMARY, SHARING_TITLE } from '@/domain/sharedPrices';
+import { PREVIEW_SUBTITLE, PREVIEW_TITLE } from '@/domain/onboarding';
 import { MODERATION_TITLE } from '@/domain/storeModeration';
 import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
 import { OFFLINE_TRY_AGAIN } from '@/lib/networkErrors';
@@ -626,12 +627,18 @@ describe('Configurações: manutenção do app', () => {
     expect(text.endsWith('Sair desta casaApagar minha conta')).toBe(true);
   });
 
-  it('para quem mantém o app, a linha do painel fica no fim, depois da conta, e abre o painel', async () => {
+  it('para quem mantém o app, o painel e a prévia do começo ficam no fim, depois da conta, e abrem as telas deles', async () => {
     mockDb.admin = { data: true, error: null };
     const text = await mount();
-    expect(text.endsWith(`Apagar minha contaManutenção do app${APP_DASHBOARD_TITLE}Contas, pessoas ativas, Nuke e funções`)).toBe(true);
+    expect(
+      text.endsWith(
+        `Apagar minha contaManutenção do app${APP_DASHBOARD_TITLE}Contas, pessoas ativas, Nuke e funções${PREVIEW_TITLE}${PREVIEW_SUBTITLE}`,
+      ),
+    ).toBe(true);
     await act(async () => pressable(`${APP_DASHBOARD_TITLE}Contas, pessoas ativas, Nuke e funções`).props.onPress());
     expect(router.push).toHaveBeenCalledWith('/painel');
+    await act(async () => pressable(`${PREVIEW_TITLE}${PREVIEW_SUBTITLE}`).props.onPress());
+    expect(router.push).toHaveBeenCalledWith('/primeira-vez');
     // A pergunta não passa pela rpc do perfil.
     expect(mockDb.rpc).not.toHaveBeenCalled();
   });
@@ -644,11 +651,11 @@ describe('Configurações: manutenção do app', () => {
     expect(router.push).toHaveBeenCalledWith('/moderacao');
   });
 
-  it('com os dois acessos, o painel e depois a moderação, na mesma categoria', async () => {
+  it('com os dois acessos, o painel, a prévia do começo e a moderação, na mesma categoria', async () => {
     mockModerator.value = true;
     mockDb.admin = { data: true, error: null };
     expect(await mount()).toContain(
-      `Manutenção do app${APP_DASHBOARD_TITLE}Contas, pessoas ativas, Nuke e funções${MODERATION_TITLE}O nome padrão de cada mercado`,
+      `Manutenção do app${APP_DASHBOARD_TITLE}Contas, pessoas ativas, Nuke e funções${PREVIEW_TITLE}${PREVIEW_SUBTITLE}${MODERATION_TITLE}O nome padrão de cada mercado`,
     );
   });
 });

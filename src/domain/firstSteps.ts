@@ -49,14 +49,22 @@ const STEPS: readonly { key: FirstStepKey; title: string; hint: string; skippabl
   { key: 'pessoas', title: 'Cadastrar pessoas e pets', hint: 'Crianças, idosos e pets que não usam o app' },
 ];
 
+/** Com o começo novo (domain/onboarding), o passo de convidar abre o convite ali mesmo, em vez de Configurações. */
+export const FIRST_STEP_INVITE_BY_LINK = 'Mande o link do convite pelo WhatsApp';
+
 /** Os passos que dá para pular. */
 export const SKIPPABLE_FIRST_STEPS: readonly FirstStepKey[] = STEPS.filter((step) => step.skippable).map((step) => step.key);
 
 /**
  * Os passos, na ordem, cada um feito ou não; null enquanto falta saber algum deles. `skipped`: os que a pessoa
  * pulou neste aparelho, que saem da lista (e não precisam ser sabidos); só os que dá para pular contam.
+ * `inviteByLink`: o toque em "Convidar" abre o convite com o link (o começo novo), e a dica diz isso.
  */
-export function firstSteps(facts: FirstStepsFacts, skipped: ReadonlySet<string> = new Set()): FirstStep[] | null {
+export function firstSteps(
+  facts: FirstStepsFacts,
+  skipped: ReadonlySet<string> = new Set(),
+  { inviteByLink = false }: { inviteByLink?: boolean } = {},
+): FirstStep[] | null {
   const { members, anyList, anyReceipt, anyPantry, peopleWithoutApp } = facts;
   const known: Record<FirstStepKey, boolean | undefined> = {
     convidar: members === undefined ? undefined : members > 1,
@@ -67,7 +75,13 @@ export function firstSteps(facts: FirstStepsFacts, skipped: ReadonlySet<string> 
   };
   const shown = STEPS.filter((step) => !(step.skippable && skipped.has(step.key)));
   if (shown.some((step) => known[step.key] === undefined)) return null;
-  return shown.map((step) => ({ key: step.key, title: step.title, hint: step.hint, done: known[step.key] === true, skippable: Boolean(step.skippable) }));
+  return shown.map((step) => ({
+    key: step.key,
+    title: step.title,
+    hint: inviteByLink && step.key === 'convidar' ? FIRST_STEP_INVITE_BY_LINK : step.hint,
+    done: known[step.key] === true,
+    skippable: Boolean(step.skippable),
+  }));
 }
 
 /**

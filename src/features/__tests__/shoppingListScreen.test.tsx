@@ -6,6 +6,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import ShoppingListScreen from '@/app/lista/[id]/index';
 import { toISODate } from '@/domain/dates';
 import { LinkIndex } from '@/domain/listLinks';
+import { FIRST_LIST_SKIP, FIRST_LIST_TEXT } from '@/domain/onboarding';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { PRICE_CALCULATOR_LABEL, WAITING_SENTENCE as WAITING_TEXT } from '@/domain/priceCalculator';
 import { SHARED_PRICES_NOTICE, type SharedPrice } from '@/domain/sharedPrices';
@@ -63,15 +64,17 @@ const mockSeen: {
 
 /** A volta da lista ao foco (de outra tela por cima dela, como a revisão da nota): o teste chama quando quer. */
 const mockFocus: { effect: (() => void) | null } = { effect: null };
+/** O endereço da lista: `primeira=1` é a lista logo depois de criar a casa no começo (FirstListFlow). */
+const mockRouteParams: Record<string, string | undefined> = { id: 'l1' };
 jest.mock('expo-router', () => ({
-  router: { push: jest.fn(), back: jest.fn() },
+  router: { push: jest.fn(), back: jest.fn(), setParams: jest.fn() },
   Stack: {
     Screen: ({ options }: { options?: Record<string, unknown> }) => {
       mockSeen.options = options;
       return null;
     },
   },
-  useLocalSearchParams: () => ({ id: 'l1' }),
+  useLocalSearchParams: () => mockRouteParams,
   useFocusEffect: (effect: () => void) => {
     mockFocus.effect = effect;
   },
@@ -155,7 +158,11 @@ jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => mockQueries.sha
 jest.mock('@/data/learnedAbbreviations', () => ({
   useLearnedAbbreviations: () => jest.requireActual<typeof import('@/domain/learnedAbbreviations')>('@/domain/learnedAbbreviations').NO_LEARNED,
 }));
-jest.mock('@/lib/auth', () => ({ useAuth: () => ({ session: { user: { id: 'u1' } } }), useHouseholdId: () => 'h1' }));
+jest.mock('@/lib/auth', () => ({
+  useAuth: () => ({ session: { user: { id: 'u1' } } }),
+  useHouseholdId: () => 'h1',
+  useHousehold: () => ({ data: { household: { id: 'h1', name: 'Casa da Ana', invite_code: 'KM2P9Q', created_by: 'u1' } } }),
+}));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: unknown) => String(error) }));
 jest.mock('@/ui/dialogs', () => ({ afterPaint: (run: () => void) => run(), askYesNo: jest.fn(), confirmAction: jest.fn(), notify: jest.fn() }));
 // Os desenhos animados (reanimated) e o fundo não entram no que se confere aqui.
@@ -313,6 +320,7 @@ function choose(label: string) {
 }
 
 beforeEach(() => {
+  delete mockRouteParams.primeira;
   mockTrips.list = [];
   mockTrips.online = true;
   mockTrips.end.mockReset();
@@ -2343,5 +2351,26 @@ describe('a calculadora de preço, no canto de cima da lista', () => {
     const remove = renderer!.root.findByType(PriceCalculator).findAll((node) => node.props.label === 'Remover a opção 3' && Boolean(node.props.icon))[0];
     const close = renderer!.root.findByType(PriceCalculator).findAll((node) => node.props.label === 'Fechar' && Boolean(node.props.icon))[0];
     expect(remove.props.icon).not.toBe(close.props.icon);
+  });
+});
+
+describe('a primeira lista, logo depois de criar a casa no começo', () => {
+  it('abre com o catálogo de itens comuns e a faixa; "Agora não" tira a faixa e a pessoa fica na lista', async () => {
+    mockRouteParams.primeira = '1';
+    jest.mocked(router.back).mockClear();
+    jest.mocked(router.setParams).mockClear();
+    const text = await mount();
+    expect(mockSeen.picker!.visible).toBe(true);
+    expect(text).toContain(FIRST_LIST_TEXT);
+    const skip = renderer!.root.findAll((node) => node.props.title === FIRST_LIST_SKIP && typeof node.props.onPress === 'function')[0];
+    await act(async () => skip.props.onPress());
+    expect(router.setParams).toHaveBeenCalledWith({ primeira: undefined });
+    expect(router.back).not.toHaveBeenCalled();
+  });
+
+  it('sem `primeira`, a lista de sempre: nem faixa, nem catálogo aberto', async () => {
+    const text = await mount();
+    expect(mockSeen.picker!.visible).toBe(false);
+    expect(text).not.toContain(FIRST_LIST_TEXT);
   });
 });

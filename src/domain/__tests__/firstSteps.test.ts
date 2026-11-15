@@ -1,6 +1,13 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { firstSteps, firstStepsProgress, showFirstSteps, SKIPPABLE_FIRST_STEPS, type FirstStepsFacts } from '../firstSteps';
+import {
+  FIRST_STEP_INVITE_BY_LINK,
+  firstSteps,
+  firstStepsProgress,
+  showFirstSteps,
+  SKIPPABLE_FIRST_STEPS,
+  type FirstStepsFacts,
+} from '../firstSteps';
 
 const fresh: FirstStepsFacts = { members: 1, anyList: false, anyReceipt: false, anyPantry: false, peopleWithoutApp: 0 };
 
@@ -36,6 +43,14 @@ describe('os primeiros passos', () => {
     expect(done({ ...fresh, anyPantry: true })?.[3]).toEqual(['despensa', true]);
     // Uma ficha de quem não usa o app (pessoa ou pet).
     expect(done({ ...fresh, peopleWithoutApp: 1 })?.[4]).toEqual(['pessoas', true]);
+  });
+
+  it('com o começo novo, a dica de convidar fala do link (o toque abre o convite ali)', () => {
+    expect(firstSteps(fresh)?.[0].hint).toBe('Em Configurações, com o código de convite');
+    expect(firstSteps(fresh, undefined, { inviteByLink: true })?.[0].hint).toBe(FIRST_STEP_INVITE_BY_LINK);
+    // Os outros passos não mudam, nem o que foi pulado.
+    expect(firstSteps(fresh, undefined, { inviteByLink: true })?.slice(1)).toEqual(firstSteps(fresh)?.slice(1));
+    expect(firstSteps(fresh, SKIPPED, { inviteByLink: true })?.map((step) => step.key)).toEqual(['convidar', 'lista', 'nota', 'pessoas']);
   });
 
   it('enquanto falta saber algum deles, nada (um passo dado não aparece como por fazer)', () => {
