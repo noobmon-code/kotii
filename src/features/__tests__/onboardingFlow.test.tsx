@@ -62,7 +62,7 @@ const mockParams: Record<string, string | undefined> = {};
 const mockRedirect: { href: unknown } = { href: null };
 const mockFocus = { focused: true };
 jest.mock('expo-router', () => ({
-  router: { push: jest.fn(), replace: jest.fn(), back: jest.fn(), setParams: jest.fn(), canGoBack: () => true },
+  router: { push: jest.fn(), replace: jest.fn(), dismissTo: jest.fn(), back: jest.fn(), setParams: jest.fn(), canGoBack: () => true },
   useLocalSearchParams: () => mockParams,
   useIsFocused: () => mockFocus.focused,
   Redirect: ({ href }: { href: unknown }) => {
@@ -245,6 +245,7 @@ describe('o começo depois da conta (bem-vindo, com a chave ligada)', () => {
     expect(await AsyncStorage.getItem('kotii:onboarding-next:nova')).toBe('lista');
     // O de verdade não troca de tela: a casa chega e o layout abre a Hoje.
     expect(router.replace).not.toHaveBeenCalled();
+    expect(router.dismissTo).not.toHaveBeenCalled();
   });
 
   it('entrar com o código: direto, sem esperar ninguém, e o passo seguinte diz que a pessoa entrou', async () => {
@@ -424,7 +425,8 @@ describe('a prévia do começo (para quem mantém o app)', () => {
     await press('Criar casa');
     expect(calls('create_household')).toEqual([['create_household', { p_name: 'Casa de teste', p_display_name: 'Ana' }]]);
     expect(await AsyncStorage.getItem('kotii:onboarding-next:nova')).toBe('lista');
-    expect(router.replace).toHaveBeenCalledWith('/');
+    // Volta para as abas que já estão embaixo, sem empilhar outras.
+    expect(router.dismissTo).toHaveBeenCalledWith('/');
   });
 
   it('como quem chegou por um convite: o convite no lugar do título, e o código da casa aberta (nunca um inventado)', async () => {

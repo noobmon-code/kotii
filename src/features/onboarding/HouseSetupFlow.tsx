@@ -47,7 +47,8 @@ type Step = 'nome' | 'escolha' | 'casa' | 'codigo';
  *
  * A casa nasce pelo mesmo caminho de "Suas casas" (useAddHousehold: cria ou entra e já abre nela) e deixa o passo
  * seguinte para a tela Hoje (lib/onboarding): a primeira lista, para quem criou; "Você entrou na casa!", para quem
- * entrou. Na prévia (`preview`), a pessoa já tem casa: a nova abre por cima das outras e a prévia vai para a Hoje.
+ * entrou. Na prévia (`preview`), a pessoa já tem casa: a nova abre por cima das outras e a prévia volta para a Hoje
+ * (`dismissTo`: as abas que já estão embaixo, sem empilhar outras).
  */
 export function HouseSetupFlow({
   preview = false,
@@ -100,7 +101,7 @@ export function HouseSetupFlow({
       if (!where.ok) return;
       const added = await add.mutateAsync({ mode: 'criar', name: house.value, displayName: name.value, place: where.place });
       setOnboardingNext(added.house.id, 'lista');
-      if (preview) router.replace('/');
+      if (preview) router.dismissTo('/');
       if (added.placeNotSaved) notify(PLACE_NOT_SAVED_TITLE, placeNotSavedMessage(added.placeNotSaved));
     } catch (err) {
       notify('Não foi possível criar a casa', errorMessage(err));
@@ -121,7 +122,7 @@ export function HouseSetupFlow({
       const added = await add.mutateAsync({ mode: 'entrar', code: typed.value, displayName: name.value });
       clearPendingInvite();
       setOnboardingNext(added.house.id, 'entrou');
-      if (preview) router.replace('/');
+      if (preview) router.dismissTo('/');
     } catch (err) {
       setFailed(true);
       notify('Não deu para entrar na casa', errorMessage(err));
