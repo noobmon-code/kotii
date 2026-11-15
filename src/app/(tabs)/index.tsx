@@ -38,13 +38,13 @@ import {
   todayItems,
   todaySummary,
 } from '@/domain/today';
+import { SCAN_TITLE } from '@/domain/scan';
 import { FirstStepsCard, useFirstSteps } from '@/features/FirstStepsCard';
 import { PayBillModal } from '@/features/finance/PayBillModal';
 import { useRefills } from '@/features/health/MedicationSections';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
 import { MarketTripBanner } from '@/features/MarketTrip';
-import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useJustListed } from '@/features/RecentPurchases';
 import { SkyHeader } from '@/features/SkyHeader';
 import { TermsNoticeCard } from '@/features/TermsNotice';
@@ -102,7 +102,6 @@ export default function TodayScreen() {
   const receipts = useDraftReceipts();
   // As notas pendentes deste aparelho (a Sefaz pediu o "não sou robô"): ficam fora de `queries`, como o clima.
   const pendingReceipts = usePendingReceipts();
-  const scanner = useReceiptScanner();
   const health = useHealthOverview(today);
   // As fichas (a mesma busca da saúde): os primeiros passos contam as pessoas e os pets sem celular.
   const people = usePeople();
@@ -135,6 +134,7 @@ export default function TodayScreen() {
     members: household.data?.members.length,
     openLists: lists.data,
     drafts: receipts.data,
+    pantry: pantry.data,
     people: people.data,
   });
 
@@ -293,7 +293,9 @@ export default function TodayScreen() {
   // Cada passo leva aonde ele se faz: o convite e as fichas ficam em Configurações (Casa).
   function openStep(step: FirstStepKey) {
     if (step === 'lista') void openMarket();
-    else if (step === 'nota') scanner.open();
+    else if (step === 'nota') router.push('/escanear');
+    // O que a casa já tem: a mesma câmera, só nos produtos, direto para a despensa.
+    else if (step === 'despensa') router.push({ pathname: '/escanear', params: { para: 'despensa' } });
     else router.push('/configuracoes');
   }
 
@@ -336,7 +338,7 @@ export default function TodayScreen() {
       <InstallAppCard />
 
       <View style={styles.quickActions}>
-        <Tile art="camera" wash={WASHES.yellow} label="Escanear nota" onPress={scanner.open} />
+        <Tile art="camera" wash={WASHES.yellow} label={SCAN_TITLE} onPress={() => router.push('/escanear')} />
         <Tile art="carrinho" wash={WASHES.blue} label={MARKET_LIST_SHORTCUT} onPress={() => void openMarket()} />
         <Tile
           art="tarefa"
@@ -356,7 +358,9 @@ export default function TodayScreen() {
       <TodayBlock title={TODAY_BLOCK_TITLES.agora} block={blocks.agora} row={row} />
       <TodayBlock title={TODAY_BLOCK_TITLES.emBreve} block={blocks.emBreve} row={row} />
 
-      {firstSteps.shown ? <FirstStepsCard steps={firstSteps.shown} onStep={openStep} onDismiss={firstSteps.dismiss} /> : null}
+      {firstSteps.shown ? (
+        <FirstStepsCard steps={firstSteps.shown} onStep={openStep} onSkip={firstSteps.skip} onDismiss={firstSteps.dismiss} />
+      ) : null}
 
       <TodaySuggestions
         restock={restock}
@@ -366,7 +370,6 @@ export default function TodayScreen() {
         lists={activeLists}
       />
 
-      {scanner.element}
       {paying ? <PayBillModal bill={paying} onClose={() => setPaying(null)} /> : null}
     </Screen>
   );

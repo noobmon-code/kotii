@@ -1,8 +1,9 @@
 // O que os "Primeiros passos" da tela Hoje (domain/firstSteps) precisam saber e a tela ainda não tem: se a casa já
-// teve uma lista (também arquivada: a tela só lê as abertas) e se já tem uma nota (também confirmada: a tela só lê
-// os rascunhos). Uma linha por pergunta, e só quando o que a tela já tem não responde (`enabled`). As chaves começam
-// com 'lists' e 'receipts': criar, arquivar ou reabrir uma lista e criar, confirmar ou excluir uma nota já buscam de
-// novo.
+// teve uma lista (também arquivada: a tela só lê as abertas), se já tem uma nota (também confirmada: a tela só lê
+// os rascunhos) e se já pôs algo na despensa (também o que acabou: a tela só lê o que está aberto). Uma linha por
+// pergunta, e só quando o que a tela já tem não responde (`enabled`). As chaves começam com 'lists', 'receipts' e
+// 'pantry': criar, arquivar ou reabrir uma lista, criar, confirmar ou excluir uma nota e mexer na despensa já
+// buscam de novo.
 //
 // O que a tela vê também responde (`seen`: uma lista aberta, um rascunho): o "sim" fica na resposta guardada, para
 // ela não voltar a "não" sem o servidor dizer. Sem isso, a casa que teve um rascunho (confirmado em outro celular)
@@ -15,6 +16,7 @@ import { supabase, unwrap } from '@/lib/supabase';
 
 const ANY_LIST_KEY = ['lists', 'any'] as const;
 const ANY_RECEIPT_KEY = ['receipts', 'any'] as const;
+const ANY_PANTRY_KEY = ['pantry', 'any'] as const;
 
 /** Guarda o "sim" que a tela viu (a troca de casa apaga a resposta junto com o resto). */
 function useSeenAnswer(queryKey: QueryKey, seen: boolean) {
@@ -41,5 +43,15 @@ export function useAnyReceipt(enabled: boolean, seen = false) {
     queryKey: ANY_RECEIPT_KEY,
     enabled,
     queryFn: async () => (unwrap(await supabase.from('receipts').select('id').limit(1)) as { id: string }[]).length > 0,
+  });
+}
+
+/** A casa já pôs alguma coisa na despensa, aberta ou já dada baixa. `seen`: a tela tem um item aberto. */
+export function useAnyPantryItem(enabled: boolean, seen = false) {
+  useSeenAnswer(ANY_PANTRY_KEY, seen);
+  return useQuery({
+    queryKey: ANY_PANTRY_KEY,
+    enabled,
+    queryFn: async () => (unwrap(await supabase.from('pantry_items').select('id').limit(1)) as { id: string }[]).length > 0,
   });
 }

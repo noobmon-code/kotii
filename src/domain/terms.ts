@@ -6,14 +6,14 @@
 import { formatBRDate } from './dates';
 
 /** Data da versão do texto (AAAA-MM-DD). Muda a cada mudança no texto. */
-export const TERMS_VERSION = '2026-11-01';
+export const TERMS_VERSION = '2026-11-14';
 
 /**
  * A versão que a pessoa aceita (AAAA-MM-DD). Só muda numa mudança importante (o que é guardado, compartilhado
  * entre casas ou mandado para a IA ou outros serviços, quem responde pelos dados, quem pode ter conta): aí o
  * aviso da tela Hoje volta para todo mundo. Corrigir uma palavra muda só a TERMS_VERSION.
  */
-export const TERMS_ACCEPT_VERSION = '2026-10-24';
+export const TERMS_ACCEPT_VERSION = '2026-11-14';
 
 /** O aviso dos termos: para quem nunca aceitou nenhuma versão, ou para quem aceitou uma anterior. */
 export type TermsNotice = 'primeira' | 'mudou';
@@ -71,7 +71,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
       'Só quem tem 18 anos ou mais pode criar uma conta. Os dados de crianças e adolescentes, e de quem não usa o app, entram pela conta de um adulto da casa, que responde por eles.',
       'A conta é feita com e-mail e senha. Guarde a senha só com você; se esquecer, o app manda uma mensagem para o seu e-mail para criar uma senha nova.',
       'O app guarda na sua conta quais versões destes termos você aceitou e quando (ao criar a conta, ao entrar sem ter aceitado nenhuma ou ao tocar em "Entendi"), e guarda essas versões também neste aparelho.',
-      'Em Configurações (na aba Família) ficam o seu perfil e o tema do app. O seu nome é como os moradores veem você, e ele muda em todas as suas casas. A data de nascimento e o telefone são opcionais e ficam só na sua conta: os outros moradores não veem, e eles não vão para a IA nem para a base de preços compartilhados. O tema (claro, escuro ou o do celular) fica guardado só neste aparelho.',
+      'Em Configurações (a aba "Ajustes") ficam o seu perfil e o tema do app. O seu nome é como os moradores veem você, e ele muda em todas as suas casas. A data de nascimento e o telefone são opcionais e ficam só na sua conta: os outros moradores não veem, e eles não vão para a IA nem para a base de preços compartilhados. O tema (claro, escuro ou o do celular) fica guardado só neste aparelho.',
       'Os dados ficam numa casa. Quem entra com o código de convite vê e edita tudo o que é da casa: listas, notas, despensa, tarefas, saúde, documentos e finanças. Só convide quem pode ver isso. Uma conta pode estar em até 5 casas, e cada casa só vê os próprios dados.',
       'Quem cria a casa é o responsável por ela: pode trocar o código de convite e tirar moradores. Se o responsável sai, a casa passa para o morador mais antigo.',
       `O que um morador registrou continua com a casa depois que ele sai, é tirado dela ou apaga a conta, inclusive a ficha de saúde dele: ela vira a ficha de um dependente, que os outros moradores continuam vendo e editando, e que quem saiu não consegue mais apagar. Se não quiser que fique, apague antes de sair o que o app deixa apagar (veja "Apagar dados e sair") e peça o resto pelo e-mail ${TERMS_CONTACT}.`,
@@ -92,11 +92,12 @@ export const TERMS_SECTIONS: TermsSection[] = [
   {
     title: 'Inteligência artificial',
     paragraphs: [
-      'Algumas funções usam IA: ler a foto de uma nota fiscal, de um exame, de uma ficha de treino ou de um plano de dieta, sugerir o produto de cada item da nota e conversar com o Nuke (que também monta o cardápio da semana). Nesses casos a foto, ou a sua mensagem, é enviada a um provedor de IA para ser lida: a Anthropic (Claude) ou a OpenRouter, que repassa ao modelo configurado. Esses provedores ficam fora do Brasil, então essas fotos e mensagens são tratadas no exterior.',
+      'Algumas funções usam IA: ler a foto de uma nota fiscal, de um exame, de uma ficha de treino ou de um plano de dieta, dizer o que há na foto que você tira no "Escanear" (uma nota, um produto ou uma prateleira com vários produtos), sugerir o produto de cada item da nota e conversar com o Nuke (que também monta o cardápio da semana). Nesses casos a foto, ou a sua mensagem, é enviada a um provedor de IA para ser lida: a Anthropic (Claude) ou a OpenRouter, que repassa ao modelo configurado. Esses provedores ficam fora do Brasil, então essas fotos e mensagens são tratadas no exterior.',
       'Junto com cada mensagem ao Nuke vai um resumo da casa: o nome da casa, o seu nome e os dos moradores; os remédios do dia e quem toma cada um, o estoque e as receitas dos remédios; as consultas e de quem é cada uma; os compromissos e aniversários da semana; as tarefas e quem faz; a despensa e os itens vencendo; gás, água e ração; as listas e o cardápio; as contas, os gastos do mês e o orçamento; os documentos e as garantias.',
       'A IA pode errar. O que ela lê de uma foto vira um rascunho, que a casa vê e que você revisa antes de valer (a foto fica guardada), e o Nuke só põe algo na lista, cria uma tarefa ou lança um gasto quando você toca para confirmar. A conversa com o Nuke fica guardada só no seu aparelho. As fotos de documentos não passam por IA.',
+      'A foto de um produto ou de uma prateleira, tirada no "Escanear", vai para a IA só para ela dizer quais produtos aparecem. Essa foto pode mostrar o que há na sua casa, então enquadre só os produtos. Ela não fica guardada: é apagada logo depois de lida. Os produtos achados aparecem na tela para você conferir, e só entram na despensa ou na lista quando você toca para guardar.',
       'Um recado a quem faz o Kotii (um problema, uma sugestão ou um elogio sobre o app) pode sair de dois jeitos. Quando você fala do próprio app com o Nuke, ou pede para mandar um recado, ele prepara o recado e mostra o texto, que só vai depois do seu toque em "Enviar". Em Configurações, você mesmo escreve o recado, e ele vai direto, sem passar por IA. Dos dois jeitos, o recado fica guardado com a sua conta, e quem mantém o Kotii lê o texto, o tipo de aparelho e a versão do app, e vê o seu e-mail para poder responder. Nada da casa vai junto além do que estiver escrito no recado.',
-      'O uso de IA tem limite por mês; a aba Família mostra quanto já foi usado.',
+      'O uso de IA tem limite por mês; Configurações mostra quanto já foi usado, em "Uso da IA neste mês".',
     ],
   },
   {
@@ -140,9 +141,9 @@ export const TERMS_SECTIONS: TermsSection[] = [
       'Nas telas do app dá para excluir notas fiscais e itens delas, itens das listas, tarefas, aparelhos, prestadores e serviços, documentos, gastos, contas, consultas, vacinas, exames, fichas de treino e de dieta, compromissos, fichas de pessoas e pets, e gás, água e ração.',
       'Nem tudo sai assim: os remédios só são arquivados; apagar a ficha de uma pessoa não apaga os remédios dela; o item da despensa fica marcado como consumido; e os produtos, os mercados e os históricos (compras, tarefas feitas, pontos trocados, treinos feitos e idas ao mercado) ficam com a casa.',
       `Para apagar tudo o que é seu, escreva para ${TERMS_CONTACT}.`,
-      'Sair da casa (aba Família) tira o seu acesso a ela; o que você registrou continua com a casa. Se você é a última pessoa, sair apaga a casa e tudo o que ela tem, para sempre: listas, notas, despensa, tarefas, saúde, documentos e fotos.',
+      'Sair da casa ("Sair desta casa", em Configurações) tira o seu acesso a ela; o que você registrou continua com a casa. Se você é a última pessoa, sair apaga a casa e tudo o que ela tem, para sempre: listas, notas, despensa, tarefas, saúde, documentos e fotos.',
       'Sair da conta só desconecta este aparelho; não apaga nada.',
-      'Para apagar a conta, use "Apagar minha conta" em Configurações, na aba Família, confirmando com a sua senha. Antes, o app mostra o que acontece com cada casa. A conta sai de todas as suas casas, como ao sair de cada uma: o que você registrou continua com a casa, e nos acertos da divisão de gastos você aparece como "Ex-morador". A casa em que você é a última pessoa é apagada, com tudo o que ela tem. Saem também o seu login, o seu perfil (data de nascimento e telefone), o consultor financeiro (os bancos conectados e os lançamentos), os avisos do navegador e os recados que você mandou (pelo Nuke ou em Configurações). Não tem volta.',
+      'Para apagar a conta, use "Apagar minha conta" em Configurações, confirmando com a sua senha. Antes, o app mostra o que acontece com cada casa. A conta sai de todas as suas casas, como ao sair de cada uma: o que você registrou continua com a casa, e nos acertos da divisão de gastos você aparece como "Ex-morador". A casa em que você é a última pessoa é apagada, com tudo o que ela tem. Saem também o seu login, o seu perfil (data de nascimento e telefone), o consultor financeiro (os bancos conectados e os lançamentos), os avisos do navegador e os recados que você mandou (pelo Nuke ou em Configurações). Não tem volta.',
       `Se não conseguir apagar a conta pelo app, escreva para ${TERMS_CONTACT} a partir do e-mail da conta.`,
       'Os preços que já entraram na base compartilhada não saem, porque não estão ligados a você nem à casa.',
     ],

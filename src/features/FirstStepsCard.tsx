@@ -1,9 +1,10 @@
 import { useEffect } from 'react';
 import { StyleSheet } from 'react-native';
 
-import { useAnyList, useAnyReceipt } from '@/data/firstSteps';
+import { useAnyList, useAnyPantryItem, useAnyReceipt } from '@/data/firstSteps';
 import {
   FIRST_STEP_DONE,
+  FIRST_STEP_SKIP,
   FIRST_STEPS_DISMISS,
   FIRST_STEPS_TITLE,
   firstSteps,
@@ -14,15 +15,16 @@ import {
 } from '@/domain/firstSteps';
 import type { IconName } from '@/domain/categories';
 import { useActiveHouseholdId } from '@/lib/activeHousehold';
-import { dismissFirstSteps, useFirstStepsDismissed } from '@/lib/firstSteps';
+import { dismissFirstSteps, skipFirstStep, useFirstStepsDismissed, useFirstStepsSkipped } from '@/lib/firstSteps';
 import type { Person } from '@/lib/types';
-import { Icon, IconBadge, LinkButton, ListCard, ListRow, Section, Text } from '@/ui/primitives';
+import { Icon, IconBadge, LinkButton, ListCard, ListRow, Row, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 const STEP_ICONS: Record<FirstStepKey, IconName> = {
   convidar: 'account-plus-outline',
   lista: 'cart-outline',
   nota: 'receipt-text-outline',
+  despensa: 'fridge-outline',
   pessoas: 'account-child-outline',
 };
 
@@ -49,40 +51,59 @@ const arriving = (query: StepQuery) => query.data !== true && query.fetchStatus 
 
 /**
  * Os primeiros passos da casa aberta (domain/firstSteps): o que ela já tem decide cada passo, e só o que a tela
- * Hoje ainda não leu é perguntado ao banco (uma lista arquivada, uma nota confirmada), e só enquanto o cartão pode
- * aparecer (dispensado neste aparelho, nada é pedido). `shown` só depois de saber os quatro e de ler a dispensa.
- * Com os quatro feitos, o cartão fecha de vez neste aparelho (a mesma marca do "Dispensar"): uma casa que já
- * andou não o vê de volta quando alguém sai dela ou a ficha do pet é apagada.
+ * Hoje ainda não leu é perguntado ao banco (uma lista arquivada, uma nota confirmada, um item da despensa que já
+ * acabou), e só enquanto o cartão pode aparecer (dispensado neste aparelho, nada é pedido). `shown` só depois de
+ * saber todos os passos e de ler a dispensa e os pulados. Com todos feitos (o pulado não conta), o cartão fecha de
+ * vez neste aparelho (a mesma marca do "Dispensar"): uma casa que já andou não o vê de volta quando alguém sai
+ * dela ou a ficha do pet é apagada.
  */
 export function useFirstSteps({
   householdId,
   members,
   openLists,
   drafts,
+  pantry,
   people,
 }: {
   householdId: string | undefined;
   /** Quantos moradores a casa tem. */
   members: number | undefined;
-  /** As listas abertas (useShoppingLists), as notas para revisar (useDraftReceipts) e as fichas (usePeople), como chegaram. */
+  /**
+   * As listas abertas (useShoppingLists), as notas para revisar (useDraftReceipts), o que está na despensa
+   * (usePantry) e as fichas (usePeople), como chegaram.
+   */
   openLists: readonly unknown[] | undefined;
   drafts: readonly unknown[] | undefined;
+  pantry: readonly unknown[] | undefined;
   people: readonly Pick<Person, 'member_user_id'>[] | undefined;
 }) {
   const dismissed = useFirstStepsDismissed(householdId);
+  const skipped = useFirstStepsSkipped(householdId);
   const asking = dismissed === false;
-  // Uma lista aberta, ou um rascunho, já respondem: a pergunta ao banco só sai sem nenhum (e o "sim" visto fica).
+  // O passo pulado sai do cartão: nada dele é perguntado.
+  const pantrySkipped = skipped?.has('despensa') ?? false;
+  // Uma lista aberta, um rascunho ou um item na despensa já respondem: a pergunta ao banco só sai sem nenhum (e o
+  // "sim" visto fica).
   const askList = asking && openLists?.length === 0;
   const askReceipt = asking && drafts?.length === 0;
+  const askPantry = asking && skipped !== undefined && !pantrySkipped && pantry?.length === 0;
   const anyList = useAnyList(askList, asking && Boolean(openLists?.length));
   const anyReceipt = useAnyReceipt(askReceipt, asking && Boolean(drafts?.length));
-  const steps = firstSteps({
-    members,
-    anyList: openLists === undefined ? undefined : openLists.length > 0 || stepAnswer(anyList),
-    anyReceipt: drafts === undefined ? undefined : drafts.length > 0 || stepAnswer(anyReceipt),
-    peopleWithoutApp: people?.filter((person) => !person.member_user_id).length,
-  });
-  // Os quatro feitos fecham o cartão de vez, mas só com tudo da casa aberta: no meio de uma troca de casa, a tela
+  const anyPantry = useAnyPantryItem(askPantry, asking && Boolean(pantry?.length));
+  const steps =
+    skipped === undefined
+      ? null
+      : firstSteps(
+          {
+            members,
+            anyList: openLists === undefined ? undefined : openLists.length > 0 || stepAnswer(anyList),
+            anyReceipt: drafts === undefined ? undefined : drafts.length > 0 || stepAnswer(anyReceipt),
+            anyPantry: pantry === undefined ? undefined : pantry.length > 0 || stepAnswer(anyPantry),
+            peopleWithoutApp: people?.filter((person) => !person.member_user_id).length,
+          },
+          skipped,
+        );
+  // Os passos todos feitos fecham o cartão de vez, mas só com tudo da casa aberta: no meio de uma troca de casa, a tela
   // ainda tem a casa anterior (os moradores dela) enquanto as listas e as fichas já são da próxima, que passou a ser
   // a aberta (lib/activeHousehold) antes de a casa nova chegar.
   const activeId = useActiveHouseholdId();
@@ -98,26 +119,41 @@ export function useFirstSteps({
      * dele (o "Tudo em dia") espera, sem piscar. Sem internet (a busca parada) ou com a busca falhando, não se espera:
      * o cartão não aparece, e a tela segue sem ele.
      */
-    deciding: dismissed === undefined || (askList && arriving(anyList)) || (askReceipt && arriving(anyReceipt)),
+    deciding:
+      dismissed === undefined ||
+      (asking && skipped === undefined) ||
+      (askList && arriving(anyList)) ||
+      (askReceipt && arriving(anyReceipt)) ||
+      (askPantry && arriving(anyPantry)),
     dismiss: () => {
       if (householdId) dismissFirstSteps(householdId);
+    },
+    /** Pula um passo (só os que dá para pular): ele sai do cartão desta casa, neste aparelho. */
+    skip: (step: FirstStepKey) => {
+      if (householdId) skipFirstStep(householdId, step);
     },
     // Puxar para atualizar: só as perguntas que estão valendo (o refetch busca também uma desligada).
     refresh: () => {
       if (askList) anyList.refetch();
       if (askReceipt) anyReceipt.refetch();
+      if (askPantry) anyPantry.refetch();
     },
   };
 }
 
-/** O cartão: os quatro passos, cada um levando aonde se faz; o que já foi feito fica marcado, sem ação. */
+/**
+ * O cartão: os passos, cada um levando aonde se faz; o que já foi feito fica marcado, sem ação. O que dá para
+ * pular tem o "Pular" na própria linha.
+ */
 export function FirstStepsCard({
   steps,
   onStep,
+  onSkip,
   onDismiss,
 }: {
   steps: FirstStep[];
   onStep: (key: FirstStepKey) => void;
+  onSkip: (key: FirstStepKey) => void;
   onDismiss: () => void;
 }) {
   return (
@@ -133,7 +169,16 @@ export function FirstStepsCard({
             title={step.title}
             subtitle={step.done ? FIRST_STEP_DONE : step.hint}
             dimmed={step.done}
-            right={step.done ? undefined : <Icon name="chevron-right" color="textMuted" />}
+            right={
+              step.done ? undefined : step.skippable ? (
+                <Row>
+                  <LinkButton title={FIRST_STEP_SKIP} onPress={() => onSkip(step.key)} accessibilityLabel={`${FIRST_STEP_SKIP}: ${step.title}`} />
+                  <Icon name="chevron-right" color="textMuted" />
+                </Row>
+              ) : (
+                <Icon name="chevron-right" color="textMuted" />
+              )
+            }
             onPress={step.done ? undefined : () => onStep(step.key)}
           />
         ))}

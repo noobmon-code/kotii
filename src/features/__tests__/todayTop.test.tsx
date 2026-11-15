@@ -68,7 +68,11 @@ jest.mock('@/data/market', () => ({
   useShoppingLists: () => mockQuery(mockMarket.lists),
 }));
 jest.mock('@/data/health', () => ({ usePeople: () => mockQuery() }));
-jest.mock('@/data/firstSteps', () => ({ useAnyList: () => mockQuery(false), useAnyReceipt: () => mockQuery(false) }));
+jest.mock('@/data/firstSteps', () => ({
+  useAnyList: () => mockQuery(false),
+  useAnyReceipt: () => mockQuery(false),
+  useAnyPantryItem: () => mockQuery(false),
+}));
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
@@ -95,7 +99,6 @@ jest.mock('@/features/health/useHealthOverview', () => ({
 jest.mock('@/features/InstallAppCard', () => ({ InstallAppCard: () => null }));
 jest.mock('@/features/MarketTrip', () => ({ MarketTripBanner: () => null }));
 jest.mock('@/features/PendingReceiptCard', () => ({ pendingReceiptListRow: () => null }));
-jest.mock('@/features/ReceiptScanner', () => ({ useReceiptScanner: () => ({ open: jest.fn(), busy: false, element: null }) }));
 jest.mock('@/features/RecentPurchases', () => ({
   useJustListed: () => ({ pending: new Set<string>(), add: jest.fn(), drop: jest.fn() }),
 }));
@@ -207,11 +210,19 @@ describe('os atalhos da tela Hoje', () => {
     items: [] as [],
   });
 
-  it('são "Escanear nota", "Lista de mercado" (antes "Listas de compras", que fazia o mesmo que a aba) e "Criar nova tarefa"', async () => {
+  it('são "Escanear", "Lista de mercado" (antes "Listas de compras", que fazia o mesmo que a aba) e "Criar nova tarefa"', async () => {
     await mount();
     const labels = renderer!.root.findAll((node) => typeof node.props.wash === 'string').map((node) => node.props.label);
-    expect(labels).toEqual(['Escanear nota', MARKET_LIST_SHORTCUT, 'Criar nova tarefa']);
+    expect(labels).toEqual(['Escanear', MARKET_LIST_SHORTCUT, 'Criar nova tarefa']);
     expect(rawText(renderer!.root)).not.toContain('Listas de compras');
+    expect(rawText(renderer!.root)).not.toContain('Escanear nota');
+  });
+
+  it('"Escanear" abre a câmera direto, sem perguntar antes o que a pessoa vai ler', async () => {
+    await mount();
+    const tile = renderer!.root.findAll((node) => typeof node.props.wash === 'string' && node.props.label === 'Escanear')[0];
+    await act(async () => tile.props.onPress());
+    expect(router.push).toHaveBeenLastCalledWith('/escanear');
   });
 
   it('"Lista de mercado" pergunta ao servidor a lista de mercado aberta mais recente (ou uma nova) e abre ela', async () => {

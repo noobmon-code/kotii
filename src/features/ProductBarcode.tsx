@@ -30,6 +30,8 @@ export interface ProductBarcodeFlow {
   busy: boolean;
   /** Abre a câmera (ocupado, só avisa). */
   start: () => void;
+  /** Segue com um código que outra câmera já leu (o "Escanear"): o mesmo caminho, sem abrir o leitor daqui. */
+  read: (gtin: string) => void;
   /** O leitor e a escolha do produto: vai na tela. */
   element: ReactNode;
 }
@@ -248,5 +250,5 @@ export function useProductBarcode({ onProduct, linkTo }: { onProduct: (product: 
     </>
   );
 
-  return { available: Array.isArray(barcodes.data), busy, start, element };
+  return { available: Array.isArray(barcodes.data), busy, start, read: onRead, element };
 }

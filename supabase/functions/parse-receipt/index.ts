@@ -22,13 +22,20 @@
 // vence o apelido e a sugestão da IA. Para receipt_reads (e os preços
 // compartilhados) vai só o código de barras de 13 ou 14 dígitos (gtin), nunca
 // o código interno.
+//
+// `classify` (opcional; true, 'any' ou 'products'): o "Escanear" do app, que não sabe o que fotografou. A IA diz
+// primeiro se a foto é nota, produtos ou nada (products.ts). Produtos e nada voltam como { kind, products }, sem
+// nada gravado e com as fotos apagadas; a nota segue para a leitura de sempre (com 'products', nem ela é lida).
+// Essa primeira leitura conta na cota das fotos de produto ('product'), e a contagem só volta quando a nota que
+// ela achou conta na cota das fotos: assim nenhuma chamada à IA sai de graça. Com a cota de produto no fim, o
+// 'any' pula a classificação e lê como nota. Com `access_key` o pedido é sempre de nota, e `classify` não vale.
 // Secrets: ANTHROPIC_API_KEY ou OPENROUTER_API_KEY (uma das duas);
 // RECEIPT_MODEL e RECEIPT_PROVIDER ("anthropic" | "openrouter") opcionais.
 // Com a chave da OpenRouter, ela é usada (padrão: DeepSeek V4.1 Flash).
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-import { QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
+import { type AiTicket, QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
 import { publishableKey, secretKey } from '../_shared/apiKeys.ts';
 import { ExtractionError, extractStructured, mediaTypeOf, toVisionImage, visionConfig } from '../_shared/vision.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
@@ -62,6 +69,7 @@ import {
   SYSTEM,
   withStoreCodes,
 } from './extract.ts';
+import { afterClassification, classifyMode, cleanPhoto, PHOTO_SYSTEM, photoInstructions, PhotoSchema } from './products.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -77,6 +85,9 @@ function json(body: unknown, status = 200): Response {
 }
 
 const config = visionConfig(['RECEIPT']);
+
+/** O código do erro quando as fotos de produto do mês acabaram (o app mostra o aviso do limite). */
+const PRODUCT_QUOTA = 'product_quota';
 
 const STORE_PAGE = 1000;
 
@@ -145,7 +156,7 @@ Deno.serve(async (req) => {
     return json({ error: 'Leitura de nota não configurada: falta a chave da IA no Supabase.' }, 503);
   }
 
-  let body: { image_path?: unknown; image_paths?: unknown; access_key?: unknown };
+  let body: { image_path?: unknown; image_paths?: unknown; access_key?: unknown; classify?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -156,6 +167,8 @@ Deno.serve(async (req) => {
   if (pathsError) return json(pathsError, 400);
   const givenKey = requestedAccessKey(body.access_key);
   if (givenKey === 'invalid') return json({ error: 'Chave de acesso inválida.' }, 400);
+  // Com a chave do QR, a foto é de uma nota: não há o que classificar.
+  const classify = givenKey ? null : classifyMode(body.classify);
   const findByKey = (key: string) => receiptWithKey(db, key);
   // Nota do QR já na casa (lida por outra pessoa enquanto esta fotografava):
   // abre a existente, antes de baixar as fotos e gastar a IA.
@@ -188,6 +201,48 @@ Deno.serve(async (req) => {
     }
   }
 
+  // O "Escanear" não sabe o que fotografou: a IA diz primeiro o que é. Conta na cota das fotos de produto, e essa
+  // contagem só volta mais abaixo, quando a nota achada conta na cota das fotos.
+  let productTicket: AiTicket | null = null;
+  // A cota de produto acabou e a foto foi lida direto como nota: se não for nota, é este o aviso que volta.
+  let productQuotaOver: string | null = null;
+  if (classify) {
+    try {
+      productTicket = await takeAiQuota(db, 'product');
+    } catch (err) {
+      if (!(err instanceof QuotaError)) throw err;
+      if (err.status !== 429 || classify === 'products') return json({ error: err.message, code: err.status === 429 ? PRODUCT_QUOTA : undefined }, err.status);
+      productQuotaOver = err.message;
+    }
+  }
+  if (classify && productTicket) {
+    let photo;
+    try {
+      photo = cleanPhoto(
+        await extractStructured({
+          config,
+          schema: PhotoSchema,
+          schemaName: 'photo',
+          system: PHOTO_SYSTEM,
+          prompt: photoInstructions(images.length),
+          images,
+          subject: 'a foto',
+        }),
+      );
+    } catch (err) {
+      // A IA falhou (ou recusou por engano): a foto não conta no limite do mês.
+      if (!(err instanceof ExtractionError && err.status === 422)) await refundAiQuota(productTicket);
+      if (err instanceof ExtractionError) return json({ error: err.message }, err.status);
+      throw err;
+    }
+    if (afterClassification(classify, photo.kind) === 'answer') {
+      // Produtos, ou nada: as fotos não ficam guardadas (o app também as apaga; falha aqui só fica no log).
+      const { error: removeError } = await db.storage.from('receipts').remove(imagePaths as string[]);
+      if (removeError) console.warn('parse-receipt: photos not removed after the product read');
+      return json({ kind: photo.kind, products: photo.products });
+    }
+  }
+
   // Os produtos que a IA vê: os mais comprados nas notas mais novas e, depois,
   // os cadastrados por último (promptCatalog). Sem as compras, só os mais novos.
   // As compras vêm pelas notas da casa (índice household_id + purchased_at) e
@@ -214,6 +269,8 @@ Deno.serve(async (req) => {
     if (err instanceof QuotaError) return json({ error: err.message }, err.status);
     throw err;
   }
+  // A nota conta na cota das fotos: a classificação que a achou deixa de contar na de produto.
+  if (productTicket) await refundAiQuota(productTicket);
 
   let extracted;
   try {
@@ -233,6 +290,7 @@ Deno.serve(async (req) => {
     throw err;
   }
   if (!extracted.is_receipt) {
+    if (productQuotaOver) return json({ error: `${productQuotaOver} Esta foto foi lida como nota, e não parece ser uma.`, code: PRODUCT_QUOTA }, 422);
     return json({ error: 'A imagem não parece ser uma nota fiscal de compra.' }, 422);
   }
 

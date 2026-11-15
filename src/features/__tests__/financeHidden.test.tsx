@@ -122,13 +122,17 @@ jest.mock('@/features/health/useHealthOverview', () => ({
 jest.mock('@/features/InstallAppCard', () => ({ InstallAppCard: () => null }));
 jest.mock('@/features/MarketTrip', () => ({ MarketTripBanner: () => null }));
 jest.mock('@/features/PendingReceiptCard', () => ({ pendingReceiptListRow: () => null }));
-jest.mock('@/features/ReceiptScanner', () => ({ useReceiptScanner: () => ({ open: jest.fn(), busy: false, element: null }) }));
 jest.mock('@/features/RecentPurchases', () => ({
   useJustListed: () => ({ pending: new Set<string>(), add: jest.fn(), drop: jest.fn() }),
 }));
 jest.mock('@/features/SuppliesSection', () => ({ useSupplyTodayRows: () => () => null }));
 // Os primeiros passos ficam dispensados nesta casa: o cartão deles tomaria o lugar do "Tudo em dia" (todayBlocks.test).
-jest.mock('@/lib/firstSteps', () => ({ useFirstStepsDismissed: () => true, dismissFirstSteps: jest.fn() }));
+jest.mock('@/lib/firstSteps', () => ({
+  useFirstStepsDismissed: () => true,
+  useFirstStepsSkipped: () => new Set<string>(),
+  dismissFirstSteps: jest.fn(),
+  skipFirstStep: jest.fn(),
+}));
 // A casa aberta do aparelho (os primeiros passos a conferem) guarda a escolha no AsyncStorage.
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),

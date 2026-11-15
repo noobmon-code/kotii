@@ -32,7 +32,7 @@ const mockDb = {
 };
 const mockCamera: { onScan: ((event: { data: string }) => void) | null } = { onScan: null };
 const mockRouter = { push: jest.fn(), replace: jest.fn(), back: jest.fn(), canGoBack: () => true };
-const mockParams: { chave?: string; direto?: string } = {};
+const mockParams: { chave?: string; direto?: string; qr?: string } = {};
 const mockPicked: string[] = [];
 // A Sefaz que mostra a nota, sem pedir a verificação (o CAPTCHA de antes era de passagem).
 const mockSefazReads = { value: false };
@@ -235,6 +235,7 @@ beforeEach(async () => {
   mockRouter.back.mockClear();
   mockParams.chave = undefined;
   mockParams.direto = undefined;
+  mockParams.qr = undefined;
   mockPicked.length = 0;
   mockReadsNoItems.value = false;
   mockSefazReads.value = false;
@@ -246,6 +247,36 @@ afterEach(() => {
   act(() => renderer?.unmount());
   renderer = undefined;
   for (const client of clients.splice(0)) client.clear();
+});
+
+describe('o QR que a câmera do "Escanear" já leu (?qr=)', () => {
+  it('segue sozinho ao abrir a tela, uma vez só, como se a câmera daqui o tivesse lido', async () => {
+    mockParams.qr = QR;
+    await open(<NfceQrScreen />);
+    // A Sefaz pediu o "não sou robô": a pendente toma o lugar da tela, como no QR lido aqui.
+    expect(callsTo('nfce')).toHaveLength(1);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/pendente', params: { chave: KEY } });
+    expect((await stored()).map((p) => p.accessKey)).toEqual([KEY]);
+  });
+
+  it('com a Sefaz mostrando a nota, abre a revisão', async () => {
+    mockSefazReads.value = true;
+    mockParams.qr = QR;
+    await open(<NfceQrScreen />);
+    expect(callsTo('nfce')).toHaveLength(1);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: expect.any(String) } });
+  });
+
+  it('o mesmo QR de uma pendente já guardada abre a pendente, sem ir à Sefaz de novo', async () => {
+    await open(<NfceQrScreen />);
+    await scan(QR);
+    expect(callsTo('nfce')).toHaveLength(1);
+    mockRouter.replace.mockClear();
+    mockParams.qr = QR;
+    await open(<NfceQrScreen />);
+    expect(callsTo('nfce')).toHaveLength(1);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/pendente', params: { chave: KEY } });
+  });
 });
 
 describe('nota da Sefaz com "não sou robô"', () => {

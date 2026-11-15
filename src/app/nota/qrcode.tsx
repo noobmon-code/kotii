@@ -1,5 +1,5 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 
@@ -19,6 +19,9 @@ import { notify } from '@/ui/dialogs';
 import { Button, Card, Screen, Text, TextField } from '@/ui/primitives';
 import { radius, space, useColors } from '@/ui/theme';
 
+/** Quanto o QR que veio do "Escanear" espera as pendentes do aparelho antes de seguir sem elas. */
+const GIVEN_QR_WAIT_MS = 1500;
+
 /**
  * Lê o QR code da nota (ou o link colado) e traz os itens da Sefaz, sem IA.
  * Se a Sefaz pedir o "não sou robô", o app não passa por ele: a nota fica
@@ -26,9 +29,16 @@ import { radius, space, useColors } from '@/ui/theme';
  * o passo a passo dos prints da Sefaz, que vão com a chave do QR. O mesmo QR
  * lido de novo abre a pendente, sem ir à Sefaz. Por uma semana, as notas novas
  * do mesmo estado também vão direto para a pendente (domain/captchaStates).
+ *
+ * `?qr=`: o QR que a câmera do "Escanear" já leu (features/scan). A tela segue com ele assim que abre, sem ligar
+ * a câmera daqui de novo; se a leitura falhar, a câmera e o campo do link aparecem como sempre.
  */
 export default function NfceQrScreen() {
   const c = useColors();
+  const { qr: given } = useLocalSearchParams<{ qr?: string }>();
+  // O QR que veio pronto ainda está sendo visto: a câmera daqui espera.
+  const [givenPending, setGivenPending] = useState(Boolean(given));
+  const givenSent = useRef(false);
   const [permission, requestPermission] = useCameraPermissions();
   const importNfce = useImportNfce();
   const scanner = useReceiptScanner({ replace: true });
@@ -54,6 +64,24 @@ export default function NfceQrScreen() {
   useEffect(() => {
     void prepareBarcodeReader();
   }, []);
+
+  // O QR do "Escanear": uma vez só, quando as pendentes do aparelho já foram lidas (o mesmo QR lido de novo abre a
+  // pendente, sem ir à Sefaz). Se a leitura do aparelho não voltar (sem armazenamento), segue sem ela depois de
+  // GIVEN_QR_WAIT_MS: a nota vai à Sefaz como uma nova.
+  const pendingReady = pendingReceipts.ready;
+  const [waited, setWaited] = useState(false);
+  useEffect(() => {
+    if (!given) return;
+    const timer = setTimeout(() => setWaited(true), GIVEN_QR_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [given]);
+  useEffect(() => {
+    if (!given || givenSent.current || !(pendingReady || waited)) return;
+    givenSent.current = true;
+    void submit(given, false).finally(() => setGivenPending(false));
+    // `submit` é recriada a cada desenho; o QR dado e as pendentes lidas é que decidem a hora.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [given, pendingReady, waited]);
 
   async function submit(text: string, fromCamera: boolean) {
     if (busy.current) return;
@@ -139,7 +167,7 @@ export default function NfceQrScreen() {
           }}>
           <Button title="Ler outro QR code" icon="qrcode-scan" variant="ghost" disabled={scanner.busy} onPress={() => setPhotoOnly(null)} />
         </PendingReceiptCard>
-      ) : permission?.granted ? (
+      ) : givenPending ? null : permission?.granted ? (
         <View style={[styles.camera, { backgroundColor: c.surfaceAlt }]}>
           <CameraView
             style={StyleSheet.absoluteFill}

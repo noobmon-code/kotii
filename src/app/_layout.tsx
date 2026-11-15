@@ -135,6 +135,7 @@ function AppNavigator() {
           <Stack.Screen name="lista/[id]/index" options={{ title: 'Lista' }} />
           <Stack.Screen name="lista/[id]/onde-comprar" options={{ title: 'Onde comprar' }} />
           <Stack.Screen name="nota/[id]" options={{ title: 'Nota fiscal' }} />
+          <Stack.Screen name="escanear" options={{ title: 'Escanear' }} />
           <Stack.Screen name="nota/qrcode" options={{ title: 'QR code da nota', presentation: 'modal' }} />
           <Stack.Screen name="nota/pendente" options={{ title: 'Nota pendente', presentation: 'modal' }} />
           <Stack.Screen name="precos" options={{ title: 'Preços' }} />

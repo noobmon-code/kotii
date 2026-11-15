@@ -558,6 +558,9 @@ describe('dashboardView', () => {
         ['menu', 'Cardápios montados pelo Nuke', '0', '0 de 4 casas · limite de 20 por casa', 0],
         ['nfce', 'Notas lidas pelo QR code', '0', '0 de 4 casas · limite de 200 por casa', 0],
         ['finance', 'Mensagens com o consultor financeiro', '0', '0 de 4 casas · limite de 100 por casa', 0],
+        // A foto de produto (o "Escanear"): o uso vem por mês como os outros; o limite dela ainda não vem do painel
+        // no servidor, e a linha não fala dele.
+        ['product', 'Fotos de produto (Escanear)', '0', '0 de 4 casas', 0],
       ]);
       expect(ai.rows[0].accessibilityLabel).toBe('Mensagens com o Nuke: 7 neste mês. 1 de 4 casas. Limite de 300 por casa.');
       expect(ai.limitNote).toBe('No limite: 2 casas em cardápios do Nuke. Perto do limite: 1 casa em leituras de foto.');

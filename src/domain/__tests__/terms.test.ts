@@ -122,7 +122,7 @@ describe('termos de uso', () => {
   it('apagar a conta: pelo app, com a senha, o que fica com a casa e o contato para quem não conseguir', () => {
     const erase = section('Apagar dados e sair');
     expect(erase).not.toContain('ainda não tem um botão');
-    expect(erase).toContain('use "Apagar minha conta" em Configurações, na aba Família, confirmando com a sua senha');
+    expect(erase).toContain('use "Apagar minha conta" em Configurações, confirmando com a sua senha');
     expect(erase).toContain('você aparece como "Ex-morador"');
     expect(erase).toContain('A casa em que você é a última pessoa é apagada');
     expect(erase).toContain('Não tem volta.');
@@ -195,13 +195,27 @@ describe('termos de uso', () => {
     expect(names).toContain('O nome que a sua casa der a um mercado vale para ela acima do nome padrão');
   });
 
-  it('os recados também em Configurações mudam só o texto: o aviso não volta (o aceite fica na versão de antes)', () => {
-    expect(TERMS_VERSION).toBe('2026-11-01');
-    expect(TERMS_ACCEPT_VERSION).toBe('2026-10-24');
-    // Quem aceitou a versão do código de barras não vê o aviso de novo.
-    expect(termsNotice(['2026-10-24'])).toBeNull();
-    // Quem aceitou os termos do nome padrão dos mercados vê o aviso de novo: agora vai também o código de barras.
-    expect(termsNotice(['2026-10-23'])).toBe('mudou');
+  it('a foto de produto no "Escanear" é um envio novo à IA: o texto diz, e o aviso volta para todo mundo', () => {
+    expect(TERMS_VERSION).toBe('2026-11-14');
+    expect(TERMS_ACCEPT_VERSION).toBe('2026-11-14');
+    // Quem aceitou a versão de antes (a do código de barras) vê o aviso de novo: agora a foto de produto ou de
+    // prateleira também vai para a IA.
+    expect(termsNotice(['2026-10-24'])).toBe('mudou');
+    expect(termsNotice(['2026-11-14'])).toBeNull();
+    const ai = section('Inteligência artificial');
+    expect(ai).toContain('dizer o que há na foto que você tira no "Escanear" (uma nota, um produto ou uma prateleira com vários produtos)');
+    // O que a foto pode mostrar, que ela não fica guardada, e que nada entra sem o toque.
+    expect(ai).toContain('Essa foto pode mostrar o que há na sua casa, então enquadre só os produtos');
+    expect(ai).toContain('Ela não fica guardada: é apagada logo depois de lida');
+    expect(ai).toContain('só entram na despensa ou na lista quando você toca para guardar');
+  });
+
+  it('manda a pessoa para Configurações (a aba "Ajustes"), não mais para a aba Família, que deixou de existir', () => {
+    expect(all).not.toContain('aba Família');
+    // A primeira vez que o texto fala de Configurações diz o nome que a barra de abas mostra.
+    expect(all.slice(all.indexOf('Configurações')).startsWith('Configurações (a aba "Ajustes")')).toBe(true);
+    expect(section('Inteligência artificial')).toContain('Configurações mostra quanto já foi usado, em "Uso da IA neste mês"');
+    expect(section('Apagar dados e sair')).toContain('Sair da casa ("Sair desta casa", em Configurações) tira o seu acesso a ela');
   });
 
   it('diz que uma mudança importante é avisada no app', () => {

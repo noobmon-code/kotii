@@ -1962,7 +1962,12 @@ begin
   -- A nota pelo QR code não usa IA, mas a busca na Sefaz conta no mesmo limite.
   select * into r from public.use_ai('nfce');
   assert r.allowed and r.used = 1 and r.lim = 200, 'the QR code reading has its own limit';
-  assert (select array_agg(kind order by kind) from public.ai_usage_summary()) = array['chat', 'menu', 'nfce', 'photo'], 'the summary lists every kind';
+  -- A foto de produto (o "Escanear" do app) tem a cota dela, separada da foto de nota.
+  select * into r from public.use_ai('product');
+  assert r.allowed and r.used = 1 and r.lim = 50, 'the product photo has its own limit';
+  assert public.ai_limit('product') = 50, 'product photo limit';
+  assert (select used from public.ai_usage_summary() where kind = 'photo') = 2, 'a product photo does not count as a receipt photo';
+  assert (select array_agg(kind order by kind) from public.ai_usage_summary()) = array['chat', 'menu', 'nfce', 'photo', 'product'], 'the summary lists every kind';
 end $$;
 set role service_role;
 select public.refund_ai(:'hh_a', public.ai_month(), 'photo') \gset
@@ -1970,6 +1975,26 @@ set role authenticated;
 do $$
 begin
   assert (select used from public.ai_usage_summary() where kind = 'photo') = 1, 'the server refunds a failed call';
+  assert (select used from public.ai_usage_summary() where kind = 'product') = 1, 'refunding one kind leaves the others';
+end $$;
+-- A foto que era uma nota: a contagem de produto volta (a nota conta em 'photo').
+set role service_role;
+select public.refund_ai(:'hh_a', public.ai_month(), 'product') \gset
+set role authenticated;
+do $$
+begin
+  assert (select used from public.ai_usage_summary() where kind = 'product') = 0, 'the product count comes back when the photo was a receipt';
+end $$;
+reset role;
+update public.ai_usage set count = 50 where kind = 'product';
+set role authenticated;
+do $$
+declare
+  r record;
+begin
+  select * into r from public.use_ai('product');
+  assert not r.allowed and r.used = 50 and r.lim = 50, 'the 51st product photo of the month is refused';
+  assert (select u.allowed from public.use_ai('photo') u), 'a full product quota does not stop the receipt photo';
 end $$;
 reset role;
 update public.ai_usage set count = 20 where kind = 'photo';
@@ -3106,7 +3131,7 @@ begin
   assert r.allowed and r.used = 1 and r.lim = 100, 'the finance chat counts on its own quota';
   assert public.ai_limit('finance') = 100, 'finance limit';
   assert (select used from public.ai_usage_summary() where kind = 'finance') = 1, 'K sees the finance usage';
-  assert (select count(*) from public.ai_usage_summary()) = 5, 'K sees the five kinds';
+  assert (select count(*) from public.ai_usage_summary()) = 6, 'K sees the six kinds';
   assert (select used from public.ai_usage_summary() where kind = 'chat') = 0, 'the household chat quota is untouched';
 
   -- A outra casa dela, sem liberação: nada do banco nem do consultor.
@@ -3177,7 +3202,7 @@ begin
     raise exception 'FAIL: L used the finance chat';
   exception when insufficient_privilege then null;
   end;
-  assert (select array_agg(kind order by kind) from public.ai_usage_summary()) = array['chat', 'menu', 'nfce', 'photo'],
+  assert (select array_agg(kind order by kind) from public.ai_usage_summary()) = array['chat', 'menu', 'nfce', 'photo', 'product'],
     'L sees only the household kinds';
   assert not exists (select 1 from public.ai_usage where kind = 'finance'), 'L does not see K''s finance usage';
   assert (select u.allowed from public.use_ai('chat') u), 'the household chat still works for L';

@@ -2,7 +2,7 @@
 // em Configurações.
 
 // 'finance' só vem para quem tem o consultor financeiro (beta) na casa aberta.
-export type AiKind = 'chat' | 'photo' | 'menu' | 'nfce' | 'finance';
+export type AiKind = 'chat' | 'photo' | 'menu' | 'nfce' | 'finance' | 'product';
 
 /** O nome de cada uso da IA, como Configurações e o painel do app mostram. */
 export const AI_KIND_LABELS: Record<AiKind, string> = {
@@ -11,6 +11,7 @@ export const AI_KIND_LABELS: Record<AiKind, string> = {
   menu: 'Cardápios montados pelo Nuke',
   nfce: 'Notas lidas pelo QR code',
   finance: 'Mensagens com o consultor financeiro',
+  product: 'Fotos de produto (Escanear)',
 };
 
 export interface AiUsageRow {
