@@ -1,13 +1,12 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useEffect, useRef, useState } from 'react';
-import { Modal, Platform, ScrollView, StyleSheet, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Platform, ScrollView, StyleSheet, View } from 'react-native';
 
 import { GTIN_INVALID, GTIN_INVALID_TITLE, GTIN_RESTRICTED, GTIN_RESTRICTED_TITLE, readGtin, readTypedGtin } from '@/domain/barcode';
 import { prepareBarcodeReader } from '@/lib/barcodeReader';
-import { Backdrop } from '@/ui/Backdrop';
 import { notify } from '@/ui/dialogs';
 import { Button, Card, IconButton, Row, Text, TextField } from '@/ui/primitives';
+import { SheetModal } from '@/ui/SheetModal';
 import { MAX_WIDTH, radius, space, useColors } from '@/ui/theme';
 
 /**
@@ -59,55 +58,52 @@ export function ProductBarcodeScanner({
   }
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose} onDismiss={onDismiss}>
-      <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
-        <Backdrop />
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          <Row>
-            <Text variant="heading" style={styles.flex}>
-              {title}
-            </Text>
-            <IconButton icon="close" label="Fechar" onPress={onClose} />
-          </Row>
-          <Text variant="muted">Enquadre as barras do produto, com os números embaixo delas. A leitura é automática.</Text>
+    <SheetModal visible={visible} onClose={onClose} onDismiss={onDismiss}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <Row>
+          <Text variant="heading" style={styles.flex}>
+            {title}
+          </Text>
+          <IconButton icon="close" label="Fechar" onPress={onClose} />
+        </Row>
+        <Text variant="muted">Enquadre as barras do produto, com os números embaixo delas. A leitura é automática.</Text>
 
-          {permission?.granted ? (
-            <View style={[styles.camera, { backgroundColor: c.surfaceAlt }]}>
-              <CameraView
-                style={StyleSheet.absoluteFill}
-                facing="back"
-                barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'upc_a'] }}
-                onBarcodeScanned={({ data }) => read(data, true)}
-              />
-              <View style={[styles.frame, { borderColor: c.onPrimary }]} pointerEvents="none" />
-            </View>
-          ) : (
-            <Card style={styles.gap}>
-              <Text variant="body">Para ler o código de barras, o Kotii precisa usar a câmera.</Text>
-              <Button title="Permitir a câmera" icon="camera-outline" onPress={() => requestPermission()} />
-            </Card>
-          )}
-
-          <Card style={styles.gap}>
-            <Text variant="label">Ou digite os números do código de barras</Text>
-            <Text variant="small">
-              {Platform.OS === 'web'
-                ? 'Se a câmera daqui não ler, digite os números que ficam embaixo das barras.'
-                : 'Os números que ficam embaixo das barras. Espaços não importam.'}
-            </Text>
-            <TextField
-              value={typed}
-              onChangeText={setTyped}
-              placeholder="7891000100103"
-              keyboardType="number-pad"
-              accessibilityLabel="Números do código de barras"
-              onSubmitEditing={() => (typed.trim() ? read(typed, false) : undefined)}
+        {permission?.granted ? (
+          <View style={[styles.camera, { backgroundColor: c.surfaceAlt }]}>
+            <CameraView
+              style={StyleSheet.absoluteFill}
+              facing="back"
+              barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'upc_a'] }}
+              onBarcodeScanned={({ data }) => read(data, true)}
             />
-            <Button title="Usar este código" icon="check" disabled={!typed.trim()} onPress={() => read(typed, false)} />
+            <View style={[styles.frame, { borderColor: c.onPrimary }]} pointerEvents="none" />
+          </View>
+        ) : (
+          <Card style={styles.gap}>
+            <Text variant="body">Para ler o código de barras, o Kotii precisa usar a câmera.</Text>
+            <Button title="Permitir a câmera" icon="camera-outline" onPress={() => requestPermission()} />
           </Card>
-        </ScrollView>
-      </SafeAreaView>
-    </Modal>
+        )}
+
+        <Card style={styles.gap}>
+          <Text variant="label">Ou digite os números do código de barras</Text>
+          <Text variant="small">
+            {Platform.OS === 'web'
+              ? 'Se a câmera daqui não ler, digite os números que ficam embaixo das barras.'
+              : 'Os números que ficam embaixo das barras. Espaços não importam.'}
+          </Text>
+          <TextField
+            value={typed}
+            onChangeText={setTyped}
+            placeholder="7891000100103"
+            keyboardType="number-pad"
+            accessibilityLabel="Números do código de barras"
+            onSubmitEditing={() => (typed.trim() ? read(typed, false) : undefined)}
+          />
+          <Button title="Usar este código" icon="check" disabled={!typed.trim()} onPress={() => read(typed, false)} />
+        </Card>
+      </ScrollView>
+    </SheetModal>
   );
 }
 

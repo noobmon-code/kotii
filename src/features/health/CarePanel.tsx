@@ -7,6 +7,7 @@ import { formatBRDate, formatShortDate, todayISO } from '@/domain/dates';
 import { hasExamResults } from '@/domain/examTrends';
 import { ageLabel, describeWhen, EXAM_STATUS, isOverdueAppointment, upcomingAppointments } from '@/domain/health';
 import type { Person } from '@/lib/types';
+import { Columns } from '@/ui/desktop';
 import {
   Badge,
   Button,
@@ -93,119 +94,127 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
 
       <PersonChips people={people.data} value={person?.id ?? null} onChange={onPersonChange} allLabel="Todos" />
 
-      {/* A ação principal da parte, primária e no alto (depois do filtro, como em Remédios e Planos): consulta,
-          vacina ou exame, já da pessoa escolhida. As seções abaixo ficam sem o "+" no título. */}
-      <HealthAddButton kinds={['consulta', 'vacina', 'exame']} personId={person?.id ?? ''} personName={person?.name} />
+      {/* No computador (ui/desktop), as consultas, as vacinas e os exames ficam na coluna principal; o "Adicionar"
+          e a ficha da pessoa escolhida, na do lado. */}
+      <Columns
+        sideFirst
+        side={
+          <>
+            {/* A ação principal da parte, primária e no alto (depois do filtro, como em Remédios e Planos): consulta,
+                vacina ou exame, já da pessoa escolhida. As seções abaixo ficam sem o "+" no título. */}
+            <HealthAddButton kinds={['consulta', 'vacina', 'exame']} personId={person?.id ?? ''} personName={person?.name} />
 
-      {person ? <PersonCard person={person} today={today} /> : null}
-
-      <Section title="Consultas">
-        {personAppointments.length === 0 ? (
-          <Text variant="muted">Nenhuma consulta registrada.</Text>
-        ) : (
-          <ListCard>
-            {[...upcoming, ...visiblePast].map((a) => {
-              const overdue = isOverdueAppointment(a, today);
-              return (
-                <ListRow
-                  key={a.id}
-                  left={<IconBadge icon="stethoscope" tone={upcoming.includes(a) ? 'info' : overdue ? 'warning' : 'neutral'} />}
-                  title={a.title}
-                  subtitle={[describeWhen(a.starts_at, today), nameOf(a.person_id), a.professional].filter(Boolean).join(' · ')}
-                  dimmed={a.status === 'cancelada'}
-                  right={
-                    overdue ? (
-                      <Badge label="Foi realizada?" tone="warning" />
-                    ) : a.status === 'cancelada' ? (
-                      <Badge label="Cancelada" />
-                    ) : null
-                  }
-                  onPress={() => router.push({ pathname: '/consulta/[id]', params: { id: a.id } })}
-                />
-              );
-            })}
-            {past.length > PAST_LIMIT && !showAllPast ? (
-              <Button title={`Ver anteriores (${past.length - PAST_LIMIT})`} variant="ghost" onPress={() => setShowAllPast(true)} />
-            ) : null}
-          </ListCard>
-        )}
-      </Section>
-
-      <Section title="Vacinas">
-        {personVaccines.length === 0 ? (
-          <Text variant="muted">Nenhuma vacina registrada.</Text>
-        ) : (
-          <ListCard>
-            {personVaccines.map((v) => (
-              <ListRow
-                key={v.id}
-                left={<IconBadge icon="needle" tone={v.applied_on ? 'primary' : 'info'} />}
-                title={[v.name, v.dose].filter(Boolean).join(' · ')}
-                subtitle={[
-                  nameOf(v.person_id),
-                  v.applied_on ? `aplicada ${formatBRDate(v.applied_on)}` : 'não aplicada',
-                  v.next_dose_on ? `próxima ${formatShortDate(v.next_dose_on)}` : null,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-                onPress={() => router.push({ pathname: '/vacina/[id]', params: { id: v.id } })}
-              />
-            ))}
-          </ListCard>
-        )}
-      </Section>
-
-      <Section title="Exames">
-        {trendsPerson ? (
-          <Button
-            title={hasResults(trendsPerson) ? 'Evolução e resumo para a consulta' : 'Resumo para a consulta'}
-            icon={hasResults(trendsPerson) ? 'chart-line' : 'text-box-outline'}
-            variant="secondary"
-            compact
-            onPress={() => router.push({ pathname: '/exames/[pessoa]', params: { pessoa: trendsPerson.id } })}
-          />
-        ) : withResults.length > 1 ? (
-          <Text variant="muted">Escolha acima de quem são os exames para ver a evolução e o resumo para a consulta.</Text>
-        ) : null}
-        {personExams.length === 0 ? (
-          <Text variant="muted">Nenhum exame. Fotografe o pedido ou o laudo e a IA transcreve os resultados.</Text>
-        ) : (
-          <ListCard>
-            {personExams.map((e) => (
-              <ListRow
-                key={e.id}
-                left={<IconBadge icon="test-tube" tone={e.status === 'realizado' ? 'primary' : 'info'} />}
-                title={e.title}
-                subtitle={[
-                  nameOf(e.person_id),
-                  e.exam_date ? formatBRDate(e.exam_date) : null,
-                  e.results.length ? `${e.results.length} resultados` : null,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-                right={e.status !== 'realizado' ? <Badge label={EXAM_STATUS.find((s) => s.value === e.status)!.label} tone="info" /> : null}
-                onPress={() => router.push({ pathname: '/exame/[id]', params: { id: e.id } })}
-              />
-            ))}
-          </ListCard>
-        )}
-      </Section>
-
-      {!person ? (
-        <Section title="Pessoas da casa">
-          <ListCard>
-            {people.data.map((p) => (
-              <ListRow
-                key={p.id}
-                left={<IconBadge icon={p.kind === 'pet' ? 'paw' : 'account-outline'} tone="primary" />}
-                title={p.name}
-                subtitle={personSummary(p, today)}
-                onPress={() => onPersonChange(p.id)}
-              />
-            ))}
-          </ListCard>
+            {person ? <PersonCard person={person} today={today} /> : null}
+          </>
+        }>
+        <Section title="Consultas">
+          {personAppointments.length === 0 ? (
+            <Text variant="muted">Nenhuma consulta registrada.</Text>
+          ) : (
+            <ListCard>
+              {[...upcoming, ...visiblePast].map((a) => {
+                const overdue = isOverdueAppointment(a, today);
+                return (
+                  <ListRow
+                    key={a.id}
+                    left={<IconBadge icon="stethoscope" tone={upcoming.includes(a) ? 'info' : overdue ? 'warning' : 'neutral'} />}
+                    title={a.title}
+                    subtitle={[describeWhen(a.starts_at, today), nameOf(a.person_id), a.professional].filter(Boolean).join(' · ')}
+                    dimmed={a.status === 'cancelada'}
+                    right={
+                      overdue ? (
+                        <Badge label="Foi realizada?" tone="warning" />
+                      ) : a.status === 'cancelada' ? (
+                        <Badge label="Cancelada" />
+                      ) : null
+                    }
+                    onPress={() => router.push({ pathname: '/consulta/[id]', params: { id: a.id } })}
+                  />
+                );
+              })}
+              {past.length > PAST_LIMIT && !showAllPast ? (
+                <Button title={`Ver anteriores (${past.length - PAST_LIMIT})`} variant="ghost" onPress={() => setShowAllPast(true)} />
+              ) : null}
+            </ListCard>
+          )}
         </Section>
-      ) : null}
+
+        <Section title="Vacinas">
+          {personVaccines.length === 0 ? (
+            <Text variant="muted">Nenhuma vacina registrada.</Text>
+          ) : (
+            <ListCard>
+              {personVaccines.map((v) => (
+                <ListRow
+                  key={v.id}
+                  left={<IconBadge icon="needle" tone={v.applied_on ? 'primary' : 'info'} />}
+                  title={[v.name, v.dose].filter(Boolean).join(' · ')}
+                  subtitle={[
+                    nameOf(v.person_id),
+                    v.applied_on ? `aplicada ${formatBRDate(v.applied_on)}` : 'não aplicada',
+                    v.next_dose_on ? `próxima ${formatShortDate(v.next_dose_on)}` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                  onPress={() => router.push({ pathname: '/vacina/[id]', params: { id: v.id } })}
+                />
+              ))}
+            </ListCard>
+          )}
+        </Section>
+
+        <Section title="Exames">
+          {trendsPerson ? (
+            <Button
+              title={hasResults(trendsPerson) ? 'Evolução e resumo para a consulta' : 'Resumo para a consulta'}
+              icon={hasResults(trendsPerson) ? 'chart-line' : 'text-box-outline'}
+              variant="secondary"
+              compact
+              onPress={() => router.push({ pathname: '/exames/[pessoa]', params: { pessoa: trendsPerson.id } })}
+            />
+          ) : withResults.length > 1 ? (
+            <Text variant="muted">Escolha acima de quem são os exames para ver a evolução e o resumo para a consulta.</Text>
+          ) : null}
+          {personExams.length === 0 ? (
+            <Text variant="muted">Nenhum exame. Fotografe o pedido ou o laudo e a IA transcreve os resultados.</Text>
+          ) : (
+            <ListCard>
+              {personExams.map((e) => (
+                <ListRow
+                  key={e.id}
+                  left={<IconBadge icon="test-tube" tone={e.status === 'realizado' ? 'primary' : 'info'} />}
+                  title={e.title}
+                  subtitle={[
+                    nameOf(e.person_id),
+                    e.exam_date ? formatBRDate(e.exam_date) : null,
+                    e.results.length ? `${e.results.length} resultados` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                  right={e.status !== 'realizado' ? <Badge label={EXAM_STATUS.find((s) => s.value === e.status)!.label} tone="info" /> : null}
+                  onPress={() => router.push({ pathname: '/exame/[id]', params: { id: e.id } })}
+                />
+              ))}
+            </ListCard>
+          )}
+        </Section>
+
+        {!person ? (
+          <Section title="Pessoas da casa">
+            <ListCard>
+              {people.data.map((p) => (
+                <ListRow
+                  key={p.id}
+                  left={<IconBadge icon={p.kind === 'pet' ? 'paw' : 'account-outline'} tone="primary" />}
+                  title={p.name}
+                  subtitle={personSummary(p, today)}
+                  onPress={() => onPersonChange(p.id)}
+                />
+              ))}
+            </ListCard>
+          </Section>
+        ) : null}
+      </Columns>
     </View>
   );
 }

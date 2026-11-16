@@ -58,6 +58,7 @@ import { useNewOnboarding } from '@/lib/onboarding';
 import { settledData } from '@/lib/settledData';
 import type { Bill } from '@/lib/types';
 import { errorMessage } from '@/lib/supabase';
+import { Columns, useDesktop } from '@/ui/desktop';
 import { notify } from '@/ui/dialogs';
 import { Card, EmptyState, Icon, Screen, Text, Tile } from '@/ui/primitives';
 import { fonts, radius, shadows, space, useColors, WASHES } from '@/ui/theme';
@@ -240,8 +241,9 @@ export default function TodayScreen() {
   const location = useHouseholdLocation();
   const forecast = useForecast(location.data);
   const sky = currentSky(forecast.data, now) ?? defaultSky(now);
-  // Com mais de uma casa, o topo diz qual está aberta e troca com um toque.
+  // Com mais de uma casa, o topo diz qual está aberta e troca com um toque (no computador, a barra lateral faz isso).
   const houses = household.data?.households ?? [];
+  const desktop = useDesktop();
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
@@ -310,11 +312,62 @@ export default function TodayScreen() {
     else router.push('/configuracoes');
   }
 
+  const notices = (
+    <>
+      {/* Os termos mudaram (ou a pessoa nunca os viu): um aviso que some no "Entendi". */}
+      <TermsNoticeCard />
+
+      {/* Alguém da casa está indo às compras: ainda dá tempo de pôr na lista o que falta. */}
+      <MarketTripBanner openable />
+
+      <InstallAppCard />
+    </>
+  );
+  const shortcuts = (
+    <View style={styles.quickActions}>
+      <Tile art="camera" wash={WASHES.yellow} label={SCAN_TITLE} onPress={() => router.push('/escanear')} />
+      <Tile art="carrinho" wash={WASHES.blue} label={MARKET_LIST_SHORTCUT} onPress={() => void openMarket()} />
+      <Tile
+        art="tarefa"
+        wash={WASHES.green}
+        label="Criar nova tarefa"
+        onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: 'nova' } })}
+      />
+    </View>
+  );
+  // O que pede atenção, e os primeiros passos, que ficam no lugar do "Tudo em dia".
+  const pending = (
+    <>
+      {/* Com os primeiros passos na tela, o cartão deles fica no lugar deste (o topo já diz "Tudo em dia por aqui."). */}
+      {allClear && !firstSteps.shown && !firstSteps.deciding ? (
+        <Card>
+          <EmptyState icon="check-circle-outline" tint="green" title={ALL_CLEAR_TITLE} message={allClearMessage(finance)} />
+        </Card>
+      ) : null}
+
+      <TodayBlock title={TODAY_BLOCK_TITLES.agora} block={blocks.agora} row={row} />
+      <TodayBlock title={TODAY_BLOCK_TITLES.emBreve} block={blocks.emBreve} row={row} />
+
+      {firstSteps.shown ? (
+        <FirstStepsCard steps={firstSteps.shown} onStep={openStep} onSkip={firstSteps.skip} onDismiss={firstSteps.dismiss} />
+      ) : null}
+    </>
+  );
+  const suggestions = (
+    <TodaySuggestions
+      restock={restock}
+      adding={addToList.isPending}
+      onRestock={(restockItems, open) => void addRestock(restockItems, open)}
+      menu={menu.data ?? []}
+      lists={activeLists}
+    />
+  );
+
   return (
-    <Screen fab edges={[]} refreshing={refreshing} onRefresh={refresh}>
+    <Screen fab wide edges={[]} refreshing={refreshing} onRefresh={refresh}>
       <SkyHeader sky={sky}>
         <View>
-          {houses.length > 1 ? (
+          {houses.length > 1 && !desktop ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`Casa aberta: ${household.data?.household.name}. Trocar de casa`}
@@ -340,46 +393,27 @@ export default function TodayScreen() {
         </Pressable>
       </SkyHeader>
 
-      {/* Os termos mudaram (ou a pessoa nunca os viu): um aviso que some no "Entendi". */}
-      <TermsNoticeCard />
-
-      {/* Alguém da casa está indo às compras: ainda dá tempo de pôr na lista o que falta. */}
-      <MarketTripBanner openable />
-
-      <InstallAppCard />
-
-      <View style={styles.quickActions}>
-        <Tile art="camera" wash={WASHES.yellow} label={SCAN_TITLE} onPress={() => router.push('/escanear')} />
-        <Tile art="carrinho" wash={WASHES.blue} label={MARKET_LIST_SHORTCUT} onPress={() => void openMarket()} />
-        <Tile
-          art="tarefa"
-          wash={WASHES.green}
-          label="Criar nova tarefa"
-          onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: 'nova' } })}
-        />
-      </View>
-
-      {/* Com os primeiros passos na tela, o cartão deles fica no lugar deste (o topo já diz "Tudo em dia por aqui."). */}
-      {allClear && !firstSteps.shown && !firstSteps.deciding ? (
-        <Card>
-          <EmptyState icon="check-circle-outline" tint="green" title={ALL_CLEAR_TITLE} message={allClearMessage(finance)} />
-        </Card>
-      ) : null}
-
-      <TodayBlock title={TODAY_BLOCK_TITLES.agora} block={blocks.agora} row={row} />
-      <TodayBlock title={TODAY_BLOCK_TITLES.emBreve} block={blocks.emBreve} row={row} />
-
-      {firstSteps.shown ? (
-        <FirstStepsCard steps={firstSteps.shown} onStep={openStep} onSkip={firstSteps.skip} onDismiss={firstSteps.dismiss} />
-      ) : null}
-
-      <TodaySuggestions
-        restock={restock}
-        adding={addToList.isPending}
-        onRestock={(restockItems, open) => void addRestock(restockItems, open)}
-        menu={menu.data ?? []}
-        lists={activeLists}
-      />
+      {/* No celular, uma coluna só: os avisos, os atalhos, o que pede atenção e as sugestões. No computador
+          (ui/desktop), duas: o que pede atenção na principal e os atalhos com as sugestões ao lado. */}
+      {desktop ? (
+        <Columns
+          side={
+            <>
+              {shortcuts}
+              {suggestions}
+            </>
+          }>
+          {notices}
+          {pending}
+        </Columns>
+      ) : (
+        <>
+          {notices}
+          {shortcuts}
+          {pending}
+          {suggestions}
+        </>
+      )}
 
       {paying ? <PayBillModal bill={paying} onClose={() => setPaying(null)} /> : null}
       {/* A casa que acabou de nascer pelo começo: a primeira lista, ou "Você entrou na casa!". */}

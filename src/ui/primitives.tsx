@@ -21,12 +21,14 @@ import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
 import Svg, { Circle, Line } from 'react-native-svg';
 
 import { getCategory, type IconName } from '@/domain/categories';
+import { DESKTOP_CONTENT_WIDTH } from '@/domain/desktop';
 import { formatBRDate, maskBRDate, parseBRDate } from '@/domain/dates';
 import { matchItemArt } from '@/domain/itemArt';
 // Só o detector puro: lib/supabase cria o cliente e não entra nos primitivos.
 import { isNetworkFailure, OFFLINE_TRY_AGAIN } from '@/lib/networkErrors';
 import { Backdrop } from './Backdrop';
 import { CATEGORY_ART } from './categoryArt';
+import { useDesktop } from './desktop';
 import { AngledGradient } from './gradient';
 import { IconArt, type IconArtName } from './iconArt';
 import { ITEM_ART } from './itemArt';
@@ -82,6 +84,7 @@ export function Screen({
   fab,
   scrollRef,
   maxWidth = MAX_WIDTH,
+  wide,
   heading,
 }: {
   children: ReactNode;
@@ -100,19 +103,27 @@ export function Screen({
   /** A largura máxima do conteúdo e do rodapé (o Painel do app, feito para o computador, vai mais longe). */
   maxWidth?: number;
   /**
+   * Tela que usa a largura do computador (as abas, arrumadas em colunas): na janela larga do navegador o conteúdo
+   * vai até DESKTOP_CONTENT_WIDTH. No celular e na janela estreita, a largura de sempre.
+   */
+  wide?: boolean;
+  /**
    * O título da tela só para o leitor de tela (as abas sem cartão de topo: a barra de abas já diz a aba a quem vê, e
    * quem navega pelos títulos ainda acha o começo da página). Não aparece nem ocupa lugar.
    */
   heading?: string;
 }) {
   const c = useColors();
+  const desktop = useDesktop();
+  const max = wide && desktop ? DESKTOP_CONTENT_WIDTH : maxWidth;
   // Só a tela que pede outra largura ganha um estilo a mais: as outras ficam como sempre foram.
-  const width = maxWidth === MAX_WIDTH ? null : { maxWidth };
+  const width = max === MAX_WIDTH ? null : { maxWidth: max };
   // Sem a rolagem da tela, o conteúdo ocupa só a altura dela (flex 1, e não só flexGrow): no navegador, com o
   // flexShrink 0 e a base auto do react-native-web, ele cresceria até a altura da lista que tem dentro, e a lista
   // (que rola sozinha) não teria uma altura para rolar.
   const content = (
-    <View style={[styles.content, width, !scroll && styles.flex, fab && styles.contentWithFab]}>
+    // No computador o Nuke está na barra lateral, e não por cima da tela: não é preciso deixar o lugar dele no fim.
+    <View style={[styles.content, width, !scroll && styles.flex, fab && !desktop && styles.contentWithFab]}>
       {heading ? (
         // Um ponto de 1 por 1, da cor do fundo: fora da vista, mas lido (com opacidade 0, o VoiceOver o pularia).
         <Text accessibilityRole="header" numberOfLines={1} color="background" style={styles.screenReaderOnly}>
@@ -602,10 +613,16 @@ export function Segmented<T extends string>({
   onChange,
   widths = 'equal',
   fit = 'normal',
+  desktopWidth,
 }: {
   options: readonly { value: T; label: string }[];
   value: T;
   onChange: (value: T) => void;
+  /**
+   * No computador (ui/desktop), o seletor não se estica pela coluna larga: fica à esquerda, com no máximo esta
+   * largura (o seletor das partes de uma aba). No celular, a largura da tela, como sempre.
+   */
+  desktopWidth?: number;
   /**
    * `equal`: as partes do mesmo tamanho. `content`: cada parte do tamanho do rótulo, com a sobra dividida por igual,
    * para quando um rótulo comprido não cabe na parte igual ("Documentos" na Casa, num celular de 360).
@@ -621,8 +638,14 @@ export function Segmented<T extends string>({
   const c = useColors();
   // O item aberto é um cartão branco; à noite, um cinza um pouco mais claro que o fundo.
   const selectedBg = useScheme() === 'dark' ? c.surfaceAlt : c.surface;
+  const desktop = useDesktop();
   return (
-    <View style={[styles.segmented, { backgroundColor: c.glass, borderColor: c.glassBorder }]}>
+    <View
+      style={[
+        styles.segmented,
+        { backgroundColor: c.glass, borderColor: c.glassBorder },
+        desktop && desktopWidth ? [styles.segmentedDesktop, { maxWidth: desktopWidth }] : null,
+      ]}>
       {options.map((o) => {
         const selected = o.value === value;
         return (
@@ -1004,6 +1027,7 @@ const styles = StyleSheet.create({
   },
   inputMultiline: { minHeight: 88, paddingTop: space.md, textAlignVertical: 'top' },
   segmented: { flexDirection: 'row', borderRadius: radius.pill, padding: 4, borderWidth: 1 },
+  segmentedDesktop: { width: '100%', alignSelf: 'flex-start' },
   segment: {
     alignItems: 'center',
     paddingVertical: space.sm + 2,

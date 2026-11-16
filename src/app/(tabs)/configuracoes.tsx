@@ -14,6 +14,7 @@ import {
 } from '@/data/household';
 import { useIsModerator } from '@/data/storeModeration';
 import { useHouseholdLocation } from '@/data/weather';
+import { DESKTOP_PANEL_SIDE_WIDTH } from '@/domain/desktop';
 import { APP_DASHBOARD_TITLE } from '@/domain/appDashboard';
 import { FEEDBACK_FORM_TITLE } from '@/domain/appFeedback';
 import { THEME_CHOICES, THEME_HINT } from '@/domain/appearance';
@@ -29,6 +30,7 @@ import { useNewOnboarding } from '@/lib/onboarding';
 import { REMINDER_PLACE } from '@/lib/reminders';
 import { errorMessage } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
+import { Columns } from '@/ui/desktop';
 import {
   Badge,
   Button,
@@ -174,228 +176,236 @@ export default function SettingsScreen() {
   }
 
   return (
-    <Screen fab heading="Configurações">
-      <Section title="Casa">
-        <View style={styles.groups}>
-          <Group title={`Moradores (${members.length})`}>
-            <ListCard>
-              {members.map((m) => {
-                const record = recordOf(m.user_id);
-                return (
+    <Screen fab wide heading="Configurações">
+      {/* No computador (ui/desktop), a casa fica na coluna principal e o resto (os avisos, você, o app e a conta), na
+          do lado. No celular, uma categoria embaixo da outra, na mesma ordem. */}
+      <Columns
+        sideWidth={DESKTOP_PANEL_SIDE_WIDTH}
+        side={
+          <>
+            {/* Os interruptores (nove, ou mais no navegador) ficam numa tela própria: abertos aqui, a aba ficaria comprida. */}
+            <Section title="Avisos">
+              <ListCard>
+                <ListRow
+                  left={<IconBadge icon="bell-outline" tone="neutral" />}
+                  title={`Avisos ${REMINDER_PLACE}`}
+                  subtitle="Tarefas, remédios, consultas e mais, por notificação"
+                  right={chevron}
+                  onPress={() => router.push('/avisos')}
+                />
+              </ListCard>
+            </Section>
+
+            <Section title="Você">
+              <View style={styles.groups}>
+                <ListCard>
                   <ListRow
-                    key={m.user_id}
-                    left={<IconBadge icon="account-outline" tone={m.user_id === me.user_id ? 'primary' : 'neutral'} />}
-                    title={m.user_id === me.user_id ? `${m.display_name} (você)` : m.display_name}
-                    right={
-                      m.role === 'owner' ? (
-                        <Badge label="Responsável" />
-                      ) : isOwner ? (
-                        <IconButton icon="account-remove-outline" label={`Tirar ${m.display_name} da casa`} onPress={() => confirmRemove(m)} />
-                      ) : null
-                    }
-                    // Sem a ficha (as fichas ainda carregando), a linha só mostra.
-                    onPress={record ? () => router.push({ pathname: '/pessoa/[id]', params: { id: record.id } }) : undefined}
+                    left={<IconBadge icon="account-circle-outline" tone="neutral" />}
+                    title="Perfil"
+                    subtitle={[me.display_name, email].filter(Boolean).join(' · ')}
+                    right={chevron}
+                    onPress={() => router.push('/perfil')}
                   />
-                );
-              })}
-              {/* O código só aparece pedido: na tela, à vista de quem passa, ele abriria a casa. */}
-              <ListRow
-                left={<IconBadge icon="account-plus-outline" tone="primary" />}
-                title="Convidar"
-                subtitle={inviteOpen ? 'Código de convite desta casa' : 'Mostrar o código de convite'}
-                right={<Icon name={inviteOpen ? 'chevron-up' : 'chevron-down'} color="textMuted" />}
-                expanded={inviteOpen}
-                onPress={() => setInviteOpen((open) => !open)}
-              />
-              {inviteOpen ? (
-                <View style={styles.invite}>
-                  <Text variant="title" style={styles.code} selectable>
-                    {house.invite_code}
-                  </Text>
-                  <Text variant="small" style={styles.center}>
-                    Quem entrar com este código vê e edita tudo da casa: listas, notas, despensa, tarefas, saúde e documentos.
-                  </Text>
-                  <Button title="Compartilhar convite" icon="share-variant-outline" variant="secondary" onPress={shareInvite} />
-                  {isOwner ? (
-                    <Button
-                      title="Trocar código"
-                      icon="refresh"
-                      variant="ghost"
-                      compact
-                      loading={regenerateCode.isPending}
-                      onPress={confirmRegenerateCode}
+                </ListCard>
+                {/* O tema deste aparelho (ui/ThemeChoiceProvider): a escolha muda as cores na hora, então fica aqui, aberta. */}
+                <Card style={styles.card}>
+                  <Text variant="label">Tema</Text>
+                  <Segmented options={THEME_OPTIONS} value={theme.choice} onChange={theme.setChoice} />
+                  <Text variant="small">{THEME_HINT}</Text>
+                </Card>
+              </View>
+            </Section>
+
+            <Section title="Sobre o Kotii">
+              <View style={styles.groups}>
+                <AiUsageCard />
+                <SharedPricesAbout />
+                <ListCard>
+                  <ListRow
+                    left={<IconBadge icon="shield-account-outline" tone="neutral" />}
+                    title={TERMS_TITLE}
+                    subtitle={termsVersionLabel()}
+                    right={chevron}
+                    onPress={() => router.push('/termos')}
+                  />
+                  <ListRow
+                    left={<IconBadge icon="message-text-outline" tone="neutral" />}
+                    title={FEEDBACK_FORM_TITLE}
+                    subtitle="Um problema, uma sugestão ou um elogio sobre o app"
+                    right={chevron}
+                    onPress={() => router.push('/recado')}
+                  />
+                </ListCard>
+              </View>
+            </Section>
+
+            <Section title="Conta">
+              <View style={styles.groups}>
+                <Button
+                  title="Sair da conta"
+                  variant="danger"
+                  icon="logout"
+                  onPress={() => confirmAction('Sair da conta', signOutQuestion(), 'Sair', () => signOut())}
+                />
+                {/* A explicação fica junto do botão que ela explica, e longe de "Sair da conta". */}
+                <View style={styles.group}>
+                  {leaveHint ? <Text variant="muted">{leaveHint}</Text> : null}
+                  <Button title="Sair desta casa" variant="secondary" icon="home-export-outline" loading={leave.isPending} onPress={confirmLeave} />
+                </View>
+                {/* A tela explica antes o que fica com cada casa e pede a senha de novo. */}
+                <Button
+                  title="Apagar minha conta"
+                  variant="ghost"
+                  compact
+                  icon="account-remove-outline"
+                  onPress={() => router.push('/apagar-conta')}
+                />
+              </View>
+            </Section>
+
+            {/* Só para quem mantém o app (app_admins: os números de uso, só totais) e para quem modera os nomes dos mercados. */}
+            {isAdmin || moderator ? (
+              <Section title="Manutenção do app">
+                <ListCard>
+                  {isAdmin ? (
+                    <ListRow
+                      left={<IconBadge icon="chart-box-outline" tone="neutral" />}
+                      title={APP_DASHBOARD_TITLE}
+                      subtitle="Contas, pessoas ativas, Nuke e funções"
+                      right={chevron}
+                      onPress={() => router.push('/painel')}
                     />
                   ) : null}
-                </View>
-              ) : null}
-            </ListCard>
-          </Group>
-
-          {/* A lista das fichas de quem não usa o app, e onde elas se cadastram (Saúde → Cuidados filtra e edita, mas
-              não tem mais "Adicionar"; os formulários com o seletor de pessoa ainda cadastram alguém na hora). */}
-          <Group title="Pessoas e pets sem celular">
-            <Text variant="muted">
-              Crianças, idosos e pets que não usam o app: remédios, vacinas, consultas e documentos ficam no nome deles.
-            </Text>
-            {withoutApp.length ? (
+                  {isAdmin ? (
+                    <ListRow
+                      left={<IconBadge icon="account-star-outline" tone="neutral" />}
+                      title={PREVIEW_TITLE}
+                      subtitle={PREVIEW_SUBTITLE}
+                      right={chevron}
+                      onPress={() => router.push('/primeira-vez')}
+                    />
+                  ) : null}
+                  {moderator ? (
+                    <ListRow
+                      left={<IconBadge icon="store-edit-outline" tone="neutral" />}
+                      title={MODERATION_TITLE}
+                      subtitle="O nome padrão de cada mercado"
+                      right={chevron}
+                      onPress={() => router.push('/moderacao')}
+                    />
+                  ) : null}
+                </ListCard>
+              </Section>
+            ) : null}
+          </>
+        }>
+        <Section title="Casa">
+          <View style={styles.groups}>
+            <Group title={`Moradores (${members.length})`}>
               <ListCard>
-                {withoutApp.map((p) => (
-                  <ListRow
-                    key={p.id}
-                    left={<IconBadge icon={p.kind === 'pet' ? 'paw' : 'account-child-outline'} tone="neutral" />}
-                    title={p.name}
-                    subtitle={
-                      p.kind === 'pet'
-                        ? (p.species ?? 'Pet')
-                        : points[p.id]
-                          ? `${points[p.id]} ${points[p.id] === 1 ? 'ponto' : 'pontos'} nas tarefas`
-                          : 'Sem conta no app'
-                    }
-                    onPress={() => router.push({ pathname: '/pessoa/[id]', params: { id: p.id } })}
-                  />
-                ))}
+                {members.map((m) => {
+                  const record = recordOf(m.user_id);
+                  return (
+                    <ListRow
+                      key={m.user_id}
+                      left={<IconBadge icon="account-outline" tone={m.user_id === me.user_id ? 'primary' : 'neutral'} />}
+                      title={m.user_id === me.user_id ? `${m.display_name} (você)` : m.display_name}
+                      right={
+                        m.role === 'owner' ? (
+                          <Badge label="Responsável" />
+                        ) : isOwner ? (
+                          <IconButton icon="account-remove-outline" label={`Tirar ${m.display_name} da casa`} onPress={() => confirmRemove(m)} />
+                        ) : null
+                      }
+                      // Sem a ficha (as fichas ainda carregando), a linha só mostra.
+                      onPress={record ? () => router.push({ pathname: '/pessoa/[id]', params: { id: record.id } }) : undefined}
+                    />
+                  );
+                })}
+                {/* O código só aparece pedido: na tela, à vista de quem passa, ele abriria a casa. */}
+                <ListRow
+                  left={<IconBadge icon="account-plus-outline" tone="primary" />}
+                  title="Convidar"
+                  subtitle={inviteOpen ? 'Código de convite desta casa' : 'Mostrar o código de convite'}
+                  right={<Icon name={inviteOpen ? 'chevron-up' : 'chevron-down'} color="textMuted" />}
+                  expanded={inviteOpen}
+                  onPress={() => setInviteOpen((open) => !open)}
+                />
+                {inviteOpen ? (
+                  <View style={styles.invite}>
+                    <Text variant="title" style={styles.code} selectable>
+                      {house.invite_code}
+                    </Text>
+                    <Text variant="small" style={styles.center}>
+                      Quem entrar com este código vê e edita tudo da casa: listas, notas, despensa, tarefas, saúde e documentos.
+                    </Text>
+                    <Button title="Compartilhar convite" icon="share-variant-outline" variant="secondary" onPress={shareInvite} />
+                    {isOwner ? (
+                      <Button
+                        title="Trocar código"
+                        icon="refresh"
+                        variant="ghost"
+                        compact
+                        loading={regenerateCode.isPending}
+                        onPress={confirmRegenerateCode}
+                      />
+                    ) : null}
+                  </View>
+                ) : null}
               </ListCard>
-            ) : null}
-            <Row style={styles.wrap}>
-              <Button title="Adicionar pessoa" icon="account-plus-outline" variant="secondary" compact onPress={() => addPerson('pessoa')} />
-              <Button title="Adicionar pet" icon="paw" variant="secondary" compact onPress={() => addPerson('pet')} />
-            </Row>
-          </Group>
+            </Group>
 
-          {/* Da casa aberta (com mais de uma casa, o nome dela vem na linha): o bairro do clima. */}
-          <ListCard>
-            <ListRow
-              left={<IconBadge icon="weather-partly-cloudy" tone="neutral" />}
-              title={HOUSE_PLACE_TITLE}
-              subtitle={housePlaceRowSubtitle(location.data, openHouseName(household.data))}
-              right={chevron}
-              onPress={() => router.push('/clima')}
-            />
-            <ListRow
-              left={<IconBadge icon="home-switch-outline" tone="neutral" />}
-              title={households.length > 1 ? `Suas casas (${households.length})` : 'Suas casas'}
-              subtitle={households.length > 1 ? 'Trocar de casa, criar ou entrar em outra' : 'Criar ou entrar em outra casa'}
-              right={chevron}
-              onPress={() => router.push('/casas')}
-            />
-          </ListCard>
-        </View>
-      </Section>
+            {/* A lista das fichas de quem não usa o app, e onde elas se cadastram (Saúde → Cuidados filtra e edita, mas
+                não tem mais "Adicionar"; os formulários com o seletor de pessoa ainda cadastram alguém na hora). */}
+            <Group title="Pessoas e pets sem celular">
+              <Text variant="muted">
+                Crianças, idosos e pets que não usam o app: remédios, vacinas, consultas e documentos ficam no nome deles.
+              </Text>
+              {withoutApp.length ? (
+                <ListCard>
+                  {withoutApp.map((p) => (
+                    <ListRow
+                      key={p.id}
+                      left={<IconBadge icon={p.kind === 'pet' ? 'paw' : 'account-child-outline'} tone="neutral" />}
+                      title={p.name}
+                      subtitle={
+                        p.kind === 'pet'
+                          ? (p.species ?? 'Pet')
+                          : points[p.id]
+                            ? `${points[p.id]} ${points[p.id] === 1 ? 'ponto' : 'pontos'} nas tarefas`
+                            : 'Sem conta no app'
+                      }
+                      onPress={() => router.push({ pathname: '/pessoa/[id]', params: { id: p.id } })}
+                    />
+                  ))}
+                </ListCard>
+              ) : null}
+              <Row style={styles.wrap}>
+                <Button title="Adicionar pessoa" icon="account-plus-outline" variant="secondary" compact onPress={() => addPerson('pessoa')} />
+                <Button title="Adicionar pet" icon="paw" variant="secondary" compact onPress={() => addPerson('pet')} />
+              </Row>
+            </Group>
 
-      {/* Os interruptores (nove, ou mais no navegador) ficam numa tela própria: abertos aqui, a aba ficaria comprida. */}
-      <Section title="Avisos">
-        <ListCard>
-          <ListRow
-            left={<IconBadge icon="bell-outline" tone="neutral" />}
-            title={`Avisos ${REMINDER_PLACE}`}
-            subtitle="Tarefas, remédios, consultas e mais, por notificação"
-            right={chevron}
-            onPress={() => router.push('/avisos')}
-          />
-        </ListCard>
-      </Section>
-
-      <Section title="Você">
-        <View style={styles.groups}>
-          <ListCard>
-            <ListRow
-              left={<IconBadge icon="account-circle-outline" tone="neutral" />}
-              title="Perfil"
-              subtitle={[me.display_name, email].filter(Boolean).join(' · ')}
-              right={chevron}
-              onPress={() => router.push('/perfil')}
-            />
-          </ListCard>
-          {/* O tema deste aparelho (ui/ThemeChoiceProvider): a escolha muda as cores na hora, então fica aqui, aberta. */}
-          <Card style={styles.card}>
-            <Text variant="label">Tema</Text>
-            <Segmented options={THEME_OPTIONS} value={theme.choice} onChange={theme.setChoice} />
-            <Text variant="small">{THEME_HINT}</Text>
-          </Card>
-        </View>
-      </Section>
-
-      <Section title="Sobre o Kotii">
-        <View style={styles.groups}>
-          <AiUsageCard />
-          <SharedPricesAbout />
-          <ListCard>
-            <ListRow
-              left={<IconBadge icon="shield-account-outline" tone="neutral" />}
-              title={TERMS_TITLE}
-              subtitle={termsVersionLabel()}
-              right={chevron}
-              onPress={() => router.push('/termos')}
-            />
-            <ListRow
-              left={<IconBadge icon="message-text-outline" tone="neutral" />}
-              title={FEEDBACK_FORM_TITLE}
-              subtitle="Um problema, uma sugestão ou um elogio sobre o app"
-              right={chevron}
-              onPress={() => router.push('/recado')}
-            />
-          </ListCard>
-        </View>
-      </Section>
-
-      <Section title="Conta">
-        <View style={styles.groups}>
-          <Button
-            title="Sair da conta"
-            variant="danger"
-            icon="logout"
-            onPress={() => confirmAction('Sair da conta', signOutQuestion(), 'Sair', () => signOut())}
-          />
-          {/* A explicação fica junto do botão que ela explica, e longe de "Sair da conta". */}
-          <View style={styles.group}>
-            {leaveHint ? <Text variant="muted">{leaveHint}</Text> : null}
-            <Button title="Sair desta casa" variant="secondary" icon="home-export-outline" loading={leave.isPending} onPress={confirmLeave} />
+            {/* Da casa aberta (com mais de uma casa, o nome dela vem na linha): o bairro do clima. */}
+            <ListCard>
+              <ListRow
+                left={<IconBadge icon="weather-partly-cloudy" tone="neutral" />}
+                title={HOUSE_PLACE_TITLE}
+                subtitle={housePlaceRowSubtitle(location.data, openHouseName(household.data))}
+                right={chevron}
+                onPress={() => router.push('/clima')}
+              />
+              <ListRow
+                left={<IconBadge icon="home-switch-outline" tone="neutral" />}
+                title={households.length > 1 ? `Suas casas (${households.length})` : 'Suas casas'}
+                subtitle={households.length > 1 ? 'Trocar de casa, criar ou entrar em outra' : 'Criar ou entrar em outra casa'}
+                right={chevron}
+                onPress={() => router.push('/casas')}
+              />
+            </ListCard>
           </View>
-          {/* A tela explica antes o que fica com cada casa e pede a senha de novo. */}
-          <Button
-            title="Apagar minha conta"
-            variant="ghost"
-            compact
-            icon="account-remove-outline"
-            onPress={() => router.push('/apagar-conta')}
-          />
-        </View>
-      </Section>
-
-      {/* Só para quem mantém o app (app_admins: os números de uso, só totais) e para quem modera os nomes dos mercados. */}
-      {isAdmin || moderator ? (
-        <Section title="Manutenção do app">
-          <ListCard>
-            {isAdmin ? (
-              <ListRow
-                left={<IconBadge icon="chart-box-outline" tone="neutral" />}
-                title={APP_DASHBOARD_TITLE}
-                subtitle="Contas, pessoas ativas, Nuke e funções"
-                right={chevron}
-                onPress={() => router.push('/painel')}
-              />
-            ) : null}
-            {isAdmin ? (
-              <ListRow
-                left={<IconBadge icon="account-star-outline" tone="neutral" />}
-                title={PREVIEW_TITLE}
-                subtitle={PREVIEW_SUBTITLE}
-                right={chevron}
-                onPress={() => router.push('/primeira-vez')}
-              />
-            ) : null}
-            {moderator ? (
-              <ListRow
-                left={<IconBadge icon="store-edit-outline" tone="neutral" />}
-                title={MODERATION_TITLE}
-                subtitle="O nome padrão de cada mercado"
-                right={chevron}
-                onPress={() => router.push('/moderacao')}
-              />
-            ) : null}
-          </ListCard>
         </Section>
-      ) : null}
+      </Columns>
     </Screen>
   );
 }

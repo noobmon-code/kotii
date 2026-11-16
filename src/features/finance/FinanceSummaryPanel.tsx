@@ -26,6 +26,7 @@ import { BudgetSection } from '@/features/finance/BudgetSection';
 import { MarketMonthTotal } from '@/features/finance/MarketMonthTotal';
 import { SplitSection } from '@/features/finance/SplitSection';
 import { useHousehold } from '@/lib/auth';
+import { Actions } from '@/ui/desktop';
 import {
   Button,
   Card,
@@ -62,7 +63,11 @@ function openEntry(entry: Entry) {
   else router.push({ pathname: '/gasto/[id]', params: { id: entry.refId } });
 }
 
-export function FinanceSummaryPanel() {
+/**
+ * `billsBeside`: as contas estão na tela, ao lado (o computador): o cartão "Ainda vence este mês", que leva até
+ * elas, não aparece (o das contas diz o mesmo).
+ */
+export function FinanceSummaryPanel({ billsBeside }: { billsBeside?: boolean } = {}) {
   const today = todayISO();
   const current = today.slice(0, 7);
   // As colunas mostram os 6 meses até `windowEnd`; o mês escolhido fica dentro delas.
@@ -112,7 +117,7 @@ export function FinanceSummaryPanel() {
 
   return (
     <View style={styles.gap}>
-      {newExpense}
+      <Actions>{newExpense}</Actions>
 
       <Row style={styles.monthNav}>
         <IconButton icon="chevron-left" label="Mês anterior" onPress={() => goTo(shiftMonth(month, -1))} />
@@ -133,7 +138,7 @@ export function FinanceSummaryPanel() {
         <MonthColumns totals={totals} selected={month} onSelect={goTo} />
       </Card>
 
-      {due && (due.amount > 0 || due.variable > 0) ? (
+      {!billsBeside && due && (due.amount > 0 || due.variable > 0) ? (
         <Card style={styles.dueCard}>
           <View style={styles.flex}>
             <Text variant="muted">Ainda vence este mês</Text>

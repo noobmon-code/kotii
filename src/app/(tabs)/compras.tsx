@@ -6,11 +6,13 @@ import { StyleSheet, View } from 'react-native';
 import { usePantry } from '@/data/home';
 import { ARCHIVED_LISTS_KEY, useShoppingLists } from '@/data/market';
 import { useSupplies } from '@/data/supplies';
+import { DESKTOP_TABS_WIDTH } from '@/domain/desktop';
 import { COMPRAS_TABS, tabFromParam, type ComprasTab } from '@/domain/tabs';
 import { ReceiptsPanel } from '@/features/market/ReceiptsPanel';
 import { PantryAddButton, PantryPanel } from '@/features/PantryPanel';
 import { ShoppingListsPanel } from '@/features/ShoppingListsPanel';
 import { SuppliesSection } from '@/features/SuppliesSection';
+import { Columns } from '@/ui/desktop';
 import { Screen, Segmented } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -51,17 +53,26 @@ export default function ShoppingScreen() {
   const refreshing = tab === 'listas' ? lists.isRefetching : tab === 'despensa' ? pantry.isRefetching : refreshingReceipts;
 
   return (
-    <Screen fab heading="Compras" refreshing={refreshing} onRefresh={refresh}>
-      <Segmented value={tab} onChange={setTab} options={COMPRAS_TABS} />
+    <Screen fab wide heading="Compras" refreshing={refreshing} onRefresh={refresh}>
+      <Segmented value={tab} onChange={setTab} options={COMPRAS_TABS} desktopWidth={DESKTOP_TABS_WIDTH} />
       {tab === 'listas' ? <ShoppingListsPanel /> : null}
       {tab === 'notas' ? <ReceiptsPanel /> : null}
       {tab === 'despensa' ? (
         <View style={styles.gap}>
           {/* A ação principal da parte no alto, como em todas. O que não passa por nota (gás, água, ração) vem
-              antes da despensa e fora dela: aparece com ela carregando, vazia ou com erro. */}
-          <PantryAddButton />
-          <SuppliesSection />
-          <PantryPanel />
+              antes da despensa e fora dela: aparece com ela carregando, vazia ou com erro. No computador
+              (ui/desktop), a despensa fica na coluna principal e os dois, na do lado. */}
+          <Columns
+            gap={space.lg}
+            sideFirst
+            side={
+              <>
+                <PantryAddButton />
+                <SuppliesSection />
+              </>
+            }>
+            <PantryPanel />
+          </Columns>
         </View>
       ) : null}
     </Screen>

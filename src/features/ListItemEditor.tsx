@@ -1,7 +1,6 @@
 import { Image } from 'expo-image';
 import { useState } from 'react';
-import { Modal, ScrollView, StyleSheet, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { pickImages, type ScanSource } from '@/data/images';
 import { CATEGORIES, getCategory } from '@/domain/categories';
@@ -10,10 +9,10 @@ import { MAX_NOTES, PRIORITIES, type ListPriority } from '@/domain/listItem';
 import { formatQuantity, parseDecimal } from '@/domain/money';
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type ShoppingListItem, type Unit } from '@/lib/types';
-import { Backdrop } from '@/ui/Backdrop';
 import { confirmAction, notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
 import { Button, Card, CategoryIcon, Chip, Icon, IconButton, Row, Text, TextField } from '@/ui/primitives';
+import { SheetModal } from '@/ui/SheetModal';
 import { MAX_WIDTH, radius, space, useColors } from '@/ui/theme';
 
 export type PhotoChange = { kind: 'keep' } | { kind: 'new'; uri: string } | { kind: 'remove' };
@@ -122,180 +121,177 @@ export function ListItemEditor({
   }
 
   return (
-    <Modal visible animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
-        <Backdrop />
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          <Row>
-            <Text variant="heading" style={styles.flex}>
-              Detalhes do item
-            </Text>
-            <IconButton icon="close" label="Fechar" onPress={onClose} />
-          </Row>
+    <SheetModal onClose={onClose}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <Row>
+          <Text variant="heading" style={styles.flex}>
+            Detalhes do item
+          </Text>
+          <IconButton icon="close" label="Fechar" onPress={onClose} />
+        </Row>
 
-          <View style={styles.gap}>
-            {shown ? (
-              <Image
-                source={{ uri: shown }}
-                style={[styles.photo, { backgroundColor: c.surfaceAlt }]}
-                contentFit="cover"
-                accessibilityLabel={`Foto de ${item.name}`}
-              />
-            ) : (
-              <View style={[styles.photo, styles.placeholder, { backgroundColor: c.glass, borderColor: c.glassBorder }]}>
-                <CategoryIcon category={category} name={name} size={72} backdrop={false} />
-                <Text variant="small" style={styles.center}>
-                  Uma foto mostra o produto certo: a marca, o tamanho, a embalagem.
-                </Text>
-              </View>
-            )}
-            {photo.kind === 'new' || (photo.kind === 'keep' && photoPending) ? (
-              <Text variant="small" style={styles.center}>
-                A foto sobe quando tiver internet.
-              </Text>
-            ) : null}
-            {readOnly ? null : (
-              <>
-                <Row>
-                  <View style={styles.flex}>
-                    <Button title="Tirar foto" icon="camera-outline" variant="secondary" compact onPress={() => choose('camera')} />
-                  </View>
-                  <View style={styles.flex}>
-                    <Button title="Da galeria" icon="image-outline" variant="secondary" compact onPress={() => choose('library')} />
-                  </View>
-                </Row>
-                {shown ? (
-                  <Button title="Remover a foto" variant="ghost" compact onPress={() => setPhoto({ kind: 'remove' })} />
-                ) : null}
-              </>
-            )}
-          </View>
-
-          {/* Item com produto e ainda sem preço também leva ao produto: o histórico e os preços de outras casas ficam lá. */}
-          {shownFacts.length || onSeePrices ? (
-            <Card style={styles.gap}>
-              <Row>
-                <Icon name="tag-outline" color="primary" />
-                <Text variant="label" style={styles.flex}>
-                  Preço e despensa
-                </Text>
-              </Row>
-              {shownFacts.map((fact) => (
-                <Text key={fact} variant="muted">
-                  {fact}
-                </Text>
-              ))}
-              {shownFacts.length ? null : (
-                <Text variant="muted">O histórico de preço e os preços vistos em outras casas ficam na tela do produto.</Text>
-              )}
-              {onSeePrices ? <Button title="Ver preços" icon="chart-line" variant="ghost" compact onPress={seePrices} /> : null}
-            </Card>
-          ) : null}
-
-          {readOnly ? (
-            // Lista arquivada: o item como está, sem campos para mudar.
-            <Card style={styles.gap}>
-              <Text variant="label">{item.name}</Text>
-              <Text variant="muted">
-                {formatQuantity(Number(item.quantity), item.unit)} · {getCategory(item.category).label}
-              </Text>
-              {item.priority && item.priority !== 'normal' ? (
-                <Text variant="muted">{PRIORITIES.find((p) => p.key === item.priority)?.label}</Text>
-              ) : null}
-              {item.notes ? <Text variant="body">{item.notes}</Text> : null}
-            </Card>
+        <View style={styles.gap}>
+          {shown ? (
+            <Image
+              source={{ uri: shown }}
+              style={[styles.photo, { backgroundColor: c.surfaceAlt }]}
+              contentFit="cover"
+              accessibilityLabel={`Foto de ${item.name}`}
+            />
           ) : (
+            <View style={[styles.photo, styles.placeholder, { backgroundColor: c.glass, borderColor: c.glassBorder }]}>
+              <CategoryIcon category={category} name={name} size={72} backdrop={false} />
+              <Text variant="small" style={styles.center}>
+                Uma foto mostra o produto certo: a marca, o tamanho, a embalagem.
+              </Text>
+            </View>
+          )}
+          {photo.kind === 'new' || (photo.kind === 'keep' && photoPending) ? (
+            <Text variant="small" style={styles.center}>
+              A foto sobe quando tiver internet.
+            </Text>
+          ) : null}
+          {readOnly ? null : (
             <>
-              <View style={styles.gap}>
-                <Text variant="label">Prioridade</Text>
-                <View style={styles.wrap}>
-                  {PRIORITIES.map((p) => (
-                    <Chip key={p.key} label={p.label} selected={priority === p.key} onPress={() => setPriority(p.key)} />
-                  ))}
+              <Row>
+                <View style={styles.flex}>
+                  <Button title="Tirar foto" icon="camera-outline" variant="secondary" compact onPress={() => choose('camera')} />
                 </View>
-              </View>
-
-              <TextField
-                label="Descrição"
-                value={notes}
-                onChangeText={setNotes}
-                placeholder="Ex.: o de coco, embalagem azul, 2 L"
-                multiline
-                maxLength={MAX_NOTES}
-              />
-
-              <TextField label="Nome" value={name} onChangeText={setName} />
-              {offersBrand ? (
-                <View style={styles.gap}>
-                  <View style={styles.wrap}>
-                    <Chip label="Marca preferida" icon="star-outline" selected={prefersBrand} onPress={toggleBrand} />
-                  </View>
-                  <Text variant="small">
-                    {brandHint(prefersBrand, brand ?? null)}
-                  </Text>
-                </View>
-              ) : null}
-              <Row style={styles.qtyRow}>
-                <View style={styles.qty}>
-                  <TextField label="Quantidade" value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" />
-                </View>
-                <View style={[styles.flex, styles.wrap]}>
-                  {UNITS.map((u) => (
-                    <Chip key={u} label={u} selected={unit === u} onPress={() => setUnit(u)} />
-                  ))}
+                <View style={styles.flex}>
+                  <Button title="Da galeria" icon="image-outline" variant="secondary" compact onPress={() => choose('library')} />
                 </View>
               </Row>
-
-              {/* A categoria é a seção do item: o chute pelo nome pode errar ("Rúcula" em "Outros"), e a pessoa corrige. */}
-              <View style={styles.gap}>
-                <Text variant="label">Categoria</Text>
-                <View style={styles.wrap}>
-                  <Chip
-                    label={getCategory(category).label}
-                    icon="tag-outline"
-                    onPress={() => setPickingCategory(true)}
-                    accessibilityLabel={`Categoria: ${getCategory(category).label}. Trocar a categoria`}
-                  />
-                </View>
-                <Text variant="small">Decide em que parte da lista o item aparece, aqui e no texto que vai pelo WhatsApp.</Text>
-              </View>
-
-              <Button
-                title="Salvar"
-                icon="check"
-                disabled={invalid}
-                onPress={() =>
-                  onSave?.(
-                    {
-                      name: name.trim(),
-                      quantity: qty!,
-                      unit,
-                      category,
-                      notes: notes.trim() || null,
-                      priority,
-                      ...(offersBrand ? { brandPreferred: prefersBrand } : {}),
-                    },
-                    photo,
-                  )
-                }
-              />
-              <Button title="Remover da lista" variant="danger" icon="trash-can-outline" onPress={onRemove} />
+              {shown ? (
+                <Button title="Remover a foto" variant="ghost" compact onPress={() => setPhoto({ kind: 'remove' })} />
+              ) : null}
             </>
           )}
-        </ScrollView>
-        <PickerModal
-          visible={pickingCategory}
-          title="Categoria"
-          message="O item muda de seção quando salvar."
-          options={CATEGORIES.map((cat) => ({ id: cat.key, title: cat.label, left: <CategoryIcon category={cat.key} size={32} /> }))}
-          onClose={() => setPickingCategory(false)}
-          onSelect={(key) => {
-            setPickingCategory(false);
-            setCategory(key);
-          }}
-        />
-      </SafeAreaView>
-    </Modal>
+        </View>
+
+        {/* Item com produto e ainda sem preço também leva ao produto: o histórico e os preços de outras casas ficam lá. */}
+        {shownFacts.length || onSeePrices ? (
+          <Card style={styles.gap}>
+            <Row>
+              <Icon name="tag-outline" color="primary" />
+              <Text variant="label" style={styles.flex}>
+                Preço e despensa
+              </Text>
+            </Row>
+            {shownFacts.map((fact) => (
+              <Text key={fact} variant="muted">
+                {fact}
+              </Text>
+            ))}
+            {shownFacts.length ? null : (
+              <Text variant="muted">O histórico de preço e os preços vistos em outras casas ficam na tela do produto.</Text>
+            )}
+            {onSeePrices ? <Button title="Ver preços" icon="chart-line" variant="ghost" compact onPress={seePrices} /> : null}
+          </Card>
+        ) : null}
+
+        {readOnly ? (
+          // Lista arquivada: o item como está, sem campos para mudar.
+          <Card style={styles.gap}>
+            <Text variant="label">{item.name}</Text>
+            <Text variant="muted">
+              {formatQuantity(Number(item.quantity), item.unit)} · {getCategory(item.category).label}
+            </Text>
+            {item.priority && item.priority !== 'normal' ? (
+              <Text variant="muted">{PRIORITIES.find((p) => p.key === item.priority)?.label}</Text>
+            ) : null}
+            {item.notes ? <Text variant="body">{item.notes}</Text> : null}
+          </Card>
+        ) : (
+          <>
+            <View style={styles.gap}>
+              <Text variant="label">Prioridade</Text>
+              <View style={styles.wrap}>
+                {PRIORITIES.map((p) => (
+                  <Chip key={p.key} label={p.label} selected={priority === p.key} onPress={() => setPriority(p.key)} />
+                ))}
+              </View>
+            </View>
+
+            <TextField
+              label="Descrição"
+              value={notes}
+              onChangeText={setNotes}
+              placeholder="Ex.: o de coco, embalagem azul, 2 L"
+              multiline
+              maxLength={MAX_NOTES}
+            />
+
+            <TextField label="Nome" value={name} onChangeText={setName} />
+            {offersBrand ? (
+              <View style={styles.gap}>
+                <View style={styles.wrap}>
+                  <Chip label="Marca preferida" icon="star-outline" selected={prefersBrand} onPress={toggleBrand} />
+                </View>
+                <Text variant="small">
+                  {brandHint(prefersBrand, brand ?? null)}
+                </Text>
+              </View>
+            ) : null}
+            <Row style={styles.qtyRow}>
+              <View style={styles.qty}>
+                <TextField label="Quantidade" value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" />
+              </View>
+              <View style={[styles.flex, styles.wrap]}>
+                {UNITS.map((u) => (
+                  <Chip key={u} label={u} selected={unit === u} onPress={() => setUnit(u)} />
+                ))}
+              </View>
+            </Row>
+
+            {/* A categoria é a seção do item: o chute pelo nome pode errar ("Rúcula" em "Outros"), e a pessoa corrige. */}
+            <View style={styles.gap}>
+              <Text variant="label">Categoria</Text>
+              <View style={styles.wrap}>
+                <Chip
+                  label={getCategory(category).label}
+                  icon="tag-outline"
+                  onPress={() => setPickingCategory(true)}
+                  accessibilityLabel={`Categoria: ${getCategory(category).label}. Trocar a categoria`}
+                />
+              </View>
+              <Text variant="small">Decide em que parte da lista o item aparece, aqui e no texto que vai pelo WhatsApp.</Text>
+            </View>
+
+            <Button
+              title="Salvar"
+              icon="check"
+              disabled={invalid}
+              onPress={() =>
+                onSave?.(
+                  {
+                    name: name.trim(),
+                    quantity: qty!,
+                    unit,
+                    category,
+                    notes: notes.trim() || null,
+                    priority,
+                    ...(offersBrand ? { brandPreferred: prefersBrand } : {}),
+                  },
+                  photo,
+                )
+              }
+            />
+            <Button title="Remover da lista" variant="danger" icon="trash-can-outline" onPress={onRemove} />
+          </>
+        )}
+      </ScrollView>
+      <PickerModal
+        visible={pickingCategory}
+        title="Categoria"
+        message="O item muda de seção quando salvar."
+        options={CATEGORIES.map((cat) => ({ id: cat.key, title: cat.label, left: <CategoryIcon category={cat.key} size={32} /> }))}
+        onClose={() => setPickingCategory(false)}
+        onSelect={(key) => {
+          setPickingCategory(false);
+          setCategory(key);
+        }}
+      />
+    </SheetModal>
   );
 }
 

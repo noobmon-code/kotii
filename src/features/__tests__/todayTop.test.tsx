@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { onlineManager } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { Children, type ReactElement } from 'react';
-import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Dimensions, Platform, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -10,10 +10,12 @@ import TodayScreen from '@/app/(tabs)/index';
 import type { HouseholdLocation } from '@/data/weather';
 import { todayISO } from '@/domain/dates';
 import { defaultSky } from '@/domain/sky';
-import { MARKET_LIST_OFFLINE, MARKET_LIST_SHORTCUT } from '@/domain/today';
+import { ALL_CLEAR_TITLE, MARKET_LIST_OFFLINE, MARKET_LIST_SHORTCUT } from '@/domain/today';
 import type { Forecast, WeatherHour } from '@/domain/weather';
 import { SkyHeader, washStops } from '@/features/SkyHeader';
+import { Columns } from '@/ui/desktop';
 import { AngledGradient } from '@/ui/gradient';
+import { Screen, Tile } from '@/ui/primitives';
 
 // O topo da tela Hoje: sem o desenho do clima e sem o cartão do clima, o céu de agora continua no véu de cor atrás
 // do texto. O véu segue a previsão do bairro da casa (o céu da hora); sem bairro ou sem previsão, o céu de sempre da
@@ -282,5 +284,54 @@ describe('os atalhos da tela Hoje', () => {
     await act(async () => tile(MARKET_LIST_SHORTCUT).props.onPress());
     expect(mockMarket.openList).toHaveBeenCalledTimes(2);
     expect(router.push).toHaveBeenCalledWith({ pathname: '/lista/[id]', params: { id: 'mercado-do-servidor' } });
+  });
+});
+
+describe('a tela Hoje no computador', () => {
+  const WINDOW = Dimensions.get('window');
+
+  afterEach(async () => {
+    await act(async () => Dimensions.set({ window: WINDOW }));
+    jest.restoreAllMocks();
+  });
+
+  /** O navegador numa janela larga (ui/desktop). */
+  const desktop = async () => {
+    jest.replaceProperty(Platform, 'OS', 'web');
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width: 1440 } }));
+  };
+
+  it('no celular, uma coluna só: os atalhos antes do que pede atenção', async () => {
+    await mount();
+    expect(renderer!.root.findAllByType(Columns)).toHaveLength(0);
+    const text = rawText(renderer!.root);
+    expect(text.indexOf('Escanear')).toBeGreaterThan(-1);
+    // O último "Tudo em dia" é o do cartão (o primeiro é a frase do topo).
+    expect(text.indexOf('Escanear')).toBeLessThan(text.lastIndexOf(ALL_CLEAR_TITLE));
+  });
+
+  it('duas colunas: o que pede atenção na principal, os atalhos ao lado', async () => {
+    await desktop();
+    await mount();
+    expect(renderer!.root.findByType(Screen).props.wide).toBe(true);
+    const row = renderer!.root.findByType(Columns).findAll((node) => (node.type as unknown) === 'View')[0];
+    const [main, side] = row.children as ReactTestInstance[];
+    // Nada pendente: o "Tudo em dia" (o lugar do que pede atenção) fica na coluna principal.
+    expect(rawText(main)).toContain(ALL_CLEAR_TITLE);
+    expect(main.findAllByType(Tile)).toHaveLength(0);
+    expect(side.findAllByType(Tile).map((tile) => tile.props.label)).toEqual(['Escanear', MARKET_LIST_SHORTCUT, 'Criar nova tarefa']);
+    expect(rawText(side)).not.toContain(ALL_CLEAR_TITLE);
+  });
+
+  it('o topo (o véu, a saudação e "Ver a agenda") continua em cima das duas colunas', async () => {
+    await desktop();
+    await mount();
+    const header = renderer!.root.findByType(SkyHeader);
+    expect(header.findAllByType(Columns)).toHaveLength(0);
+    expect(rawText(header)).toContain('Ver a agenda');
+    // A coluna larga ainda tem cor no pé do véu: no computador ele esmaece sempre.
+    const layers = header.findAllByType(AngledGradient);
+    expect(layers.length).toBeGreaterThan(1);
+    expect(layers[layers.length - 1].props.angle).toBe(180);
   });
 });

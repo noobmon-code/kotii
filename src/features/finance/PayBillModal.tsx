@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import { Modal, ScrollView, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { ScrollView, StyleSheet } from 'react-native';
 
 import { useBillPayments, usePayBill, useSetPaymentPayer } from '@/data/finance';
 import { payUsualNote } from '@/domain/billUsual';
@@ -12,14 +11,13 @@ import { useAuth } from '@/lib/auth';
 import { settledData } from '@/lib/settledData';
 import { errorMessage } from '@/lib/supabase';
 import type { Bill } from '@/lib/types';
-import { Backdrop } from '@/ui/Backdrop';
 import { notify } from '@/ui/dialogs';
 import { Button, DateField, IconButton, Row, Text, TextField } from '@/ui/primitives';
-import { MAX_WIDTH, space, useColors } from '@/ui/theme';
+import { SheetModal } from '@/ui/SheetModal';
+import { MAX_WIDTH, space } from '@/ui/theme';
 
 /** Confirma o pagamento do vencimento atual da conta (valor e data). Renderize só quando aberto. */
 export function PayBillModal({ bill, onClose }: { bill: Bill; onClose: () => void }) {
-  const c = useColors();
   const pay = usePayBill();
   const setPayer = useSetPaymentPayer();
   const me = useAuth().session?.user.id ?? null;
@@ -68,41 +66,38 @@ export function PayBillModal({ bill, onClose }: { bill: Bill; onClose: () => voi
   }
 
   return (
-    <Modal visible animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
-        <Backdrop />
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          <Row>
-            <Text variant="heading" style={styles.flex}>
-              Pagar {bill.name}
-            </Text>
-            <IconButton icon="close" label="Fechar" onPress={onClose} />
-          </Row>
-          <Text variant="muted">Vencimento em {formatBRDate(bill.next_due_on)}</Text>
-          <TextField
-            label="Valor pago"
-            value={amount}
-            onChangeText={setAmount}
-            keyboardType="decimal-pad"
-            placeholder="0,00"
-            autoFocus={suggested == null}
-            hint={
-              usualNote
-                ? usualNote.text
-                : boletoAmount != null
-                  ? 'Valor do boleto guardado na conta.'
-                  : bill.amount == null
-                    ? 'Esta conta varia: confira o valor no boleto.'
-                    : undefined
-            }
-            hintColor={usualNote?.above ? 'warning' : undefined}
-          />
-          <DateField label="Pago em" value={paidOn} onChangeText={setPaidOn} />
-          <PayerChips value={paidBy} onChange={setPaidBy} />
-          <Button title="Confirmar pagamento" icon="check" onPress={confirm} loading={pay.isPending} />
-        </ScrollView>
-      </SafeAreaView>
-    </Modal>
+    <SheetModal onClose={onClose}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <Row>
+          <Text variant="heading" style={styles.flex}>
+            Pagar {bill.name}
+          </Text>
+          <IconButton icon="close" label="Fechar" onPress={onClose} />
+        </Row>
+        <Text variant="muted">Vencimento em {formatBRDate(bill.next_due_on)}</Text>
+        <TextField
+          label="Valor pago"
+          value={amount}
+          onChangeText={setAmount}
+          keyboardType="decimal-pad"
+          placeholder="0,00"
+          autoFocus={suggested == null}
+          hint={
+            usualNote
+              ? usualNote.text
+              : boletoAmount != null
+                ? 'Valor do boleto guardado na conta.'
+                : bill.amount == null
+                  ? 'Esta conta varia: confira o valor no boleto.'
+                  : undefined
+          }
+          hintColor={usualNote?.above ? 'warning' : undefined}
+        />
+        <DateField label="Pago em" value={paidOn} onChangeText={setPaidOn} />
+        <PayerChips value={paidBy} onChange={setPaidBy} />
+        <Button title="Confirmar pagamento" icon="check" onPress={confirm} loading={pay.isPending} />
+      </ScrollView>
+    </SheetModal>
   );
 }
 

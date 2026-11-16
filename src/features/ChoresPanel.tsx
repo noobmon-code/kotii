@@ -17,6 +17,7 @@ import { kidsOf } from '@/domain/points';
 import { todayISO } from '@/domain/dates';
 import { useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
+import { Actions } from '@/ui/desktop';
 import { notify } from '@/ui/dialogs';
 import {
   Button,
@@ -69,10 +70,12 @@ export function ChoresPanel() {
   return (
     <View style={styles.gap}>
       {/* A ação principal da parte, primária e no alto; "Pontos das crianças" é outra tela, secundário. */}
-      <Button title="Nova tarefa" icon="plus" onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: 'nova' } })} />
-      {kids.length ? (
-        <Button title="Pontos das crianças" icon="star-circle-outline" variant="secondary" onPress={() => router.push('/pontos')} />
-      ) : null}
+      <Actions>
+        <Button title="Nova tarefa" icon="plus" onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: 'nova' } })} />
+        {kids.length ? (
+          <Button title="Pontos das crianças" icon="star-circle-outline" variant="secondary" onPress={() => router.push('/pontos')} />
+        ) : null}
+      </Actions>
       {rows.length === 0 ? (
         <EmptyState
           icon="broom"

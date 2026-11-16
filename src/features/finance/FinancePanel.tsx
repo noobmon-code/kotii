@@ -1,7 +1,9 @@
 import { StyleSheet, View } from 'react-native';
 
 import { useBeta } from '@/data/financeBeta';
+import { DESKTOP_PANEL_SIDE_WIDTH } from '@/domain/desktop';
 import { FINANCAS, type Financas } from '@/domain/tabs';
+import { Columns, useDesktop } from '@/ui/desktop';
 import { Segmented } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -22,6 +24,16 @@ export const financeQueryKeys = (part: Financas): string[] => (part === 'resumo'
 export function FinancePanel({ part, onChange }: { part: Financas; onChange: (part: Financas) => void }) {
   // Consultor financeiro (beta): só para quem tem a liberação nesta casa.
   const consultor = useBeta('finance').data === true;
+  const desktop = useDesktop();
+  // No computador (ui/desktop) as duas partes cabem lado a lado: o resumo e, ao lado, as contas, sem o seletor.
+  if (desktop) {
+    return (
+      <Columns gap={space.lg} sideWidth={DESKTOP_PANEL_SIDE_WIDTH} side={<BillsPanel />}>
+        {consultor ? <ConsultorCard /> : null}
+        <FinanceSummaryPanel billsBeside />
+      </Columns>
+    );
+  }
   return (
     <View style={styles.gap}>
       {/* Fora dos painéis: o seletor fica na tela também enquanto a parte carrega, ou quando a busca falha. */}

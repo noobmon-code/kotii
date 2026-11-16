@@ -5,6 +5,7 @@ import { useDietPlans, usePeople, useWorkoutPlans } from '@/data/health';
 import { formatShortDate, todayISO } from '@/domain/dates';
 import { describeWeekdays } from '@/domain/health';
 import type { DietPlan, WorkoutPlan } from '@/lib/types';
+import { Columns } from '@/ui/desktop';
 import { Badge, Button, EmptyState, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Section } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 import { openNewPerson, PersonChips } from './PersonChips';
@@ -92,14 +93,21 @@ export function PlansPanel({
       {humans.length > 1 ? (
         <PersonChips people={humans} value={selected} onChange={onPersonChange} allLabel="Todos" />
       ) : null}
-      <Button
-        title={copy.add}
-        icon="camera-outline"
-        onPress={() => (humans.length ? importer.start(kind, selected ?? (humans.length === 1 ? humans[0].id : null)) : openNewPerson())}
-      />
-      {visible.length === 0 ? <EmptyState icon={copy.icon} title={copy.emptyTitle} message={copy.emptyMessage} /> : null}
-      {drafts.length ? <Section title="Para revisar">{renderRows(drafts, true)}</Section> : null}
-      {active.length ? <Section title="Em uso">{renderRows(active, false)}</Section> : null}
+      {/* No computador (ui/desktop), os planos ficam na coluna principal e o botão de adicionar, na do lado. */}
+      <Columns
+        gap={space.lg}
+        sideFirst
+        side={
+          <Button
+            title={copy.add}
+            icon="camera-outline"
+            onPress={() => (humans.length ? importer.start(kind, selected ?? (humans.length === 1 ? humans[0].id : null)) : openNewPerson())}
+          />
+        }>
+        {visible.length === 0 ? <EmptyState icon={copy.icon} title={copy.emptyTitle} message={copy.emptyMessage} /> : null}
+        {drafts.length ? <Section title="Para revisar">{renderRows(drafts, true)}</Section> : null}
+        {active.length ? <Section title="Em uso">{renderRows(active, false)}</Section> : null}
+      </Columns>
       {importer.element}
     </View>
   );

@@ -1,9 +1,10 @@
 import { describe, expect, it } from '@jest/globals';
 
+import { DESKTOP_CONTENT_WIDTH, SIDEBAR_SPACE } from '@/domain/desktop';
 import { SKIES } from '@/domain/sky';
 import { cssGradientLine, type GradientStop } from '@/ui/gradient';
 import { MAX_WIDTH } from '@/ui/theme';
-import { WASH_HEIGHT, washEdges, washStops } from '../SkyHeader';
+import { desktopWashEdges, WASH_HEIGHT, washEdges, washStops } from '../SkyHeader';
 
 describe('washStops', () => {
   it.each([false, true])('o véu de cada céu (escuro: %s) começa no canto e some, com as paradas em ordem', (dark) => {
@@ -76,6 +77,30 @@ describe('o véu em tela larga', () => {
         expect(visible(stops, MAX_WIDTH, y)).toBeCloseTo(0, 6);
       }
       for (let x = 0; x <= MAX_WIDTH; x += 5) expect(visible(stops, x, WASH_HEIGHT)).toBeCloseTo(0, 6);
+    }
+  });
+});
+
+describe('o véu no computador', () => {
+  it('com a coluna das abas ocupando todo o lugar ao lado da barra lateral, só o pé esmaece', () => {
+    // De 1024 até a coluna caber com folga: a borda da coluna é a da janela, e o véu vem do canto dela.
+    for (const width of [1024, 1280, DESKTOP_CONTENT_WIDTH + SIDEBAR_SPACE]) {
+      const layers = desktopWashEdges(width, '#FAF8F5');
+      expect(layers.map((layer) => layer.angle)).toEqual([180]);
+      expect(layers[0].stops.map((s) => s.opacity)).toEqual([0, 1]);
+      expect(layers[0].stops.every((s) => s.color === '#FAF8F5')).toBe(true);
+    }
+  });
+
+  it('na janela bem larga, a coluna tem fundo liso dos dois lados: os lados esmaecem também, na medida dela', () => {
+    for (const width of [DESKTOP_CONTENT_WIDTH + SIDEBAR_SPACE + 1, 1920, 2560]) {
+      const [sides, foot] = desktopWashEdges(width, '#121420');
+      expect(sides.angle).toBe(90);
+      expect(sides.stops.map((s) => s.opacity)).toEqual([1, 0, 0, 1]);
+      // A faixa de cada lado tem a mesma largura de sempre (160), agora sobre a coluna larga.
+      expect(sides.stops[1].offset * DESKTOP_CONTENT_WIDTH).toBeCloseTo(160, 6);
+      expect((1 - sides.stops[2].offset) * DESKTOP_CONTENT_WIDTH).toBeCloseTo(160, 6);
+      expect(foot.angle).toBe(180);
     }
   });
 });

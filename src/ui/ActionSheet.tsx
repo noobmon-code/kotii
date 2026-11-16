@@ -2,8 +2,10 @@ import { useRef, type ReactNode } from 'react';
 import { Modal, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { DESKTOP_DIALOG_WIDTH } from '@/domain/desktop';
+import { useDesktop } from './desktop';
 import { Icon, Text, type IconName } from './primitives';
-import { MAX_WIDTH, radius, space, useColors } from './theme';
+import { MAX_WIDTH, radius, shadows, space, useColors } from './theme';
 
 export interface SheetAction {
   label: string;
@@ -15,7 +17,8 @@ export interface SheetAction {
 /**
  * Menu de ações de baixo para cima, igual em iOS, Android e web. `children` é
  * o que a tela mostra junto (ex.: a prévia do texto que vai ser mandado):
- * fica entre o título e as ações e rola com elas.
+ * fica entre o título e as ações e rola com elas. No computador (ui/desktop)
+ * o mesmo menu é uma caixa no meio da janela, e não uma folha presa ao rodapé.
  */
 export function ActionSheet({
   visible,
@@ -37,6 +40,7 @@ export function ActionSheet({
 }) {
   const c = useColors();
   const { height } = useWindowDimensions();
+  const desktop = useDesktop();
   // No iOS, abrir câmera/galeria enquanto o modal fecha falha em silêncio:
   // a ação escolhida roda só depois que o modal some (onDismiss).
   const pending = useRef<(() => void) | null>(null);
@@ -56,10 +60,14 @@ export function ActionSheet({
         pending.current = null;
         action?.();
       }}>
-      <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Fechar">
-        <SafeAreaView edges={['bottom']} style={styles.anchor}>
+      <Pressable style={[styles.backdrop, desktop && styles.backdropDesktop]} onPress={onClose} accessibilityLabel="Fechar">
+        <SafeAreaView edges={['bottom']} style={[styles.anchor, desktop && styles.anchorDesktop]}>
           <Pressable
-            style={[styles.sheet, { backgroundColor: c.surface, borderColor: c.glassBorder, maxHeight: height * 0.85 }]}>
+            style={[
+              styles.sheet,
+              desktop && styles.sheetDesktop,
+              { backgroundColor: c.surface, borderColor: c.glassBorder, maxHeight: height * 0.85 },
+            ]}>
             {title ? <Text variant="heading">{title}</Text> : null}
             {/* Só o título e o Cancelar ficam fixos. O resto rola junto: mensagem longa, muitas ações (uma por compra
                 na despensa) e o que a tela pôs no menu. Numa tela baixa (o celular deitado), a prévia e o aviso
@@ -103,7 +111,11 @@ export function ActionSheet({
 
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+  backdropDesktop: { justifyContent: 'center', padding: space.xl },
   anchor: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center' },
+  anchorDesktop: { maxWidth: DESKTOP_DIALOG_WIDTH },
+  // A caixa do computador: os quatro cantos redondos, a borda em volta e a sombra de quem flutua.
+  sheetDesktop: { borderWidth: 1, borderRadius: radius.lg, borderCurve: 'continuous', boxShadow: shadows.float },
   sheet: {
     borderTopWidth: 1,
     borderTopLeftRadius: radius.lg,

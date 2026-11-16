@@ -1,13 +1,12 @@
 import { useState } from 'react';
-import { Modal, ScrollView, StyleSheet, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { cartPantryPayload, type CartPantryEntry, type CartPantryRow } from '@/domain/cartPantry';
 import { formatShortDate } from '@/domain/dates';
 import { formatQuantity, parseDecimal } from '@/domain/money';
-import { Backdrop } from '@/ui/Backdrop';
 import { Button, CategoryIcon, CheckCircle, IconButton, ListCard, Row, Text, TextField } from '@/ui/primitives';
-import { MAX_WIDTH, space, useColors } from '@/ui/theme';
+import { SheetModal } from '@/ui/SheetModal';
+import { MAX_WIDTH, space } from '@/ui/theme';
 
 /**
  * Confirmação de "guardar na despensa": o item do botão (single) ou o
@@ -33,7 +32,6 @@ export function CartPantryModal({
   onConfirm: (pantry: CartPantryEntry[]) => void;
   onClose: () => void;
 }) {
-  const c = useColors();
   const [include, setInclude] = useState(() => Object.fromEntries(rows.map((r) => [r.id, r.include])));
   const [quantity, setQuantity] = useState(() =>
     Object.fromEntries(rows.map((r) => [r.id, formatQuantity(r.quantity, r.unit).split(' ')[0]])),
@@ -53,93 +51,90 @@ export function CartPantryModal({
       : 'Limpar sem guardar';
 
   return (
-    <Modal visible animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
-        <Backdrop />
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          <Row>
-            <Text variant="heading" style={styles.flex}>
-              {title}
-            </Text>
-            <IconButton icon="close" label="Fechar" onPress={onClose} />
-          </Row>
-          <Text variant="muted">
-            {single
-              ? 'O item sai do carrinho e vai para a despensa. Confira quanto você comprou.'
-              : 'Os itens saem do carrinho. Marque o que vai para a despensa e confira quanto você comprou.'}
+    <SheetModal onClose={onClose}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <Row>
+          <Text variant="heading" style={styles.flex}>
+            {title}
           </Text>
-          {notice ? (
-            <Text variant="small" color="warning">
-              {notice}
-            </Text>
-          ) : null}
-          {pantryUnknown ? (
-            <Text variant="small" color="warning">
-              Não deu para carregar a despensa agora. Marque só o que ainda não foi guardado.
-            </Text>
-          ) : null}
-          <ListCard>
-            {rows.map((row) => {
-              const on = include[row.id];
-              const note = row.alreadySince
-                ? `Já está na despensa, de ${formatShortDate(row.alreadySince)}`
-                : on
-                  ? null
-                  : 'Não vai para a despensa';
-              // Linha sem toque próprio: o campo de quantidade recebe o toque (e o leitor de tela não o vê como desativado).
-              return (
-                <View key={row.id} style={styles.row}>
-                  {single ? null : (
-                    <CheckCircle
-                      checked={on}
-                      label={`Guardar ${row.name} na despensa`}
-                      onPress={() => setInclude((prev) => ({ ...prev, [row.id]: !prev[row.id] }))}
-                    />
-                  )}
-                  <CategoryIcon category={row.category} name={row.name} size={36} dimmed={!on} />
-                  <View style={styles.flex}>
-                    <Text variant="body" numberOfLines={2}>
-                      {row.name}
-                    </Text>
-                    {note ? <Text variant="muted">{note}</Text> : null}
-                  </View>
-                  {on ? (
-                    <Row style={styles.qty}>
-                      <View style={styles.qtyField}>
-                        <TextField
-                          value={quantity[row.id]}
-                          onChangeText={(text) => setQuantity((prev) => ({ ...prev, [row.id]: text }))}
-                          keyboardType="decimal-pad"
-                          accessibilityLabel={`Quantidade comprada de ${row.name}`}
-                          selectTextOnFocus
-                        />
-                      </View>
-                      <Text variant="muted">{row.unit}</Text>
-                    </Row>
-                  ) : null}
+          <IconButton icon="close" label="Fechar" onPress={onClose} />
+        </Row>
+        <Text variant="muted">
+          {single
+            ? 'O item sai do carrinho e vai para a despensa. Confira quanto você comprou.'
+            : 'Os itens saem do carrinho. Marque o que vai para a despensa e confira quanto você comprou.'}
+        </Text>
+        {notice ? (
+          <Text variant="small" color="warning">
+            {notice}
+          </Text>
+        ) : null}
+        {pantryUnknown ? (
+          <Text variant="small" color="warning">
+            Não deu para carregar a despensa agora. Marque só o que ainda não foi guardado.
+          </Text>
+        ) : null}
+        <ListCard>
+          {rows.map((row) => {
+            const on = include[row.id];
+            const note = row.alreadySince
+              ? `Já está na despensa, de ${formatShortDate(row.alreadySince)}`
+              : on
+                ? null
+                : 'Não vai para a despensa';
+            // Linha sem toque próprio: o campo de quantidade recebe o toque (e o leitor de tela não o vê como desativado).
+            return (
+              <View key={row.id} style={styles.row}>
+                {single ? null : (
+                  <CheckCircle
+                    checked={on}
+                    label={`Guardar ${row.name} na despensa`}
+                    onPress={() => setInclude((prev) => ({ ...prev, [row.id]: !prev[row.id] }))}
+                  />
+                )}
+                <CategoryIcon category={row.category} name={row.name} size={36} dimmed={!on} />
+                <View style={styles.flex}>
+                  <Text variant="body" numberOfLines={2}>
+                    {row.name}
+                  </Text>
+                  {note ? <Text variant="muted">{note}</Text> : null}
                 </View>
-              );
-            })}
-          </ListCard>
-          {invalid ? (
-            <Text variant="small" color="danger">
-              Confira as quantidades: precisam ser maiores que zero.
-            </Text>
-          ) : null}
-          <Button
-            title={action}
-            icon={count ? 'fridge-outline' : 'cart-remove'}
-            disabled={invalid || (single && !count)}
-            onPress={() => onConfirm(cartPantryPayload(rows, chosen, shelfLifeDays))}
-          />
-          {!single && count ? (
-            // A despensa fica para a nota (ou já está em dia): o carrinho só esvazia.
-            <Button title="Só limpar, sem guardar" icon="cart-remove" variant="secondary" onPress={() => onConfirm([])} />
-          ) : null}
-          <Button title="Cancelar" variant="secondary" onPress={onClose} />
-        </ScrollView>
-      </SafeAreaView>
-    </Modal>
+                {on ? (
+                  <Row style={styles.qty}>
+                    <View style={styles.qtyField}>
+                      <TextField
+                        value={quantity[row.id]}
+                        onChangeText={(text) => setQuantity((prev) => ({ ...prev, [row.id]: text }))}
+                        keyboardType="decimal-pad"
+                        accessibilityLabel={`Quantidade comprada de ${row.name}`}
+                        selectTextOnFocus
+                      />
+                    </View>
+                    <Text variant="muted">{row.unit}</Text>
+                  </Row>
+                ) : null}
+              </View>
+            );
+          })}
+        </ListCard>
+        {invalid ? (
+          <Text variant="small" color="danger">
+            Confira as quantidades: precisam ser maiores que zero.
+          </Text>
+        ) : null}
+        <Button
+          title={action}
+          icon={count ? 'fridge-outline' : 'cart-remove'}
+          disabled={invalid || (single && !count)}
+          onPress={() => onConfirm(cartPantryPayload(rows, chosen, shelfLifeDays))}
+        />
+        {!single && count ? (
+          // A despensa fica para a nota (ou já está em dia): o carrinho só esvazia.
+          <Button title="Só limpar, sem guardar" icon="cart-remove" variant="secondary" onPress={() => onConfirm([])} />
+        ) : null}
+        <Button title="Cancelar" variant="secondary" onPress={onClose} />
+      </ScrollView>
+    </SheetModal>
   );
 }
 
