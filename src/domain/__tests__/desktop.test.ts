@@ -9,11 +9,15 @@ import {
   DESKTOP_CONTENT_WIDTH,
   DESKTOP_MIN_WIDTH,
   DESKTOP_PANEL_SIDE_WIDTH,
+  DESKTOP_SHEET_HEIGHT_SHARE,
+  DESKTOP_SHEET_TALL_HEIGHT,
+  DESKTOP_SHEET_WIDTH,
   DESKTOP_SIDE_MAX_SHARE,
   DESKTOP_SIDE_WIDTH,
   isDesktop,
   onTabs,
   SCREEN_AREAS,
+  sheetHeights,
   SIDEBAR_MARGIN,
   SIDEBAR_SPACE,
   SIDEBAR_WIDTH,
@@ -51,6 +55,26 @@ describe('a janela de computador', () => {
     // E a do lado, encolhida, ainda tem a largura de um celular estreito.
     expect(row * DESKTOP_SIDE_MAX_SHARE).toBeGreaterThanOrEqual(320);
     expect(DESKTOP_CONTENT_WIDTH).toBeGreaterThan(720);
+  });
+});
+
+describe('as janelas de formulário no computador', () => {
+  it('a caixa cabe na janela mais estreita do computador, ao lado de nada (ela fica por cima de tudo)', () => {
+    expect(DESKTOP_SHEET_WIDTH).toBeLessThan(DESKTOP_MIN_WIDTH - 2 * 24);
+    // Mais larga que um celular: os formulários não ficam mais apertados do que lá.
+    expect(DESKTOP_SHEET_WIDTH).toBeGreaterThanOrEqual(430);
+  });
+
+  it('a altura: até uma parte da janela; a das listas de escolher, fixa e nunca maior que isso', () => {
+    expect(sheetHeights(900)).toEqual({ max: Math.floor(900 * DESKTOP_SHEET_HEIGHT_SHARE), tall: DESKTOP_SHEET_TALL_HEIGHT });
+    expect(sheetHeights(1080)).toEqual({ max: 950, tall: 720 });
+    // Na janela baixa, a lista de escolher encolhe com ela.
+    expect(sheetHeights(700)).toEqual({ max: 616, tall: 616 });
+    expect(sheetHeights(600.5)).toEqual({ max: 528, tall: 528 });
+    // A janela ainda sem medida fica com a altura das listas.
+    for (const height of [0, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(sheetHeights(height)).toEqual({ max: DESKTOP_SHEET_TALL_HEIGHT, tall: DESKTOP_SHEET_TALL_HEIGHT });
+    }
   });
 });
 

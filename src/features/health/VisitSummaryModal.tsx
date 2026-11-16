@@ -1,11 +1,10 @@
 import * as Clipboard from 'expo-clipboard';
-import { Modal, Platform, ScrollView, Share, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Platform, ScrollView, Share, StyleSheet } from 'react-native';
 
-import { Backdrop } from '@/ui/Backdrop';
 import { notify } from '@/ui/dialogs';
 import { Button, Card, IconButton, Row, Text } from '@/ui/primitives';
-import { MAX_WIDTH, space, useColors } from '@/ui/theme';
+import { SheetModal } from '@/ui/SheetModal';
+import { MAX_WIDTH, space } from '@/ui/theme';
 
 /**
  * Resumo para a consulta em tela cheia, com copiar e compartilhar. O texto é
@@ -13,7 +12,6 @@ import { MAX_WIDTH, space, useColors } from '@/ui/theme';
  * nada é enviado pelo app. Renderize só quando aberto.
  */
 export function VisitSummaryModal({ text, onClose }: { text: string; onClose: () => void }) {
-  const c = useColors();
   // No navegador, compartilhar só existe onde o navegador oferece (celular e alguns computadores).
   const canShare = Platform.OS !== 'web' || (typeof navigator !== 'undefined' && 'share' in navigator);
 
@@ -30,31 +28,28 @@ export function VisitSummaryModal({ text, onClose }: { text: string; onClose: ()
   }
 
   return (
-    <Modal visible animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
-        <Backdrop />
-        <ScrollView contentContainerStyle={styles.content}>
-          <Row>
-            <Text variant="heading" style={styles.flex}>
-              Resumo para a consulta
-            </Text>
-            <IconButton icon="close" label="Fechar" onPress={onClose} />
-          </Row>
-          <Text variant="muted">
-            Confira antes de mostrar ou enviar. O Kotii não envia nem guarda este texto: ele some quando você fecha esta tela.
+    <SheetModal onClose={onClose}>
+      <ScrollView contentContainerStyle={styles.content}>
+        <Row>
+          <Text variant="heading" style={styles.flex}>
+            Resumo para a consulta
           </Text>
-          <Row style={styles.wrap}>
-            <Button title="Copiar" icon="content-copy" onPress={copy} style={styles.action} />
-            {canShare ? (
-              <Button title="Compartilhar" icon="share-variant-outline" variant="secondary" onPress={share} style={styles.action} />
-            ) : null}
-          </Row>
-          <Card>
-            <Text selectable>{text}</Text>
-          </Card>
-        </ScrollView>
-      </SafeAreaView>
-    </Modal>
+          <IconButton icon="close" label="Fechar" onPress={onClose} />
+        </Row>
+        <Text variant="muted">
+          Confira antes de mostrar ou enviar. O Kotii não envia nem guarda este texto: ele some quando você fecha esta tela.
+        </Text>
+        <Row style={styles.wrap}>
+          <Button title="Copiar" icon="content-copy" onPress={copy} style={styles.action} />
+          {canShare ? (
+            <Button title="Compartilhar" icon="share-variant-outline" variant="secondary" onPress={share} style={styles.action} />
+          ) : null}
+        </Row>
+        <Card>
+          <Text selectable>{text}</Text>
+        </Card>
+      </ScrollView>
+    </SheetModal>
   );
 }
 

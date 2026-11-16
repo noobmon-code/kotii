@@ -1,11 +1,10 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { FlatList, Modal, StyleSheet, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { FlatList, StyleSheet, View } from 'react-native';
 
 import { normalizeSearch } from '@/domain/search';
-import { Backdrop } from './Backdrop';
 import { IconButton, ListCard, ListRow, Text, TextField } from './primitives';
-import { MAX_WIDTH, space, useColors } from './theme';
+import { SheetModal } from './SheetModal';
+import { MAX_WIDTH, space } from './theme';
 
 export interface PickerOption {
   id: string;
@@ -54,7 +53,6 @@ export function PickerModal({
   /** Só no iOS: o modal acabou de sumir (para abrir outro depois dele). */
   onDismiss?: () => void;
 }) {
-  const c = useColors();
   const [query, setQuery] = useState(initialQuery);
   const suggested = useMemo(() => (visible && suggestions ? suggestions(query.trim()) : []), [visible, suggestions, query]);
   const filtered = useMemo(() => {
@@ -65,54 +63,51 @@ export function PickerModal({
   }, [options, query, suggested]);
 
   return (
-    <Modal
+    <SheetModal
       visible={visible}
-      animationType="slide"
-      onRequestClose={onClose}
+      onClose={onClose}
+      tall
       onShow={() => setQuery(initialQuery)}
       onDismiss={onDismiss}>
-      <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
-        <Backdrop />
-        <View style={styles.inner}>
-          <View style={styles.header}>
-            <Text variant="heading" style={styles.flex}>
-              {title}
-            </Text>
-            <IconButton icon="close" label="Fechar" onPress={onClose} />
-          </View>
-          {message ? <Text variant="muted">{message}</Text> : null}
-          <TextField value={query} onChangeText={setQuery} placeholder={placeholder} autoFocus autoCorrect={false} />
-          {extraActions?.(query.trim())}
-          <FlatList
-            data={filtered}
-            keyExtractor={(o) => o.id}
-            keyboardShouldPersistTaps="handled"
-            ListHeaderComponent={
-              suggested.length ? (
-                <View style={styles.suggestions}>
-                  {suggestionsTitle ? <Text variant="small">{suggestionsTitle}</Text> : null}
-                  <ListCard>
-                    {suggested.map((item) => (
-                      <ListRow
-                        key={item.id}
-                        left={item.left}
-                        title={item.title}
-                        subtitle={item.subtitle}
-                        onPress={() => onSelectSuggestion(item.id)}
-                      />
-                    ))}
-                  </ListCard>
-                </View>
-              ) : null
-            }
-            renderItem={({ item }) => (
-              <ListRow left={item.left} title={item.title} subtitle={item.subtitle} onPress={() => onSelect(item.id)} />
-            )}
-            ListEmptyComponent={suggested.length ? null : <Text variant="muted">Nada encontrado.</Text>}
-          />
+      <View style={styles.inner}>
+        <View style={styles.header}>
+          <Text variant="heading" style={styles.flex}>
+            {title}
+          </Text>
+          <IconButton icon="close" label="Fechar" onPress={onClose} />
         </View>
-      </SafeAreaView>
-    </Modal>
+        {message ? <Text variant="muted">{message}</Text> : null}
+        <TextField value={query} onChangeText={setQuery} placeholder={placeholder} autoFocus autoCorrect={false} />
+        {extraActions?.(query.trim())}
+        <FlatList
+          data={filtered}
+          keyExtractor={(o) => o.id}
+          keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={
+            suggested.length ? (
+              <View style={styles.suggestions}>
+                {suggestionsTitle ? <Text variant="small">{suggestionsTitle}</Text> : null}
+                <ListCard>
+                  {suggested.map((item) => (
+                    <ListRow
+                      key={item.id}
+                      left={item.left}
+                      title={item.title}
+                      subtitle={item.subtitle}
+                      onPress={() => onSelectSuggestion(item.id)}
+                    />
+                  ))}
+                </ListCard>
+              </View>
+            ) : null
+          }
+          renderItem={({ item }) => (
+            <ListRow left={item.left} title={item.title} subtitle={item.subtitle} onPress={() => onSelect(item.id)} />
+          )}
+          ListEmptyComponent={suggested.length ? null : <Text variant="muted">Nada encontrado.</Text>}
+        />
+      </View>
+    </SheetModal>
   );
 }
 

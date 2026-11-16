@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { FlatList, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { useProducts } from '@/data/market';
 import { isMergeUnanswered, isProductGone, mergeErrorNotice, useMergeProducts } from '@/data/productMerge';
@@ -24,7 +23,6 @@ import { categoryMergeWarning } from '@/domain/productCategory';
 import { normalizeSearch } from '@/domain/search';
 import type { ProductName } from '@/domain/similarNames';
 import { FEATURES } from '@/lib/features';
-import { Backdrop } from '@/ui/Backdrop';
 import { confirmAction, notify } from '@/ui/dialogs';
 import {
   Badge,
@@ -41,6 +39,7 @@ import {
   TextField,
   useGlassStyle,
 } from '@/ui/primitives';
+import { SheetModal } from '@/ui/SheetModal';
 import { MAX_WIDTH, radius, space, useColors } from '@/ui/theme';
 
 import { useMergeFacts } from './useProductMerge';
@@ -67,34 +66,30 @@ export function MergeProductsModal({
   /** Juntou: `keptId` é o produto que ficou. */
   onMerged: (keptId: string) => void;
 }) {
-  const c = useColors();
   const [picked, setPicked] = useState<ProductName | null>(other ?? null);
   // Enquanto o banco junta, a tela não fecha: o que vem depois (o aviso e ir para o produto que ficou) é dela.
   const [joining, setJoining] = useState(false);
   const close = () => (joining ? undefined : onClose());
   return (
-    <Modal visible animationType="slide" onRequestClose={close}>
-      <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
-        <Backdrop />
-        {picked ? (
-          <ConfirmStep
-            openedId={opened.id}
-            otherId={picked.id}
-            // Quem escolheu na lista pode voltar a ela; a sugestão já veio com o par.
-            onPickAnother={other ? undefined : () => setPicked(null)}
-            onJoining={setJoining}
-            onClose={close}
-            // Um dos dois já não existe (outra pessoa da casa juntou): não há o que confirmar. Quem escolheu na
-            // lista volta a ela, já sem o produto que sumiu; a sugestão fecha. Sem passar por `close`, que não
-            // fecha enquanto o pedido ainda conta como em andamento.
-            onGone={other ? onClose : () => setPicked(null)}
-            onMerged={onMerged}
-          />
-        ) : (
-          <PickStep opened={opened} onPick={setPicked} onClose={onClose} />
-        )}
-      </SafeAreaView>
-    </Modal>
+    <SheetModal onClose={close} tall>
+      {picked ? (
+        <ConfirmStep
+          openedId={opened.id}
+          otherId={picked.id}
+          // Quem escolheu na lista pode voltar a ela; a sugestão já veio com o par.
+          onPickAnother={other ? undefined : () => setPicked(null)}
+          onJoining={setJoining}
+          onClose={close}
+          // Um dos dois já não existe (outra pessoa da casa juntou): não há o que confirmar. Quem escolheu na
+          // lista volta a ela, já sem o produto que sumiu; a sugestão fecha. Sem passar por `close`, que não
+          // fecha enquanto o pedido ainda conta como em andamento.
+          onGone={other ? onClose : () => setPicked(null)}
+          onMerged={onMerged}
+        />
+      ) : (
+        <PickStep opened={opened} onPick={setPicked} onClose={onClose} />
+      )}
+    </SheetModal>
   );
 }
 

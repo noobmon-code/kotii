@@ -1,19 +1,25 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
-import type { ReactElement } from 'react';
-import { Dimensions, Platform, StyleSheet, Text, View } from 'react-native';
+import { readdirSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { useState, type ReactElement } from 'react';
+import { Dimensions, Modal, Platform, StyleSheet, Text, View } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import {
   DESKTOP_CONTENT_WIDTH,
   DESKTOP_DIALOG_WIDTH,
+  DESKTOP_SHEET_WIDTH,
   DESKTOP_SIDE_MAX_SHARE,
   DESKTOP_SIDE_WIDTH,
   DESKTOP_TABS_WIDTH,
   SIDEBAR_SPACE,
+  sheetHeights,
 } from '@/domain/desktop';
 import { ActionSheet } from '../ActionSheet';
+import { Backdrop } from '../Backdrop';
 import { Actions, Columns, SidebarContext, useAreaWidth, useDesktop } from '../desktop';
 import { Screen, Segmented } from '../primitives';
+import { SheetModal } from '../SheetModal';
 import { MAX_WIDTH } from '../theme';
 
 // O arranjo do computador (ui/desktop): só no navegador e na janela larga. No celular, e na janela estreita do
@@ -254,6 +260,105 @@ describe('o menu de ações', () => {
     expect(flat(backdrop(root)).justifyContent).toBe('center');
     const anchored = root.findAll((node) => typeof node.type !== 'string' && flat(node).maxWidth === DESKTOP_DIALOG_WIDTH);
     expect(anchored.length).toBeGreaterThan(0);
+  });
+});
+
+describe('as janelas de formulário', () => {
+  const sheet = (props: { tall?: boolean; visible?: boolean } = {}) => (
+    <SheetModal onClose={onClose} onShow={onShow} onDismiss={onDismiss} {...props}>
+      <Text>Renomear lista</Text>
+    </SheetModal>
+  );
+  const onClose = jest.fn();
+  const onShow = jest.fn();
+  const onDismiss = jest.fn();
+  const frame = (root: ReactTestInstance) => root.findAll((node) => node.props.testID === 'sheet-frame' && (node.type as unknown) === 'View')[0];
+
+  it('no celular tomam a tela inteira, subindo do rodapé, sobre o fundo liso', async () => {
+    const root = await mount(sheet());
+    const modal = root.findByType(Modal);
+    expect(modal.props).toMatchObject({ visible: true, animationType: 'slide', transparent: false });
+    expect(root.findAllByType(Backdrop)).toHaveLength(1);
+    // A caixa de dentro só ocupa a tela: nenhuma largura, altura ou borda dela.
+    expect(flat(frame(root))).toEqual({ flex: 1 });
+    expect(text(frame(root))).toBe('Renomear lista');
+  });
+
+  it('o voltar do Android (e o Esc do navegador), o abrir e o fechar chegam a quem usa', async () => {
+    const root = await mount(sheet({ visible: false }));
+    const modal = root.findByType(Modal);
+    expect(modal.props.visible).toBe(false);
+    modal.props.onRequestClose();
+    modal.props.onShow();
+    modal.props.onDismiss();
+    expect([onClose.mock.calls.length, onShow.mock.calls.length, onDismiss.mock.calls.length]).toEqual([1, 1, 1]);
+  });
+
+  it('no computador são uma caixa no meio da janela, com o app escurecido atrás', async () => {
+    await browser(1440);
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width: 1440, height: 900 } }));
+    const root = await mount(sheet());
+    expect(root.findByType(Modal).props).toMatchObject({ animationType: 'fade', transparent: true });
+    // Sem o fundo liso por cima de tudo: a tela de onde a pessoa veio continua à vista.
+    expect(root.findAllByType(Backdrop)).toHaveLength(0);
+    const box = flat(frame(root));
+    expect(box).toMatchObject({ width: '100%', maxWidth: DESKTOP_SHEET_WIDTH, overflow: 'hidden' });
+    // Acompanha o conteúdo, até uma parte da altura da janela; o que não cabe rola dentro dela.
+    expect(box.maxHeight).toBe(sheetHeights(900).max);
+    expect(box.height).toBeUndefined();
+    const dim = root.findAll((node) => flat(node).justifyContent === 'center' && flat(node).alignItems === 'center')[0];
+    expect(flat(dim).backgroundColor).toBe('rgba(0,0,0,0.4)');
+  });
+
+  it('a que leva uma lista para escolher tem altura fixa: não muda de tamanho a cada letra da busca', async () => {
+    await browser(1440);
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width: 1440, height: 900 } }));
+    const root = await mount(sheet({ tall: true }));
+    const box = flat(frame(root));
+    expect(box.height).toBe(sheetHeights(900).tall);
+    expect(box.maxHeight).toBeUndefined();
+  });
+
+  it('a janela que cruza a largura do computador não monta o formulário de novo', async () => {
+    let mounts = 0;
+    function Field() {
+      // Conta as montagens: um formulário montado de novo perderia o que foi digitado.
+      const [first] = useState(() => (mounts += 1));
+      return <Text>{`montagem ${first}`}</Text>;
+    }
+    jest.replaceProperty(Platform, 'OS', 'web');
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width: 800 } }));
+    const root = await mount(
+      <SheetModal onClose={onClose}>
+        <Field />
+      </SheetModal>,
+    );
+    expect(root.findByType(Modal).props.transparent).toBe(false);
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width: 1440 } }));
+    expect(root.findByType(Modal).props.transparent).toBe(true);
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width: 800 } }));
+    expect(text(frame(root))).toBe('montagem 1');
+    expect(mounts).toBe(1);
+  });
+
+  it('todo formulário em janela usa a mesma peça: só ela, o menu de ações, a espera e as fotos abrem um Modal', () => {
+    const SRC = join(__dirname, '..', '..');
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === '__tests__') continue;
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) walk(path);
+        else if (entry.name.endsWith('.tsx')) files.push(path);
+      }
+    };
+    walk(SRC);
+    const withModal = files
+      .filter((path) => /<Modal\b/.test(readFileSync(path, 'utf8')))
+      .map((path) => path.slice(SRC.length + 1).split('\\').join('/'))
+      .sort();
+    // Uma janela nova de formulário usa o SheetModal: sozinha, ela tomaria a janela inteira no computador.
+    expect(withModal).toEqual(['app/nota/[id].tsx', 'features/PhotoStrip.tsx', 'ui/ActionSheet.tsx', 'ui/BusyOverlay.tsx', 'ui/SheetModal.tsx']);
   });
 });
 

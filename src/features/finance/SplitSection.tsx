@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import { Modal, ScrollView, StyleSheet, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { useAddSettlement, useDeleteSettlement, useSaveSplitWeights, useSettlements, useSplitWeights } from '@/data/finance';
 import { FORMER_MEMBER, memberName } from '@/domain/account';
@@ -9,10 +8,10 @@ import { formatBRL, parseDecimal } from '@/domain/money';
 import { splitMonth } from '@/domain/split';
 import { useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
-import { Backdrop } from '@/ui/Backdrop';
 import { confirmAction, notify } from '@/ui/dialogs';
 import { Badge, Button, Card, IconButton, Row, Section, Text, TextField } from '@/ui/primitives';
-import { MAX_WIDTH, space, useColors } from '@/ui/theme';
+import { SheetModal } from '@/ui/SheetModal';
+import { MAX_WIDTH, space } from '@/ui/theme';
 
 /**
  * Divisão da casa no mês: quanto cada morador pagou, a parte de cada um e
@@ -129,7 +128,6 @@ function WeightsModal({
   weights: Record<string, number>;
   onClose: () => void;
 }) {
-  const c = useColors();
   const save = useSaveSplitWeights();
   const [values, setValues] = useState(() =>
     Object.fromEntries(people.map((p) => [p.userId, String(weights[p.userId] ?? 1).replace('.', ',')])),
@@ -148,38 +146,35 @@ function WeightsModal({
   }
 
   return (
-    <Modal visible animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
-        <Backdrop />
-        <ScrollView contentContainerStyle={styles.modal} keyboardShouldPersistTaps="handled">
-          <Row>
-            <Text variant="heading" style={styles.flex}>
-              Como dividir
-            </Text>
-            <IconButton icon="close" label="Fechar" onPress={onClose} />
-          </Row>
-          <Text variant="muted">
-            Peso igual para todos divide meio a meio. Quem tem peso 2 fica com o dobro da parte de quem tem 1 (por exemplo, pela
-            renda de cada um).
+    <SheetModal onClose={onClose}>
+      <ScrollView contentContainerStyle={styles.modal} keyboardShouldPersistTaps="handled">
+        <Row>
+          <Text variant="heading" style={styles.flex}>
+            Como dividir
           </Text>
-          {people.map((p) => (
-            <TextField
-              key={p.userId}
-              label={p.name}
-              value={values[p.userId]}
-              onChangeText={(text) => setValues((prev) => ({ ...prev, [p.userId]: text }))}
-              keyboardType="decimal-pad"
-            />
-          ))}
-          <Button
-            title="Dividir igual"
-            variant="secondary"
-            onPress={() => setValues(Object.fromEntries(people.map((p) => [p.userId, '1'])))}
+          <IconButton icon="close" label="Fechar" onPress={onClose} />
+        </Row>
+        <Text variant="muted">
+          Peso igual para todos divide meio a meio. Quem tem peso 2 fica com o dobro da parte de quem tem 1 (por exemplo, pela
+          renda de cada um).
+        </Text>
+        {people.map((p) => (
+          <TextField
+            key={p.userId}
+            label={p.name}
+            value={values[p.userId]}
+            onChangeText={(text) => setValues((prev) => ({ ...prev, [p.userId]: text }))}
+            keyboardType="decimal-pad"
           />
-          <Button title="Salvar" onPress={submit} loading={save.isPending} />
-        </ScrollView>
-      </SafeAreaView>
-    </Modal>
+        ))}
+        <Button
+          title="Dividir igual"
+          variant="secondary"
+          onPress={() => setValues(Object.fromEntries(people.map((p) => [p.userId, '1'])))}
+        />
+        <Button title="Salvar" onPress={submit} loading={save.isPending} />
+      </ScrollView>
+    </SheetModal>
   );
 }
 

@@ -1,15 +1,14 @@
 import * as Clipboard from 'expo-clipboard';
 import { useMemo, useState } from 'react';
-import { Modal, Platform, ScrollView, StyleSheet, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Platform, ScrollView, StyleSheet, View } from 'react-native';
 
 import { getCategory } from '@/domain/categories';
 import { PASTE_MAX_ITEMS, parsePastedList, pastePreview, pasteToAdd, type PastedItem } from '@/domain/listPaste';
 import { formatQuantity } from '@/domain/money';
-import { Backdrop } from '@/ui/Backdrop';
 import { notify } from '@/ui/dialogs';
 import { Button, CategoryIcon, IconButton, ListCard, ListRow, Row, Text, TextField } from '@/ui/primitives';
-import { MAX_WIDTH, space, useColors } from '@/ui/theme';
+import { SheetModal } from '@/ui/SheetModal';
+import { MAX_WIDTH, space } from '@/ui/theme';
 
 /**
  * Ler a área de transferência: no app, sempre (o iPhone pede licença); no
@@ -36,7 +35,6 @@ export function PasteListModal({
   onAdd: (items: PastedItem[]) => void;
   onClose: () => void;
 }) {
-  const c = useColors();
   const [text, setText] = useState('');
   const parsed = useMemo(() => parsePastedList(text), [text]);
   const rows = useMemo(() => pastePreview(parsed.items, pending), [parsed.items, pending]);
@@ -51,74 +49,71 @@ export function PasteListModal({
   }
 
   return (
-    <Modal visible animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
-        <Backdrop />
-        {/* O teclado não cobre o botão de pôr: no iPhone a rolagem ganha o espaço dele, e arrastar fecha o teclado. */}
-        <ScrollView
-          contentContainerStyle={styles.content}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
-          automaticallyAdjustKeyboardInsets>
-          <Row>
-            <Text variant="heading" style={styles.flex}>
-              Colar lista
-            </Text>
-            <IconButton icon="close" label="Fechar" onPress={onClose} />
-          </Row>
-          <Text variant="muted">
-            Cole a lista que veio de uma conversa ou de uma nota, um item por linha. A quantidade também vale: “2 kg arroz”,
-            “leite (2)”.
+    <SheetModal onClose={onClose}>
+      {/* O teclado não cobre o botão de pôr: no iPhone a rolagem ganha o espaço dele, e arrastar fecha o teclado. */}
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        automaticallyAdjustKeyboardInsets>
+        <Row>
+          <Text variant="heading" style={styles.flex}>
+            Colar lista
           </Text>
-          <TextField
-            value={text}
-            onChangeText={setText}
-            placeholder={'- 2 kg arroz\n- leite (2)\n- banana'}
-            accessibilityLabel="Texto da lista"
-            multiline
-            style={styles.field}
-          />
-          {canReadClipboard ? (
-            <Button title="Colar o que copiei" icon="content-paste" variant="secondary" compact onPress={() => void pasteCopied()} />
-          ) : null}
+          <IconButton icon="close" label="Fechar" onPress={onClose} />
+        </Row>
+        <Text variant="muted">
+          Cole a lista que veio de uma conversa ou de uma nota, um item por linha. A quantidade também vale: “2 kg arroz”,
+          “leite (2)”.
+        </Text>
+        <TextField
+          value={text}
+          onChangeText={setText}
+          placeholder={'- 2 kg arroz\n- leite (2)\n- banana'}
+          accessibilityLabel="Texto da lista"
+          multiline
+          style={styles.field}
+        />
+        {canReadClipboard ? (
+          <Button title="Colar o que copiei" icon="content-paste" variant="secondary" compact onPress={() => void pasteCopied()} />
+        ) : null}
 
-          {rows.length ? (
-            <View style={styles.gap}>
-              <Text variant="label">Prévia</Text>
-              <ListCard>
-                {rows.map((row, index) => (
-                  <ListRow
-                    key={`${index}:${row.item.name}`}
-                    left={<CategoryIcon category={row.item.category} name={row.item.name} size={32} />}
-                    title={row.item.name}
-                    subtitle={
-                      row.listed
-                        ? `Já está na lista${row.listed === row.item.name ? '' : ` como ${row.listed}`}: não entra de novo`
-                        : `${formatQuantity(row.item.quantity, row.item.unit)} · ${getCategory(row.item.category).label}`
-                    }
-                  />
-                ))}
-              </ListCard>
-            </View>
-          ) : text.trim() ? (
-            <Text variant="muted">Nenhum item nesse texto. Ponha um item por linha.</Text>
-          ) : null}
-          {parsed.cut ? (
-            <Text variant="small">
-              Só os primeiros {PASTE_MAX_ITEMS} itens entram de uma vez: {parsed.more ? 'mais de ' : ''}{itemCount(parsed.cut)} ficaram de fora. Cole o
-              resto depois.
-            </Text>
-          ) : null}
+        {rows.length ? (
+          <View style={styles.gap}>
+            <Text variant="label">Prévia</Text>
+            <ListCard>
+              {rows.map((row, index) => (
+                <ListRow
+                  key={`${index}:${row.item.name}`}
+                  left={<CategoryIcon category={row.item.category} name={row.item.name} size={32} />}
+                  title={row.item.name}
+                  subtitle={
+                    row.listed
+                      ? `Já está na lista${row.listed === row.item.name ? '' : ` como ${row.listed}`}: não entra de novo`
+                      : `${formatQuantity(row.item.quantity, row.item.unit)} · ${getCategory(row.item.category).label}`
+                  }
+                />
+              ))}
+            </ListCard>
+          </View>
+        ) : text.trim() ? (
+          <Text variant="muted">Nenhum item nesse texto. Ponha um item por linha.</Text>
+        ) : null}
+        {parsed.cut ? (
+          <Text variant="small">
+            Só os primeiros {PASTE_MAX_ITEMS} itens entram de uma vez: {parsed.more ? 'mais de ' : ''}{itemCount(parsed.cut)} ficaram de fora. Cole o
+            resto depois.
+          </Text>
+        ) : null}
 
-          <Button
-            title={toAdd.length ? `Adicionar ${itemCount(toAdd.length)}` : 'Adicionar'}
-            icon="playlist-plus"
-            disabled={!toAdd.length}
-            onPress={() => onAdd(toAdd)}
-          />
-        </ScrollView>
-      </SafeAreaView>
-    </Modal>
+        <Button
+          title={toAdd.length ? `Adicionar ${itemCount(toAdd.length)}` : 'Adicionar'}
+          icon="playlist-plus"
+          disabled={!toAdd.length}
+          onPress={() => onAdd(toAdd)}
+        />
+      </ScrollView>
+    </SheetModal>
   );
 }
 

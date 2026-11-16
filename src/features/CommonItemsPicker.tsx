@@ -1,12 +1,11 @@
 import { useMemo, useRef, useState } from 'react';
-import { Modal, Pressable, ScrollView, SectionList, StyleSheet, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Pressable, ScrollView, SectionList, StyleSheet, View } from 'react-native';
 
 import { getCategory } from '@/domain/categories';
 import { commonItemsByCategory, type CommonItem } from '@/domain/commonItems';
 import { normalizeSearch } from '@/domain/search';
-import { Backdrop } from '@/ui/Backdrop';
 import { Badge, Button, CategoryIcon, Chip, Icon, IconButton, Text, TextField } from '@/ui/primitives';
+import { SheetModal } from '@/ui/SheetModal';
 import { MAX_WIDTH, space, useColors } from '@/ui/theme';
 
 /**
@@ -82,75 +81,72 @@ export function CommonItemsPicker({
   }
 
   return (
-    <Modal
+    <SheetModal
       visible={visible}
-      animationType="slide"
-      onRequestClose={onClose}
+      onClose={onClose}
+      tall
       onShow={() => {
         setQuery('');
         setCategory(null);
         setWanted(new Map());
       }}>
-      <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
-        <Backdrop />
-        <View style={styles.inner}>
-          <View style={styles.header}>
-            <Text variant="heading" style={styles.flex}>
-              Itens comuns
-            </Text>
-            <IconButton icon="close" label="Fechar" onPress={onClose} />
-          </View>
-          <TextField value={query} onChangeText={setQuery} placeholder="Buscar item" autoCorrect={false} />
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chips} contentContainerStyle={styles.chipsContent}>
-            <Chip label="Todas" selected={category === null} onPress={() => setCategory(null)} />
-            {groups.map((g) => (
-              <Chip
-                key={g.category}
-                label={getCategory(g.category).label}
-                selected={category === g.category}
-                onPress={() => setCategory(category === g.category ? null : g.category)}
-              />
-            ))}
-          </ScrollView>
-          <SectionList
-            sections={sections}
-            keyExtractor={(item) => item.name}
-            keyboardShouldPersistTaps="handled"
-            stickySectionHeadersEnabled
-            renderSectionHeader={({ section }) => (
-              <View style={[styles.sectionHeader, { backgroundColor: c.background }]}>
-                <CategoryIcon category={section.category} size={28} />
-                <Text variant="label">{section.title}</Text>
-              </View>
-            )}
-            renderItem={({ item }) => {
-              const added = isInList(item);
-              return (
-                <Pressable
-                  accessibilityRole="checkbox"
-                  accessibilityState={{ checked: added }}
-                  accessibilityLabel={item.name}
-                  accessibilityHint={added ? 'Toque para tirar da lista' : 'Toque para pôr na lista'}
-                  onPress={() => toggle(item)}
-                  style={({ pressed }) => [
-                    styles.row,
-                    { borderBottomColor: c.border },
-                    pressed && { backgroundColor: c.surfaceAlt },
-                  ]}>
-                  <Text variant="body" color={added ? 'textMuted' : 'text'} style={styles.flex}>
-                    {item.name}
-                  </Text>
-                  {item.unit !== 'un' ? <Text variant="small">{item.unit}</Text> : null}
-                  {added ? <Badge label="Na lista" tone="primary" /> : <Icon name="plus-circle-outline" color="primary" />}
-                </Pressable>
-              );
-            }}
-            ListEmptyComponent={<Text variant="muted">Nada encontrado. Digite o item na lista para adicioná-lo.</Text>}
-          />
-          <Button title="Pronto" onPress={onClose} />
+      <View style={styles.inner}>
+        <View style={styles.header}>
+          <Text variant="heading" style={styles.flex}>
+            Itens comuns
+          </Text>
+          <IconButton icon="close" label="Fechar" onPress={onClose} />
         </View>
-      </SafeAreaView>
-    </Modal>
+        <TextField value={query} onChangeText={setQuery} placeholder="Buscar item" autoCorrect={false} />
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chips} contentContainerStyle={styles.chipsContent}>
+          <Chip label="Todas" selected={category === null} onPress={() => setCategory(null)} />
+          {groups.map((g) => (
+            <Chip
+              key={g.category}
+              label={getCategory(g.category).label}
+              selected={category === g.category}
+              onPress={() => setCategory(category === g.category ? null : g.category)}
+            />
+          ))}
+        </ScrollView>
+        <SectionList
+          sections={sections}
+          keyExtractor={(item) => item.name}
+          keyboardShouldPersistTaps="handled"
+          stickySectionHeadersEnabled
+          renderSectionHeader={({ section }) => (
+            <View style={[styles.sectionHeader, { backgroundColor: c.background }]}>
+              <CategoryIcon category={section.category} size={28} />
+              <Text variant="label">{section.title}</Text>
+            </View>
+          )}
+          renderItem={({ item }) => {
+            const added = isInList(item);
+            return (
+              <Pressable
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: added }}
+                accessibilityLabel={item.name}
+                accessibilityHint={added ? 'Toque para tirar da lista' : 'Toque para pôr na lista'}
+                onPress={() => toggle(item)}
+                style={({ pressed }) => [
+                  styles.row,
+                  { borderBottomColor: c.border },
+                  pressed && { backgroundColor: c.surfaceAlt },
+                ]}>
+                <Text variant="body" color={added ? 'textMuted' : 'text'} style={styles.flex}>
+                  {item.name}
+                </Text>
+                {item.unit !== 'un' ? <Text variant="small">{item.unit}</Text> : null}
+                {added ? <Badge label="Na lista" tone="primary" /> : <Icon name="plus-circle-outline" color="primary" />}
+              </Pressable>
+            );
+          }}
+          ListEmptyComponent={<Text variant="muted">Nada encontrado. Digite o item na lista para adicioná-lo.</Text>}
+        />
+        <Button title="Pronto" onPress={onClose} />
+      </View>
+    </SheetModal>
   );
 }
 

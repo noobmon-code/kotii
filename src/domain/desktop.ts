@@ -37,6 +37,27 @@ export const DESKTOP_TABS_WIDTH = 520;
 /** A largura das caixas que abrem no meio da janela (o menu de ações, que no celular é uma folha no rodapé). */
 export const DESKTOP_DIALOG_WIDTH = 440;
 
+/**
+ * As janelas de formulário (editar um item, renomear, escolher numa lista), que no celular tomam a tela inteira:
+ * no computador são uma caixa no meio da janela, desta largura.
+ */
+export const DESKTOP_SHEET_WIDTH = 560;
+
+/** A caixa nunca passa desta parte da altura da janela: o que não cabe rola dentro dela. */
+export const DESKTOP_SHEET_HEIGHT_SHARE = 0.88;
+
+/**
+ * A altura da caixa que leva uma lista para escolher (com busca): fixa, até esta medida, para a caixa não mudar de
+ * tamanho a cada letra digitada.
+ */
+export const DESKTOP_SHEET_TALL_HEIGHT = 720;
+
+/** A altura da caixa numa janela desta altura: a máxima (o conteúdo rola) e a fixa das listas para escolher. */
+export function sheetHeights(windowHeight: number): { max: number; tall: number } {
+  const max = Number.isFinite(windowHeight) && windowHeight > 0 ? Math.floor(windowHeight * DESKTOP_SHEET_HEIGHT_SHARE) : DESKTOP_SHEET_TALL_HEIGHT;
+  return { max, tall: Math.min(DESKTOP_SHEET_TALL_HEIGHT, max) };
+}
+
 /** A janela é de computador: só no navegador, e larga o bastante. Uma largura que não é um número (a janela ainda sem medida) não é. */
 export function isDesktop(web: boolean, width: number): boolean {
   return web && Number.isFinite(width) && width >= DESKTOP_MIN_WIDTH;

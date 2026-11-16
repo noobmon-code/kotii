@@ -1,7 +1,6 @@
 import { router } from 'expo-router';
 import { type ReactElement, useState } from 'react';
-import { Modal, ScrollView, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { ScrollView, StyleSheet } from 'react-native';
 
 import { useAddToMarketList } from '@/data/market';
 import { useRecordRefill, useSupplies } from '@/data/supplies';
@@ -22,7 +21,6 @@ import { REMINDER_PLACE, remindersSupported, remindersUnavailableReason } from '
 import { errorMessage } from '@/lib/supabase';
 import type { Supply } from '@/lib/types';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
-import { Backdrop } from '@/ui/Backdrop';
 import { notify } from '@/ui/dialogs';
 import {
   Badge,
@@ -39,7 +37,8 @@ import {
   Text,
   type Tone,
 } from '@/ui/primitives';
-import { MAX_WIDTH, space, useColors } from '@/ui/theme';
+import { SheetModal } from '@/ui/SheetModal';
+import { MAX_WIDTH, space } from '@/ui/theme';
 
 export const SUPPLIES_TITLE = 'Gás, água e ração';
 
@@ -195,7 +194,6 @@ export function SuppliesSection() {
 
 /** "Troquei outro dia…": pergunta o dia da troca. Renderize só quando aberto. */
 function RefillDateModal({ supply, onClose }: { supply: Supply; onClose: () => void }) {
-  const c = useColors();
   const refill = useRefill();
   const [day, setDay] = useState(formatBRDate(todayISO()));
 
@@ -209,21 +207,18 @@ function RefillDateModal({ supply, onClose }: { supply: Supply; onClose: () => v
   }
 
   return (
-    <Modal visible animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
-        <Backdrop />
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          <Row>
-            <Text variant="heading" style={styles.flex}>
-              {supply.name}
-            </Text>
-            <IconButton icon="close" label="Fechar" onPress={onClose} />
-          </Row>
-          <DateField label="Dia da troca" value={day} onChangeText={setDay} hint="Não pode ser depois de hoje." />
-          <Button title="Anotar troca" icon="check" onPress={confirm} loading={refill.isPending} />
-        </ScrollView>
-      </SafeAreaView>
-    </Modal>
+    <SheetModal onClose={onClose}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <Row>
+          <Text variant="heading" style={styles.flex}>
+            {supply.name}
+          </Text>
+          <IconButton icon="close" label="Fechar" onPress={onClose} />
+        </Row>
+        <DateField label="Dia da troca" value={day} onChangeText={setDay} hint="Não pode ser depois de hoje." />
+        <Button title="Anotar troca" icon="check" onPress={confirm} loading={refill.isPending} />
+      </ScrollView>
+    </SheetModal>
   );
 }
 
