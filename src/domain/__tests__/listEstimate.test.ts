@@ -6,8 +6,11 @@ import {
   currentStoreChoice,
   describeEstimate,
   describePantryHits,
+  ESTIMATE_MORE_LABEL,
   estimateHeadline,
   estimateList,
+  estimateMarker,
+  estimateShortLine,
   formatItemCost,
   itemFacts,
   listSharedOnly,
@@ -1950,6 +1953,31 @@ describe('textos da estimativa', () => {
     expect(describePantryHits(['Café', 'Arroz', 'Leite', 'Óleo', 'Sal', 'café'])).toBe(
       'Na despensa: Café, Arroz, Leite e mais 2. Se já acabou, dê baixa lá.',
     );
+  });
+});
+
+describe('o cartão da conta recolhido numa linha', () => {
+  it('o "i" tem nome para o leitor de tela', () => {
+    expect(ESTIMATE_MORE_LABEL).toBe('Mais sobre a conta da lista');
+  });
+
+  it('embaixo do total, o lugar escolhido e os preços de outras casas, para o número não ser lido errado', () => {
+    expect(estimateMarker({ sharedCount: 0 }, null)).toBeNull();
+    expect(estimateMarker({}, null)).toBeNull();
+    expect(estimateMarker({ sharedCount: 0 }, 'Assaí')).toBe('Lugar escolhido: Assaí');
+    expect(estimateMarker({ sharedCount: 2 }, null)).toBe('Inclui preços de outras casas');
+    expect(estimateMarker({ sharedCount: 1 }, 'Assaí')).toBe('Lugar escolhido: Assaí · inclui preços de outras casas');
+  });
+
+  it('sem item com preço, uma linha curta: os preços que não deu para conferir e quantos itens estão na despensa', () => {
+    expect(estimateShortLine({ unchecked: true, inPantry: [] })).toBe('Não deu para conferir os preços.');
+    expect(estimateShortLine({ unchecked: false, inPantry: ['Café'] })).toBe('1 item da lista está na despensa.');
+    // Sem repetir o mesmo nome, como a frase da despensa.
+    expect(estimateShortLine({ unchecked: false, inPantry: ['Leite', 'leite', 'Café'] })).toBe('2 itens da lista estão na despensa.');
+    expect(estimateShortLine({ unchecked: true, inPantry: ['Café', 'Arroz'] })).toBe(
+      'Não deu para conferir os preços. 2 itens da lista estão na despensa.',
+    );
+    expect(estimateShortLine({ unchecked: false, inPantry: [] })).toBeNull();
   });
 });
 

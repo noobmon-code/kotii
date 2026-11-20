@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { ReactNode } from 'react';
-import { AccessibilityInfo, Platform, ScrollView, StyleSheet } from 'react-native';
-import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { AccessibilityInfo, Dimensions, Platform, ScrollView, StyleSheet } from 'react-native';
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import ShoppingListScreen from '@/app/lista/[id]/index';
 import { toISODate } from '@/domain/dates';
@@ -13,11 +13,12 @@ import { SHARED_PRICES_NOTICE, type SharedPrice } from '@/domain/sharedPrices';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { ALL_IN_CART_MESSAGE, FINISH_OFFLINE_NOTICE } from '@/domain/finishPurchase';
-import { CHOSEN_STORE_MS } from '@/domain/listEstimate';
-import { LIST_MENU_LABEL } from '@/domain/listMode';
+import { CHOSEN_STORE_MS, ESTIMATE_MORE_LABEL } from '@/domain/listEstimate';
+import { ADD_FIELD_PLACEHOLDER, BARCODE_BUTTON, LIST_MENU_LABEL } from '@/domain/listMode';
 import type { MarketTrip } from '@/domain/marketTrips';
 import { CartPantryModal } from '@/features/CartPantryModal';
 import { ListEstimateCard } from '@/features/ListEstimateCard';
+import { MarketTripAction } from '@/features/MarketTrip';
 import { forgetAddedItems, rememberAdded } from '@/lib/addedItems';
 import { handConfirmedReceipt, stopWaitingForReceipt } from '@/lib/finishPurchase';
 import { pickReceiptImages } from '@/data/receipts';
@@ -30,8 +31,9 @@ import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
 import type { LatestPrice, PantryItem, Product, ShoppingListItem } from '@/lib/types';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
+import { Columns } from '@/ui/desktop';
 import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
-import { Badge, Button, Card, Chip, EmptyState, ErrorNotice, IconButton, ListRow, Loading, Screen, Text, TextField } from '@/ui/primitives';
+import { Badge, Button, Card, Chip, EmptyState, ErrorNotice, IconButton, ListRow, Loading, Row, Screen, Section, Text, TextField } from '@/ui/primitives';
 
 // A tela da lista de verdade, com as buscas trocadas por respostas prontas: o que se confere aqui é o que ela
 // faz com o que cada busca devolve (carregada, a caminho, falhou), que as regras de domain/ não enxergam.
@@ -304,8 +306,19 @@ async function mount() {
   return texts(renderer!.toJSON()).join('\n');
 }
 
-/** Digita a quantidade no cartão de pôr item. */
-const typeQuantity = (text: string) => act(() => renderer!.root.findAllByType(TextField)[1].props.onChangeText(text));
+/** O "i" do cartão da conta, que abre o resto dela ali mesmo (recolhido ao abrir a lista). */
+const estimateMore = () => renderer!.root.findAllByType(IconButton).find((entry) => entry.props.label === ESTIMATE_MORE_LABEL);
+/** Abre o cartão da conta, quando ele está na tela, e devolve tudo o que a tela escreve. */
+async function openEstimate() {
+  const more = estimateMore();
+  if (more && !more.props.expanded) await act(async () => more.props.onPress());
+  return texts(renderer!.toJSON()).join('\n');
+}
+/** Abre a tela já com o cartão da conta aberto: as frases de antes de ele recolher. */
+async function mountOpen() {
+  await mount();
+  return openEstimate();
+}
 /** A pergunta do item repetido ("Já está na lista"). */
 const repeatSheet = () => renderer!.root.findAllByType(ActionSheet).find((sheet) => sheet.props.title === 'Já está na lista')!;
 const repeatChoices = () => (repeatSheet().props.actions as SheetAction[]).map((action) => action.label);
@@ -364,12 +377,12 @@ describe('"Na despensa" espera o histórico de compras', () => {
 
   it('com o histórico carregado, o que passou do costume não leva o selo', async () => {
     mockQueries.purchases = loaded(ranOutHistory('Café Pilão 500g', 'pilao'));
-    expect(await mount()).not.toContain('Na despensa');
+    expect(await mountOpen()).not.toContain('Na despensa');
     expect(mockSeen.hints?.get('c')).toEqual({ cost: 'R$ 18,90', inPantry: false });
   });
 
   it('histórico carregado e sem nada que tenha acabado: o selo aparece', async () => {
-    expect(await mount()).toContain('Na despensa: Café Pilão 500g. Se já acabou, dê baixa lá.');
+    expect(await mountOpen()).toContain('Na despensa: Café Pilão 500g. Se já acabou, dê baixa lá.');
     expect(mockSeen.hints?.get('c')).toEqual({ cost: 'R$ 18,90', inPantry: true });
   });
 
@@ -379,7 +392,7 @@ describe('"Na despensa" espera o histórico de compras', () => {
     ['sem internet e nunca visto', paused],
   ])('sem o histórico (%s), nenhum selo: não dá para saber o que acabou', async (_why, state) => {
     mockQueries.purchases = state();
-    const page = await mount();
+    const page = await mountOpen();
     expect(page).not.toContain('Na despensa');
     expect(mockSeen.hints?.get('c')).toEqual({ cost: 'R$ 18,90', inPantry: false });
     // A lista e a conta não esperam por ele.
@@ -405,21 +418,21 @@ describe('o queijo em "un" com preço por kg, sem o histórico de compras', () =
     ['sem internet e nunca visto', paused],
   ])('%s: a conta é de 1 kg e o detalhe diz que o histórico não carregou', async (_why, state) => {
     mockQueries.purchases = state();
-    await mount();
+    await mountOpen();
     expect(mockSeen.hints?.get('q')).toEqual({ cost: '~R$ 72,90', inPantry: false });
     expect(await detailFacts()).toContain('O preço é por kg: a conta da lista usa 1 kg (o histórico de compras não carregou).');
   });
 
   it('a primeira busca do histórico ainda anda: a lista não espera, e ainda não diz nada disso', async () => {
     mockQueries.purchases = onTheWay();
-    expect(await mount()).not.toContain('histórico de compras não carregou');
+    expect(await mountOpen()).not.toContain('histórico de compras não carregou');
     expect(mockSeen.hints?.get('q')).toEqual({ cost: '~R$ 72,90', inPantry: false });
     expect((await detailFacts()).join('\n')).not.toContain('histórico de compras não carregou');
   });
 
   it('histórico carregado sem nenhuma compra do queijo a peso: o 1 kg de sempre, sem o aviso', async () => {
     mockQueries.purchases = loaded([]);
-    await mount();
+    await mountOpen();
     expect(mockSeen.hints?.get('q')).toEqual({ cost: '~R$ 72,90', inPantry: false });
     expect(await detailFacts()).toContain('O preço é por kg: a conta da lista usa 1 kg.');
   });
@@ -437,7 +450,7 @@ describe('o queijo em "un" com preço por kg, com o histórico de compras', () =
   });
 
   it('a conta é o que a casa costuma levar (200 g), na lista e nos detalhes do item, e não 1 kg', async () => {
-    const page = await mount();
+    const page = await mountOpen();
     expect(page).toContain('~R$ 14,58');
     expect(mockSeen.hints?.get('q')).toEqual({ cost: '~R$ 14,58', inPantry: false });
     await act(async () => mockSeen.open!((mockQueries.items.data as ShoppingListItem[])[0]));
@@ -456,7 +469,7 @@ describe('o palpite de que acabou não depende do tipo da lista', () => {
       ...ranOutHistory('Dipirona', null, 'medicamentos'),
       ...ranOutHistory('Café', null),
     ]);
-    expect(await mount()).not.toContain('Na despensa');
+    expect(await mountOpen()).not.toContain('Na despensa');
     expect(mockSeen.hints?.get('v')?.inPantry ?? false).toBe(false);
     // Remédio não é sugerido na lista do mercado, e a vitamina já está nela.
     expect(mockSeen.restock?.map((i) => i.name)).toEqual(['Café']);
@@ -471,7 +484,7 @@ describe('o palpite de que acabou não depende do tipo da lista', () => {
       ...ranOutHistory('Dipirona', null, 'medicamentos'),
       ...ranOutHistory('Café', null),
     ]);
-    expect(await mount()).not.toContain('Na despensa');
+    expect(await mountOpen()).not.toContain('Na despensa');
     expect(mockSeen.restock?.map((i) => i.name)).toEqual(['Dipirona']);
   });
 });
@@ -488,7 +501,7 @@ describe('ligações ou produtos que não chegaram', () => {
   });
 
   it('carregados: a conta é da lista toda, sem aviso', async () => {
-    const page = await mount();
+    const page = await mountOpen();
     expect(page).toContain('todos os itens têm preço');
     expect(page).not.toContain('Não deu para conferir');
   });
@@ -498,7 +511,7 @@ describe('ligações ou produtos que não chegaram', () => {
     ['sem internet e as ligações nunca vistas', 'links', paused],
   ])('%s: o cartão diz que não deu para conferir o item sem preço', async (_why, key, state) => {
     mockQueries[key] = state();
-    const page = await mount();
+    const page = await mountOpen();
     expect(page).toContain('1 de 2 itens tem preço. O outro fica fora da conta.');
     expect(page).toContain(unchecked);
   });
@@ -506,25 +519,25 @@ describe('ligações ou produtos que não chegaram', () => {
   it('a busca dos produtos falhou: o item digitado com o nome do produto fica sem preço, e o cartão avisa', async () => {
     mockQueries.items = loaded([listItem('c', 'café pilão 500g', null), listItem('a', 'Arroz', 'arroz')]);
     mockQueries.links = loaded(new LinkIndex([]));
-    expect(await mount()).toContain('todos os itens têm preço');
+    expect(await mountOpen()).toContain('todos os itens têm preço');
     await act(async () => renderer?.unmount());
     mockQueries.products = failed();
-    expect(await mount()).toContain(unchecked);
+    expect(await mountOpen()).toContain(unchecked);
   });
 
   it('nenhum item com preço e as ligações não chegaram: o cartão aparece só para dizer isso', async () => {
     mockQueries.items = loaded([listItem('c', 'Café', null), listItem('l', 'Leite', null)]);
     mockQueries.links = failed();
-    expect(await mount()).toContain('Não deu para conferir se os itens da lista já têm preço. Puxe a lista para baixo para tentar de novo.');
+    expect(await mountOpen()).toContain('Não deu para conferir se os itens da lista já têm preço. Puxe a lista para baixo para tentar de novo.');
     await act(async () => renderer?.unmount());
     // Carregadas e sem ligação nenhuma: são só itens sem preço, e não há o que avisar.
     mockQueries.links = loaded(new LinkIndex([]));
-    expect(await mount()).not.toContain('Não deu para conferir');
+    expect(await mountOpen()).not.toContain('Não deu para conferir');
   });
 
   it('a primeira busca ainda anda: nada a avisar', async () => {
     mockQueries.links = onTheWay();
-    const page = await mount();
+    const page = await mountOpen();
     expect(page).toContain('1 de 2 itens tem preço');
     expect(page).not.toContain('Não deu para conferir');
   });
@@ -532,11 +545,11 @@ describe('ligações ou produtos que não chegaram', () => {
   it('não chegaram, mas todo item tem preço: nada a conferir', async () => {
     mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz')]);
     mockQueries.links = failed();
-    expect(await mount()).not.toContain('Não deu para conferir');
+    expect(await mountOpen()).not.toContain('Não deu para conferir');
   });
 
   it('puxar para atualizar busca de novo as ligações e os produtos', async () => {
-    await mount();
+    await mountOpen();
     mockRefreshTrips.mockClear();
     act(() => renderer!.root.findByType(Screen).props.onRefresh());
     expect(mockRefreshTrips).toHaveBeenCalledTimes(1);
@@ -572,7 +585,7 @@ describe('preços de outras casas na conta da lista', () => {
 
   it('o item sem preço da casa usa o de outras casas, marcado, e o total diz quanto veio de lá', async () => {
     mockQueries.shared = loaded([seen('feijao', 8.5, 2), seen('arroz', 19.9, 1)]);
-    const page = await mount();
+    const page = await mountOpen();
     expect(page).toContain('~R$ 33,50');
     expect(page).toContain('todos os itens têm preço; R$ 8,50 do total é de 1 item com preço de outras casas');
     expect(page).toContain(notice);
@@ -587,7 +600,7 @@ describe('preços de outras casas na conta da lista', () => {
     ['a primeira busca ainda anda', onTheWay],
   ])('%s: a conta é só com os preços da casa, sem aviso', async (_why, state) => {
     mockQueries.shared = state();
-    const page = await mount();
+    const page = await mountOpen();
     expect(page).toContain('1 de 2 itens tem preço');
     expect(page).not.toContain(notice);
     expect(mockSeen.hints?.has('f')).toBe(false);
@@ -596,7 +609,7 @@ describe('preços de outras casas na conta da lista', () => {
   it('sem os preços da casa carregados, nada de outras casas: eles ocupariam o lugar dos dela', async () => {
     mockQueries.shared = loaded([seen('feijao', 8.5, 2), seen('arroz', 19.9, 1)]);
     mockQueries.prices = failed();
-    expect(await mount()).not.toContain(notice);
+    expect(await mountOpen()).not.toContain(notice);
     expect(mockSeen.hints?.has('a')).toBe(false);
     expect(mockSeen.hints?.has('f')).toBe(false);
   });
@@ -604,7 +617,7 @@ describe('preços de outras casas na conta da lista', () => {
   it('sem os mercados da casa carregados, nada de outras casas: não dá para saber quais são dela', async () => {
     mockQueries.shared = loaded([seen('feijao', 8.5, 2)]);
     mockQueries.stores = failed();
-    expect(await mount()).not.toContain(notice);
+    expect(await mountOpen()).not.toContain(notice);
     expect(mockSeen.hints?.has('f')).toBe(false);
   });
 });
@@ -764,10 +777,13 @@ describe('a lista sem marca', () => {
     expect(mockSeen.recent ?? []).toEqual([]);
   });
 
-  /** Toca em "Adicionar" com o texto digitado. */
-  const addTyped = (text: string) =>
+  /** O botão de pôr o que foi digitado ('Adicionar "Arroz" · 2 kg'). */
+  const addButton = () => renderer!.root.findAll((node) => node.type === Button && String(node.props.title).startsWith('Adicionar "'))[0];
+  /** Toca em "Adicionar" com o texto digitado; `title`, o que o botão tem de dizer antes. */
+  const addTyped = (title?: string) =>
     act(async () => {
-      await renderer!.root.findAll((node) => node.type === Button && node.props.title === `Adicionar "${text}"`)[0].props.onPress();
+      if (title !== undefined) expect(addButton().props.title).toBe(title);
+      await addButton().props.onPress();
     });
   const fieldValue = () => renderer!.root.findAllByType(TextField)[0].props.value;
 
@@ -789,21 +805,19 @@ describe('a lista sem marca', () => {
     expect(repeatSheet().props.visible).toBe(false);
     expect(mockQueue.edit).not.toHaveBeenCalled();
     expect(fieldValue()).toBe('');
-    // Com a quantidade digitada, somar grava a soma pela fila (vale sem internet) e libera o campo.
-    type('café');
-    typeQuantity('3');
-    await addTyped('café');
+    // Com a quantidade digitada no texto, somar grava a soma pela fila (vale sem internet) e libera o campo.
+    type('3 café');
+    await addTyped('Adicionar "Café" · 3 un');
     expect(repeatSheet().props.message).toBe('Café já está na lista (1 un). Somar mais 3 un?');
     choose('Somar: fica 4 un');
     expect(mockQueue.edit).toHaveBeenCalledWith({ id: 'b', listId: 'l1', userId: 'u1', values: { quantity: 4 } }, expect.anything());
     expect(mockQueue.add).not.toHaveBeenCalled();
     expect(fieldValue()).toBe('');
-    expect(renderer!.root.findAllByType(TextField)[1].props.value).toBe('1');
     expect(notify).not.toHaveBeenCalled();
     expect(askYesNo).not.toHaveBeenCalled();
     // Outro tipo do mesmo item entra sem perguntar.
     type('Leite integral');
-    await addTyped('Leite integral');
+    await addTyped('Adicionar "Leite integral"');
     expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Leite integral' }), 'u1');
   });
 
@@ -811,21 +825,15 @@ describe('a lista sem marca', () => {
     mockQueries.items = loaded([{ ...listItem('a', 'Arroz', null, 'graos'), quantity: 2 }]);
     await mount();
     mockQueue.edit.mockClear();
-    const pickUnit = (u: string) =>
-      act(() => renderer!.root.findAll((node) => node.props.label === u && typeof node.props.onPress === 'function')[0].props.onPress());
-    type('Arroz');
-    typeQuantity('5');
-    pickUnit('kg');
-    await addTyped('Arroz');
+    type('5 kg arroz');
+    await addTyped('Adicionar "Arroz" · 5 kg');
     expect(repeatSheet().props.message).toBe('Arroz já está na lista com 2 un, e 5 kg é outra unidade. Pôr como outro item ou deixar como está?');
     expect(repeatChoices()).toEqual(['Pôr 5 kg como outro item']);
     act(() => repeatSheet().props.onClose());
     expect(mockQueue.add).not.toHaveBeenCalled();
     expect(mockQueue.edit).not.toHaveBeenCalled();
-    type('Arroz');
-    typeQuantity('5');
-    pickUnit('kg');
-    await addTyped('Arroz');
+    type('Arroz (5 kg)');
+    await addTyped('Adicionar "Arroz" · 5 kg');
     choose('Pôr 5 kg como outro item');
     expect(mockQueue.add).toHaveBeenCalledWith({ name: 'Arroz', category: 'graos', productId: null, quantity: 5, unit: 'kg' }, 'u1');
     expect(mockQueue.edit).not.toHaveBeenCalled();
@@ -836,13 +844,13 @@ describe('a lista sem marca', () => {
     mockQueries.items = loaded([listItem('a', 'Leite IL Desnatado', 'il', 'laticinios')]);
     await mount();
     type('Leite desnatado');
-    await addTyped('Leite desnatado');
+    await addTyped('Adicionar "Leite desnatado"');
     expect(repeatSheet().props.message).toBe('Leite IL Desnatado já está na lista (1 un). Somar mais 1 un?');
     expect(repeatChoices()).toEqual(['Somar: fica 2 un', 'Pôr "Leite desnatado" como outro item']);
     act(() => repeatSheet().props.onClose());
     expect(mockQueue.add).not.toHaveBeenCalled();
     expect(fieldValue()).toBe('Leite desnatado');
-    await addTyped('Leite desnatado');
+    await addTyped('Adicionar "Leite desnatado"');
     choose('Pôr "Leite desnatado" como outro item');
     expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Leite desnatado' }), 'u1');
     expect(fieldValue()).toBe('');
@@ -857,9 +865,8 @@ describe('a lista sem marca', () => {
       mockQueries.items = loaded(items);
       act(() => renderer!.update(<ShoppingListScreen />));
     };
-    type('café');
-    typeQuantity('3');
-    await addTyped('café');
+    type('3 café');
+    await addTyped('Adicionar "Café" · 3 un');
     expect(repeatChoices()).toEqual(['Somar: fica 4 un']);
     // Com a pergunta aberta, outra pessoa pôs 2: a pergunta e a soma acompanham.
     rerender([{ ...coffee, quantity: 2 }]);
@@ -870,44 +877,41 @@ describe('a lista sem marca', () => {
 
     // Foi para o carrinho entre a pergunta e o toque: a quantidade entra como item novo, e o do carrinho fica como está.
     rerender([coffee]);
-    type('café');
-    typeQuantity('3');
-    await addTyped('café');
+    type('café x3');
+    await addTyped('Adicionar "Café" · 3 un');
     const sum = (repeatSheet().props.actions as SheetAction[])[0];
     rerender([{ ...coffee, checked_at: '2026-10-23T10:00:00Z' }]);
     act(() => sum.onPress());
     expect(mockQueue.edit).toHaveBeenCalledTimes(1);
-    expect(mockQueue.add).toHaveBeenCalledWith({ name: 'café', category: 'cafe_cha', productId: null, quantity: 3, unit: 'un' }, 'u1');
+    // O nome lido como na colagem: a primeira letra maiúscula.
+    expect(mockQueue.add).toHaveBeenCalledWith({ name: 'Café', category: 'cafe_cha', productId: null, quantity: 3, unit: 'un' }, 'u1');
 
     // Saiu da lista: também entra como item novo.
     mockQueue.add.mockClear();
     act(() => repeatSheet().props.onClose());
     rerender([coffee]);
-    type('café');
-    typeQuantity('3');
-    await addTyped('café');
+    type('café (3)');
+    await addTyped('Adicionar "Café" · 3 un');
     const again = (repeatSheet().props.actions as SheetAction[])[0];
     rerender([]);
     act(() => again.onPress());
     expect(mockQueue.edit).toHaveBeenCalledTimes(1);
-    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'café', quantity: 3 }), 'u1');
+    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Café', quantity: 3 }), 'u1');
   });
 
-  it('com a quantidade apagada, o item já na lista em outra unidade só ganha o aviso, como antes', async () => {
+  it('sem quantidade na linha, o item já na lista em outra unidade só ganha o aviso, como antes', async () => {
     mockQueries.items = loaded([{ ...listItem('a', 'Leite', null, 'laticinios'), quantity: 2, unit: 'l' }]);
     await mount();
     type('Leite');
-    typeQuantity('');
-    await addTyped('Leite');
+    await addTyped('Adicionar "Leite"');
     expect(notify).toHaveBeenCalledWith('Já estava na lista', 'Leite já está na lista para comprar.');
     expect(repeatSheet().props.visible).toBe(false);
     expect(mockQueue.add).not.toHaveBeenCalled();
     expect(fieldValue()).toBe('');
-    // Com a quantidade dita, a outra unidade é um pedido: a pergunta volta.
+    // Com a quantidade dita, também a de sempre ("1 leite"), a outra unidade é um pedido: a pergunta volta.
     jest.mocked(notify).mockClear();
-    type('Leite');
-    typeQuantity('1');
-    await addTyped('Leite');
+    type('1 leite');
+    await addTyped('Adicionar "Leite"');
     expect(notify).not.toHaveBeenCalled();
     expect(repeatChoices()).toEqual(['Pôr 1 un como outro item']);
   });
@@ -916,10 +920,10 @@ describe('a lista sem marca', () => {
     mockQueries.items = loaded([listItem('a', 'Arroz', null, 'graos'), listItem('b', 'Café', null, 'cafe_cha')]);
     await mount();
     type('Arroz');
-    await addTyped('Arroz');
+    await addTyped('Adicionar "Arroz"');
     const before = repeatSheet();
     type('Café');
-    await addTyped('Café');
+    await addTyped('Adicionar "Café"');
     expect(repeatSheet()).not.toBe(before);
     expect(repeatSheet().props).toMatchObject({ visible: true, message: 'Café já está na lista (1 un). Somar mais 1 un?' });
   });
@@ -928,9 +932,9 @@ describe('a lista sem marca', () => {
     mockQueries.items = loaded([listItem('a', 'Biscoito Oreo', null, 'doces'), listItem('b', 'Shampoo Seda', null, 'higiene')]);
     await mount();
     type('Biscoito Passatempo');
-    await addTyped('Biscoito Passatempo');
+    await addTyped('Adicionar "Biscoito Passatempo"');
     type('Shampoo Clear Men');
-    await addTyped('Shampoo Clear Men');
+    await addTyped('Adicionar "Shampoo Clear Men"');
     expect(askYesNo).not.toHaveBeenCalled();
     expect(notify).not.toHaveBeenCalled();
     expect(mockQueue.add.mock.calls.map(([item]) => (item as { name: string }).name)).toEqual(['Biscoito Passatempo', 'Shampoo Clear Men']);
@@ -1036,7 +1040,7 @@ describe('a lista sem marca', () => {
 
 describe('ler o código de barras no cartão de pôr item', () => {
   const MILK = { ...product('il', 'Leite IL Desnatado'), category: 'laticinios' } as Product;
-  const scanButton = () => renderer!.root.findAll((node) => node.type === Button && node.props.title === 'Ler código de barras')[0];
+  const scanButton = () => renderer!.root.findAll((node) => node.type === Button && node.props.accessibilityLabel === BARCODE_BUTTON.label)[0];
 
   beforeEach(() => {
     mockQueue.add.mockClear();
@@ -1236,6 +1240,263 @@ describe('ajustes da lista: corredores, categoria e colar', () => {
   });
 });
 
+describe('a quantidade vem do que se digita, lida como no "Colar lista"', () => {
+  const MILK = { ...product('il', 'Leite IL Desnatado'), category: 'laticinios' } as Product;
+  const field = () => renderer!.root.findAllByType(TextField).find((entry) => entry.props.placeholder === ADD_FIELD_PLACEHOLDER)!;
+  const type = (text: string) => act(() => field().props.onChangeText(text));
+  const submit = () => act(() => field().props.onSubmitEditing());
+  const addButtons = () => renderer!.root.findAll((node) => node.type === Button && String(node.props.title).startsWith('Adicionar "'));
+  /** O cartão de pôr item: o que tem o campo. */
+  const addCard = () => renderer!.root.findAllByType(Card).find((card) => card.findAllByType(TextField).length > 0)!;
+  /** A linha de "Colar lista" e do código de barras. */
+  const toolRow = () =>
+    renderer!.root.findAllByType(Row).find((row) => row.findAllByType(Button).some((entry) => entry.props.title === 'Colar lista'));
+  const suggestion = (title: string) => renderer!.root.findAllByType(ListRow).find((row) => row.props.title === title);
+
+  beforeEach(() => {
+    mockQueue.add.mockClear();
+    jest.mocked(notify).mockClear();
+  });
+
+  it('o cartão tem um campo só, com o exemplo da quantidade: sem o campo da quantidade nem as unidades', async () => {
+    await mount();
+    expect(addCard().findAllByType(TextField)).toHaveLength(1);
+    expect(addCard().findAllByType(Chip)).toHaveLength(0);
+    expect(field().props.placeholder).toBe('Adicionar (ex.: 2 kg arroz)');
+    expect(field().props.accessibilityLabel).toBeUndefined();
+  });
+
+  it('"2 kg arroz" põe 2 kg de Arroz, e o botão diz antes o que vai entrar; o Enter faz o mesmo', async () => {
+    await mount();
+    await type('2 kg arroz');
+    const [add] = addButtons();
+    expect(add.props.title).toBe('Adicionar "Arroz" · 2 kg');
+    expect(add.props.accessibilityLabel).toBe('Adicionar Arroz, 2 kg');
+    await act(async () => add.props.onPress());
+    expect(mockQueue.add).toHaveBeenCalledWith({ name: 'Arroz', category: 'graos', productId: null, quantity: 2, unit: 'kg' }, 'u1');
+    expect(field().props.value).toBe('');
+    for (const [text, item] of [
+      ['500 g queijo', { name: 'Queijo', quantity: 500, unit: 'g' }],
+      ['1 dz ovos', { name: 'Ovos', quantity: 12, unit: 'un' }],
+      ['2 pacotes de macarrão', { name: 'Macarrão', quantity: 2, unit: 'un' }],
+      ['½ kg presunto', { name: 'Presunto', quantity: 0.5, unit: 'kg' }],
+      ['leite x2', { name: 'Leite', quantity: 2, unit: 'un' }],
+      ['detergente', { name: 'Detergente', quantity: 1, unit: 'un' }],
+    ] as const) {
+      await type(text);
+      await submit();
+      expect(mockQueue.add).toHaveBeenLastCalledWith(expect.objectContaining(item), 'u1');
+    }
+  });
+
+  it('o tamanho que é parte do nome fica no nome, como na colagem', async () => {
+    await mount();
+    await type('Café Pilão 500g');
+    expect(addButtons().map((entry) => entry.props.title)).toEqual(['Adicionar "Café Pilão 500g"']);
+    await submit();
+    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Café Pilão 500g', quantity: 1, unit: 'un' }), 'u1');
+  });
+
+  it('a linha que ainda não diz o que comprar ("2 kg") não põe nada, e o cartão não mostra as opções', async () => {
+    await mount();
+    await type('2 kg');
+    expect(addButtons()).toHaveLength(0);
+    expect(toolRow()).toBeUndefined();
+    await submit();
+    expect(mockQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('as sugestões procuram o nome sem a quantidade, e a escolhida leva a quantidade digitada', async () => {
+    mockQueries.products = loaded([MILK]);
+    await mount();
+    await type('2 leite');
+    expect(suggestion('Leite desnatado')?.props.subtitle).toBe('Produto com histórico de preço');
+    await act(async () => suggestion('Leite desnatado')!.props.onPress());
+    expect(mockQueue.add).toHaveBeenLastCalledWith({ name: 'Leite desnatado', category: 'laticinios', productId: 'il', quantity: 2, unit: 'un' }, 'u1');
+    // O item comum leva a quantidade inteira que foi digitada.
+    await type('2 kg banan');
+    await act(async () => suggestion('Banana')!.props.onPress());
+    expect(mockQueue.add).toHaveBeenLastCalledWith({ name: 'Banana', category: 'hortifruti', productId: null, quantity: 2, unit: 'kg' }, 'u1');
+    // Sem quantidade, 1 na unidade do catálogo, como antes.
+    await type('banan');
+    await act(async () => suggestion('Banana')!.props.onPress());
+    expect(mockQueue.add).toHaveBeenLastCalledWith({ name: 'Banana', category: 'hortifruti', productId: null, quantity: 1, unit: 'kg' }, 'u1');
+  });
+
+  it('"Colar lista" e o código de barras dividem uma linha, embaixo dos itens comuns; sem o código, colar sozinho', async () => {
+    mockBarcode.available = true;
+    await mount();
+    const tools = toolRow()!.findAllByType(Button);
+    expect(tools.map((entry) => [entry.props.title, entry.props.accessibilityLabel, entry.props.variant, entry.props.compact])).toEqual([
+      ['Colar lista', undefined, 'ghost', true],
+      ['Código de barras', 'Ler código de barras', 'ghost', true],
+    ]);
+    // "Escolher dos itens comuns" fica na linha dele, antes.
+    const titles = addCard().findAllByType(Button).map((entry) => entry.props.title);
+    expect(titles).toEqual(['Escolher dos itens comuns', 'Colar lista', 'Código de barras']);
+    await act(async () => renderer!.unmount());
+
+    mockBarcode.available = false;
+    await mount();
+    expect(toolRow()!.findAllByType(Button).map((entry) => entry.props.title)).toEqual(['Colar lista']);
+  });
+});
+
+describe('o cartão da conta, recolhido numa linha antes da lista', () => {
+  const card = () => renderer!.root.findByType(ListEstimateCard);
+  const page = () => texts(renderer!.toJSON()).join('\n');
+
+  beforeEach(() => {
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz'), listItem('c', 'Café', 'cafe')]);
+    mockQueries.products = loaded([product('arroz', 'Arroz'), product('cafe', 'Café')]);
+    mockQueries.prices = loaded([latest('arroz', 25), latest('cafe', 18.9)]);
+  });
+
+  it('recolhido ao abrir: o total e o "i"; o "i" abre ali mesmo o resto, e fecha', async () => {
+    const shown = await mount();
+    expect(shown).toContain('A lista deve dar');
+    expect(shown).toContain('~R$ 43,90');
+    expect(shown).not.toContain('Pelo último preço');
+    expect(shown).not.toContain('Onde você está comprando?');
+    const more = estimateMore()!;
+    expect(more.props).toMatchObject({ icon: 'information-outline', label: 'Mais sobre a conta da lista', expanded: false });
+    const open = await openEstimate();
+    expect(estimateMore()!.props.expanded).toBe(true);
+    expect(open).toContain('~R$ 43,90');
+    expect(open).toContain('Pelo último preço que a casa pagou em cada item; todos os itens têm preço.');
+    expect(open).toContain('Onde você está comprando?');
+    await act(async () => estimateMore()!.props.onPress());
+    expect(estimateMore()!.props.expanded).toBe(false);
+    expect(page()).not.toContain('Pelo último preço');
+  });
+
+  it('com o lugar escolhido, a linha recolhida diz qual, para o número não ser lido errado', async () => {
+    await mount();
+    await act(async () => card().props.onChangeStore('s1'));
+    expect(page()).toContain('Lugar escolhido: Assaí');
+    // Aberto, a frase de baixo já diz o lugar: a linha não repete.
+    const open = await openEstimate();
+    expect(open).toContain('Lugar escolhido: Assaí. Todos os itens têm preço.');
+    expect(open.split('Lugar escolhido').length - 1).toBe(1);
+    await act(async () => card().props.onChangeStore(null));
+  });
+
+  it('com preço de outras casas na conta, a linha recolhida diz que ele está lá; o aviso inteiro fica no "i"', async () => {
+    const CNPJ = '11222333000181';
+    mockQueries.stores = loaded([{ id: 's1', name: 'Assaí', cnpj: CNPJ, address: null }]);
+    mockQueries.prices = loaded([latest('arroz', 25)]);
+    mockQueries.shared = loaded([
+      { product_id: 'cafe', store_cnpj: CNPJ, store_name: 'ASSAI ATACADISTA', store_uf: '35', unit: 'un', unit_price: 18.9, seen_on: day(2), mine: true },
+    ] satisfies SharedPrice[]);
+    const shown = await mount();
+    expect(shown).toContain('~R$ 43,90');
+    expect(shown).toContain('Inclui preços de outras casas');
+    expect(shown).not.toContain(SHARED_PRICES_NOTICE);
+    const open = await openEstimate();
+    expect(open).toContain(SHARED_PRICES_NOTICE);
+    expect(open).toContain('R$ 18,90 do total é de 1 item com preço de outras casas');
+  });
+
+  it('sem item com preço, uma linha curta com o mesmo "i": o que está na despensa', async () => {
+    mockQueries.items = loaded([listItem('c', 'Café Pilão 500g', 'pilao')]);
+    mockQueries.products = loaded([product('pilao', 'Café Pilão 500g')]);
+    mockQueries.prices = loaded([]);
+    mockQueries.pantry = loaded([pantryRow('Café Pilão 500g', 'pilao', 14)]);
+    const shown = await mount();
+    expect(shown).toContain('1 item da lista está na despensa.');
+    expect(shown).not.toContain('Na despensa: Café Pilão 500g');
+    expect(await openEstimate()).toContain('Na despensa: Café Pilão 500g. Se já acabou, dê baixa lá.');
+  });
+
+  it('sem item com preço, uma linha curta com o mesmo "i": os preços que não deu para conferir', async () => {
+    mockQueries.items = loaded([listItem('c', 'Café', null), listItem('l', 'Leite', null)]);
+    mockQueries.products = loaded([]);
+    mockQueries.prices = loaded([]);
+    mockQueries.links = failed();
+    const shown = await mount();
+    expect(shown).toContain('Não deu para conferir os preços.');
+    expect(shown).not.toContain('Puxe a lista para baixo');
+    expect(await openEstimate()).toContain('Não deu para conferir se os itens da lista já têm preço. Puxe a lista para baixo para tentar de novo.');
+  });
+});
+
+describe('no computador: os itens numa coluna, o cartão de pôr item e a conta na outra', () => {
+  const WINDOW = Dimensions.get('window');
+  let web: { restore: () => void } | undefined;
+  /** O navegador numa janela larga (ui/desktop). */
+  async function desktop() {
+    web = jest.replaceProperty(Platform, 'OS', 'web');
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width: 1440 } }));
+  }
+  /** As duas colunas na ordem em que aparecem: a do lado (primeiro no teclado e no leitor de tela) e a principal. */
+  function columnParts() {
+    const [row] = renderer!.root.findByType(Columns).findAll((node) => (node.type as unknown) === 'View', { deep: false });
+    expect(StyleSheet.flatten(row.props.style)).toMatchObject({ flexDirection: 'row-reverse' });
+    return row.children as ReactTestInstance[];
+  }
+  /** O que a tela desenha dentro das colunas, na ordem (no celular, solto, sem as caixas delas). */
+  const parts = () => (renderer!.root.findByType(Columns).children as ReactTestInstance[]).map((child) => child.type);
+
+  afterEach(async () => {
+    web?.restore();
+    web = undefined;
+    await act(async () => Dimensions.set({ window: WINDOW }));
+  });
+
+  it('os itens na coluna principal; o cartão de pôr item, as faixas, a conta e a ida na do lado, que vem primeiro', async () => {
+    await desktop();
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz'), { ...listItem('b', 'Feijão', null), checked_at: minutesAgo(5) }]);
+    mockQueries.products = loaded([product('arroz', 'Arroz')]);
+    mockQueries.prices = loaded([latest('arroz', 25)]);
+    await mount();
+    expect(renderer!.root.findByType(Screen).props.wide).toBe(true);
+    expect(renderer!.root.findByType(Columns).props.sideFirst).toBe(true);
+    const [side, main] = columnParts();
+    expect(side.findAll((node) => node.props.placeholder === ADD_FIELD_PLACEHOLDER).length).toBeGreaterThan(0);
+    expect(side.findAllByType(ListEstimateCard)).toHaveLength(1);
+    expect(side.findAllByType(MarketTripAction)).toHaveLength(1);
+    expect(side.findAllByType(ShoppingGrid)).toHaveLength(0);
+    expect(main.findAllByType(Section).map((section) => section.props.title)).toEqual(['Para comprar (1)', 'No carrinho (1)']);
+    expect(main.findAllByType(ShoppingGrid)).toHaveLength(2);
+    expect(main.findAllByType(ListEstimateCard)).toHaveLength(0);
+  });
+
+  it('montando, as faixas ficam com o cartão de pôr item; a lista vazia, na coluna dos itens', async () => {
+    await desktop();
+    await mount();
+    const [side, main] = columnParts();
+    expect(side.findAllByType(RestockStrip)).toHaveLength(1);
+    expect(side.findAllByType(RecentPurchases)).toHaveLength(1);
+    expect(main.findAllByType(EmptyState).map((entry) => entry.props.title)).toEqual(['Lista vazia']);
+    expect(side.findAllByType(EmptyState)).toHaveLength(0);
+  });
+
+  it('a lista arquivada: o aviso de reabrir e a conta na do lado, os itens na principal', async () => {
+    await desktop();
+    mockQueries.list = loaded({ id: 'l1', name: 'Churrasco', kind: 'mercado', archived_at: '2026-10-20T12:00:00Z', created_at: '2026-10-01T12:00:00Z' });
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz')]);
+    mockQueries.prices = loaded([latest('arroz', 25)]);
+    await mount();
+    const [side, main] = columnParts();
+    expect(side.findAllByType(Button).map((entry) => entry.props.title)).toEqual(['Reabrir lista']);
+    expect(side.findAllByType(ListEstimateCard)).toHaveLength(1);
+    expect(side.findAllByType(MarketTripAction)).toHaveLength(0);
+    expect(main.findAllByType(ShoppingGrid).every((grid) => grid.props.readOnly)).toBe(true);
+  });
+
+  it('no celular nada muda: tudo em sequência, na ordem de sempre, sem as caixas das colunas', async () => {
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz')]);
+    mockQueries.prices = loaded([latest('arroz', 25)]);
+    await mount();
+    expect(parts()).toEqual([Card, RestockStrip, RecentPurchases, ListEstimateCard, MarketTripAction, Section, Text]);
+    await act(async () => renderer!.unmount());
+    // A lista vazia, onde sempre esteve: depois das faixas, antes da ida.
+    mockQueries.items = loaded([]);
+    await mount();
+    expect(parts()).toEqual([Card, RestockStrip, RecentPurchases, EmptyState, MarketTripAction]);
+  });
+});
+
 /** Uma ida que vale agora (começou há 30 min). */
 const liveTrip = (patch: Partial<MarketTrip> = {}): MarketTrip => ({
   id: 't1',
@@ -1362,7 +1623,7 @@ describe('o menu da lista, no cabeçalho ao lado da calculadora: renomear, arqui
     mockQueries.items = loaded([listItem('a', 'Arroz', null), { ...listItem('b', 'Carvão', null), checked_at: minutesAgo(60) }]);
     const page = await mount();
     expect(page).toContain('Esta lista está arquivada. Reabra para mexer nela.');
-    expect(renderer!.root.findAllByType(TextField).filter((field) => field.props.placeholder === 'Adicionar item')).toHaveLength(0);
+    expect(renderer!.root.findAllByType(TextField).filter((field) => field.props.placeholder === ADD_FIELD_PLACEHOLDER)).toHaveLength(0);
     expect(button('Colar lista')).toBeUndefined();
     expect(button('Limpar')).toBeUndefined();
     const grids = renderer!.root.findAllByType(ShoppingGrid);
@@ -1407,12 +1668,15 @@ describe('o menu da lista, no cabeçalho ao lado da calculadora: renomear, arqui
 
 describe('o modo compra: com item no carrinho ou com a própria ida, a lista sobe', () => {
   const fields = (placeholder: string) => renderer!.root.findAllByType(TextField).filter((field) => field.props.placeholder === placeholder);
-  const quantityFields = () => renderer!.root.findAllByType(TextField).filter((field) => field.props.accessibilityLabel === 'Quantidade');
-  const unitChips = () => renderer!.root.findAllByType(Chip).filter((chip) => ['un', 'kg', 'g', 'l', 'ml'].includes(chip.props.label));
+  /** O campo da quantidade e as unidades saíram do cartão: a quantidade vem do texto. */
+  const amountControls = () =>
+    renderer!.root.findAllByType(TextField).filter((field) => field.props.accessibilityLabel === 'Quantidade').length +
+    renderer!.root.findAllByType(Chip).filter((chip) => ['un', 'kg', 'g', 'l', 'ml'].includes(chip.props.label)).length;
   const moreOptions = () => renderer!.root.findAllByType(IconButton).filter((entry) => String(entry.props.label).startsWith('Mais opções'));
   const strips = () => renderer!.root.findAllByType(RestockStrip).length + renderer!.root.findAllByType(RecentPurchases).length;
-  const typeName = (text: string) => act(() => fields('Adicionar item')[0].props.onChangeText(text));
-  const submit = () => act(() => fields('Adicionar item')[0].props.onSubmitEditing());
+  const typeName = (text: string) => act(() => fields(ADD_FIELD_PLACEHOLDER)[0].props.onChangeText(text));
+  const submit = () => act(() => fields(ADD_FIELD_PLACEHOLDER)[0].props.onSubmitEditing());
+  const barcodeButton = () => renderer!.root.findAllByType(Button).find((entry) => entry.props.accessibilityLabel === BARCODE_BUTTON.label);
   const pending = listItem('a', 'Arroz', null);
   const inCart = { ...listItem('b', 'Carvão', null), checked_at: minutesAgo(5) };
 
@@ -1425,9 +1689,8 @@ describe('o modo compra: com item no carrinho ou com a própria ida, a lista sob
   it('montando (carrinho vazio, sem ida): o cartão inteiro e as faixas, sem "Mais opções"', async () => {
     mockQueries.items = loaded([pending]);
     await mount();
-    expect(fields('Adicionar item')).toHaveLength(1);
-    expect(quantityFields()).toHaveLength(1);
-    expect(unitChips().length).toBeGreaterThan(0);
+    expect(fields(ADD_FIELD_PLACEHOLDER)).toHaveLength(1);
+    expect(amountControls()).toBe(0);
     expect(button('Escolher dos itens comuns')).toBeDefined();
     expect(button('Colar lista')).toBeDefined();
     expect(strips()).toBe(2);
@@ -1438,63 +1701,63 @@ describe('o modo compra: com item no carrinho ou com a própria ida, a lista sob
     mockBarcode.available = true;
     mockQueries.items = loaded([pending, inCart]);
     await mount();
-    expect(fields('Adicionar item')).toHaveLength(1);
-    expect(quantityFields()).toHaveLength(0);
-    expect(unitChips()).toHaveLength(0);
+    expect(fields(ADD_FIELD_PLACEHOLDER)).toHaveLength(1);
+    expect(amountControls()).toBe(0);
     expect(button('Escolher dos itens comuns')).toBeUndefined();
     expect(button('Colar lista')).toBeUndefined();
-    expect(button('Ler código de barras')).toBeUndefined();
+    expect(barcodeButton()).toBeUndefined();
     expect(strips()).toBe(0);
     expect(footer()!.props.title).toBe('Finalizar compra');
     // O resto do cartão fica a um toque, e o leitor de tela diz o que o botão abre e que está fechado.
     const [more] = moreOptions();
-    expect(more.props.label).toBe('Mais opções: quantidade, unidade, itens comuns, colar lista e código de barras');
+    expect(more.props.label).toBe('Mais opções: itens comuns, colar lista e código de barras');
     expect(more.props.expanded).toBe(false);
-    // Ainda dá para pôr o que faltou: as sugestões da busca e o "Adicionar" aparecem com o texto.
+    // Ainda dá para pôr o que faltou: as sugestões da busca e o "Adicionar" aparecem com o texto, com a quantidade dele.
     await typeName('Leite');
     expect(button('Adicionar "Leite"')).toBeDefined();
     await submit();
     expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Leite', quantity: 1, unit: 'un' }), 'u1');
+    await typeName('2 kg feijão');
+    expect(button('Adicionar "Feijão" · 2 kg')).toBeDefined();
+    await submit();
+    expect(mockQueue.add).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'Feijão', quantity: 2, unit: 'kg' }), 'u1');
   });
 
-  it('"Mais opções" traz o cartão inteiro de volta; recolher volta a quantidade a 1 un', async () => {
+  it('"Mais opções" traz os itens comuns, colar e o código de volta; abrir e recolher não mudam o que se digitou', async () => {
     mockBarcode.available = true;
     mockQueries.items = loaded([pending, inCart]);
     await mount();
     await act(async () => moreOptions()[0].props.onPress());
     expect(moreOptions()[0].props.expanded).toBe(true);
-    expect(quantityFields()).toHaveLength(1);
-    expect(unitChips().length).toBeGreaterThan(0);
+    expect(amountControls()).toBe(0);
     expect(button('Escolher dos itens comuns')).toBeDefined();
     expect(button('Colar lista')).toBeDefined();
-    expect(button('Ler código de barras')).toBeDefined();
+    expect(barcodeButton()).toBeDefined();
     // As faixas são para montar a lista: continuam fora.
     expect(strips()).toBe(0);
 
-    await act(async () => quantityFields()[0].props.onChangeText('3'));
-    await act(async () => unitChips().find((chip) => chip.props.label === 'kg')!.props.onPress());
+    // Com o texto, o botão de pôr toma o lugar das opções; recolher deixa o texto e a quantidade dele.
+    await typeName('3 kg banana');
+    expect(button('Colar lista')).toBeUndefined();
     await act(async () => moreOptions()[0].props.onPress());
-    expect(quantityFields()).toHaveLength(0);
-    // Recolhido, o item não sai com a quantidade que ficou escondida.
-    await typeName('Banana');
+    expect(moreOptions()[0].props.expanded).toBe(false);
+    expect(fields(ADD_FIELD_PLACEHOLDER)[0].props.value).toBe('3 kg banana');
     await submit();
-    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Banana', quantity: 1, unit: 'un' }), 'u1');
-    await act(async () => moreOptions()[0].props.onPress());
-    expect(quantityFields()[0].props.value).toBe('1');
+    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Banana', quantity: 3, unit: 'kg' }), 'u1');
   });
 
   it('com a própria ida nesta lista, modo compra também com o carrinho vazio; a ida de outra pessoa não muda nada', async () => {
     mockQueries.items = loaded([pending]);
     mockTrips.list = [liveTrip()];
     await mount();
-    expect(quantityFields()).toHaveLength(0);
+    expect(button('Escolher dos itens comuns')).toBeUndefined();
     expect(strips()).toBe(0);
     expect(moreOptions()).toHaveLength(1);
     await act(async () => renderer!.unmount());
 
     mockTrips.list = [liveTrip({ user_id: 'u2', display_name: 'Beto' })];
     await mount();
-    expect(quantityFields()).toHaveLength(1);
+    expect(button('Escolher dos itens comuns')).toBeDefined();
     expect(strips()).toBe(2);
     expect(moreOptions()).toHaveLength(0);
   });
@@ -1507,40 +1770,41 @@ describe('o modo compra: com item no carrinho ou com a própria ida, a lista sob
     expect(strips()).toBe(0);
   });
 
-  it('o carrinho que começa no meio da digitação não leva o texto, e com a quantidade mudada o cartão fica inteiro', async () => {
+  it('o carrinho que começa no meio da digitação não leva o texto nem a quantidade dele, e o cartão recolhe', async () => {
     mockQueries.items = loaded([pending]);
     await mount();
-    await typeName('Pão');
-    await typeQuantity('6');
+    await typeName('6 pão');
     // Outra pessoa da casa pôs o primeiro item no carrinho (a lista chega em tempo real).
     mockQueries.items = loaded([pending, inCart]);
     await act(async () => renderer!.update(<ShoppingListScreen />));
-    expect(fields('Adicionar item')[0].props.value).toBe('Pão');
-    expect(quantityFields()).toHaveLength(1);
-    expect(moreOptions()[0].props.expanded).toBe(true);
+    expect(fields(ADD_FIELD_PLACEHOLDER)[0].props.value).toBe('6 pão');
+    // A quantidade está no texto, à vista: recolher não esconde nada que vá junto.
+    expect(moreOptions()[0].props.expanded).toBe(false);
+    expect(button('Adicionar "Pão" · 6 un')).toBeDefined();
     await submit();
-    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Pão', quantity: 6 }), 'u1');
+    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Pão', quantity: 6, unit: 'un' }), 'u1');
   });
 
-  it('com a quantidade de sempre, recolhe sem perder o texto; o carrinho limpo volta a montar, e a próxima compra recolhe de novo', async () => {
+  it('recolhe sem perder o texto; o carrinho limpo volta a montar, e a próxima compra recolhe de novo', async () => {
     mockQueries.items = loaded([pending]);
     await mount();
     await typeName('Pão');
     mockQueries.items = loaded([pending, inCart]);
     await act(async () => renderer!.update(<ShoppingListScreen />));
-    expect(fields('Adicionar item')[0].props.value).toBe('Pão');
-    expect(quantityFields()).toHaveLength(0);
+    expect(fields(ADD_FIELD_PLACEHOLDER)[0].props.value).toBe('Pão');
+    expect(moreOptions()[0].props.expanded).toBe(false);
     await act(async () => moreOptions()[0].props.onPress());
-    expect(quantityFields()).toHaveLength(1);
+    expect(moreOptions()[0].props.expanded).toBe(true);
 
     mockQueries.items = loaded([pending]);
     await act(async () => renderer!.update(<ShoppingListScreen />));
     expect(moreOptions()).toHaveLength(0);
-    expect(quantityFields()).toHaveLength(1);
+    await typeName('');
+    expect(button('Escolher dos itens comuns')).toBeDefined();
 
     mockQueries.items = loaded([pending, inCart]);
     await act(async () => renderer!.update(<ShoppingListScreen />));
-    expect(quantityFields()).toHaveLength(0);
+    expect(button('Escolher dos itens comuns')).toBeUndefined();
     expect(moreOptions()[0].props.expanded).toBe(false);
   });
 });

@@ -1090,6 +1090,44 @@ export function describePantryHits(names: readonly string[]): string {
   return `Na despensa: ${joinNames(shown)}. Se já acabou, dê baixa lá.`;
 }
 
+// O cartão da conta, antes da lista, fica recolhido numa linha: o quanto deve dar e o "i" que abre, ali mesmo, o
+// resto (de onde sai a conta, os preços de outras casas, o que não deu para conferir, carrinho e falta comprar,
+// "Onde estou" e a despensa). A linha recolhida não pode deixar o número ser lido errado: diz o lugar escolhido e
+// que há preço de outras casas na conta.
+
+/** O "i" do cartão da conta, para o leitor de tela (que também diz se está aberto). */
+export const ESTIMATE_MORE_LABEL = 'Mais sobre a conta da lista';
+
+/**
+ * O que a linha recolhida diz embaixo do total, para ele não ser lido errado: o lugar escolhido (a conta é a de lá,
+ * não a do último preço) e, com preço de outras casas na conta, que ela os inclui (o aviso inteiro, de que não são
+ * em tempo real, fica no "i"). null quando não há o que dizer.
+ */
+export function estimateMarker(
+  estimate: Partial<Pick<ListEstimate, 'sharedCount'>>,
+  storeName: string | null,
+): string | null {
+  const parts = [
+    ...(storeName ? [`Lugar escolhido: ${storeName}`] : []),
+    ...(estimate.sharedCount ? [storeName ? 'inclui preços de outras casas' : 'Inclui preços de outras casas'] : []),
+  ];
+  return parts.length ? parts.join(' · ') : null;
+}
+
+/** Quantos itens diferentes da lista estão na despensa (sem ligar para maiúscula ou acento, como describePantryHits). */
+const pantryCount = (names: readonly string[]) => new Set(names.map(normalizeSearch).filter(Boolean)).size;
+
+/**
+ * A linha recolhida quando nenhum item tem preço: só o que o cartão tem a dizer, curto (os preços que não deu para
+ * conferir, quantos itens estão na despensa). null quando não há nada (o cartão nem aparece).
+ */
+export function estimateShortLine({ unchecked, inPantry }: { unchecked: boolean; inPantry: readonly string[] }): string | null {
+  const count = pantryCount(inPantry);
+  const pantry = count ? `${count === 1 ? '1 item da lista está' : `${count} itens da lista estão`} na despensa.` : null;
+  if (unchecked) return pantry ? `Não deu para conferir os preços. ${pantry}` : 'Não deu para conferir os preços.';
+  return pantry;
+}
+
 /**
  * O que a casa sabe do item, para os detalhes dele na lista: o último preço,
  * o menor entre os mercados (o "preço bom"), o preço que entrou na conta no

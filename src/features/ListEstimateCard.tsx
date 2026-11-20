@@ -1,6 +1,7 @@
 // Lista no mercado: quanto a lista deve dar (pelo último preço pago, ou pelos
 // preços do mercado em que a pessoa está, com os de outras casas onde a casa
-// não tem preço) e o que está na despensa.
+// não tem preço) e o que está na despensa. Antes da lista, recolhido numa
+// linha (o total e o "i"); o "i" abre o resto ali mesmo.
 
 import { useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
@@ -9,7 +10,10 @@ import {
   cartSplitLine,
   describeEstimate,
   describePantryHits,
+  ESTIMATE_MORE_LABEL,
   estimateHeadline,
+  estimateMarker,
+  estimateShortLine,
   storeOptionNote,
   uncheckedPricesNote,
   type ListEstimate,
@@ -18,7 +22,7 @@ import { formatBRL } from '@/domain/money';
 import { SHARED_PRICES_NOTICE } from '@/domain/sharedPrices';
 import type { ListKind } from '@/lib/types';
 import { PickerModal } from '@/ui/PickerModal';
-import { Button, Card, Chip, Icon, IconBadge, Row, Text } from '@/ui/primitives';
+import { Button, Card, Chip, Icon, IconBadge, IconButton, Row, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 // Como buscar de novo o que não chegou. No navegador não existe puxar para atualizar: lá é recarregar a página.
@@ -47,6 +51,8 @@ export function ListEstimateCard({
   inPantry: string[];
 }) {
   const [choosing, setChoosing] = useState(false);
+  // Recolhido ao abrir a lista: a linha do total, e o resto no "i" (só na memória, como o resto da tela).
+  const [open, setOpen] = useState(false);
   const priced = estimate.pricedCount > 0;
   const unchecked = uncheckedPricesNote(estimate, sourcesLoaded);
   // Sem conta e sem nada na despensa, o cartão só aparece para dizer que não deu para conferir os preços.
@@ -54,24 +60,40 @@ export function ListEstimateCard({
   const cartSplit = cartSplitLine(estimate);
   const storeName = storeId ? storeNames?.get(storeId) : undefined;
   const place = kind === 'farmacia' ? 'farmácia' : 'mercado';
+  // Recolhido, o total diz o lugar escolhido e que há preço de outras casas nele: aberto, a frase de baixo já diz.
+  const marker = open ? null : estimateMarker(estimate, storeName ?? null);
+  const more = <IconButton icon="information-outline" label={ESTIMATE_MORE_LABEL} color="primary" expanded={open} onPress={() => setOpen(!open)} />;
 
   return (
     <Card style={styles.card}>
       {priced ? (
+        <Row gap={space.md}>
+          <IconBadge icon="cash-multiple" tone="primary" />
+          <View style={styles.flex}>
+            <Text variant="small">{estimateHeadline(estimate)}</Text>
+            <Text variant="heading">{`~${formatBRL(estimate.total)}`}</Text>
+            {marker ? <Text variant="small">{marker}</Text> : null}
+          </View>
+          {more}
+        </Row>
+      ) : (
+        // Nenhum item com preço: a linha diz, curto, o que o cartão tem (os preços que não deu para conferir, a despensa).
+        <Row gap={space.md}>
+          <IconBadge icon={unchecked ? 'cash-multiple' : 'fridge-outline'} tone={unchecked ? 'neutral' : 'primary'} />
+          <Text variant="muted" style={styles.flex}>
+            {estimateShortLine({ unchecked: Boolean(unchecked), inPantry })}
+          </Text>
+          {more}
+        </Row>
+      )}
+      {open ? (
         <>
-          <Row gap={space.md}>
-            <IconBadge icon="cash-multiple" tone="primary" />
-            <View style={styles.flex}>
-              <Text variant="small">{estimateHeadline(estimate)}</Text>
-              <Text variant="heading">{`~${formatBRL(estimate.total)}`}</Text>
-            </View>
-          </Row>
-          <Text variant="muted">{describeEstimate(estimate, storeName ?? null)}</Text>
+          {priced ? <Text variant="muted">{describeEstimate(estimate, storeName ?? null)}</Text> : null}
           {/* Parte da conta é de preços vistos em outras casas: sempre com o aviso de que não são em tempo real. */}
-          {estimate.sharedCount ? <Text variant="small">{SHARED_PRICES_NOTICE}</Text> : null}
+          {priced && estimate.sharedCount ? <Text variant="small">{SHARED_PRICES_NOTICE}</Text> : null}
           {unchecked ? <Text variant="muted">{`${unchecked} ${RETRY_HINT}`}</Text> : null}
-          {cartSplit ? <Text variant="muted">{cartSplit}</Text> : null}
-          {storeNames ? (
+          {priced && cartSplit ? <Text variant="muted">{cartSplit}</Text> : null}
+          {priced && storeNames ? (
             <Row style={styles.wrap}>
               <Chip
                 label={storeName ? `Onde estou: ${storeName}` : 'Onde você está comprando?'}
@@ -81,17 +103,15 @@ export function ListEstimateCard({
               />
             </Row>
           ) : null}
+          {inPantry.length ? (
+            <Row gap={space.sm} style={styles.top}>
+              <Icon name="fridge-outline" color="primary" />
+              <Text variant="muted" style={styles.flex}>
+                {describePantryHits(inPantry)}
+              </Text>
+            </Row>
+          ) : null}
         </>
-      ) : unchecked ? (
-        <Text variant="muted">{`${unchecked} ${RETRY_HINT}`}</Text>
-      ) : null}
-      {inPantry.length ? (
-        <Row gap={space.sm} style={styles.top}>
-          <Icon name="fridge-outline" color="primary" />
-          <Text variant="muted" style={styles.flex}>
-            {describePantryHits(inPantry)}
-          </Text>
-        </Row>
       ) : null}
 
       {storeNames ? (

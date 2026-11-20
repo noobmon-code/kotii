@@ -3,13 +3,19 @@
 //
 // "Modo compra": com item no carrinho ou com a ida ao mercado da própria pessoa nesta lista, o que é para montar a
 // lista sai da frente, e a lista sobe. O cartão de pôr item recolhe ao campo de texto (ainda dá para pôr o que
-// faltou), e "Acho que acabou" e "Comprados recentemente" somem. A quantidade, a unidade, os itens comuns, colar a
-// lista e o código de barras continuam a um toque, em "Mais opções" (o botão ao lado do campo): no mercado também se
-// lê o código de um produto da gôndola, e quem está em casa enquanto outra pessoa compra (o carrinho é da lista,
-// em tempo real) ainda monta a lista. Tocar no campo não abre o cartão inteiro: com o teclado aberto, ele empurraria
-// a lista para baixo justamente na hora de digitar um item rápido.
+// faltou), e "Acho que acabou" e "Comprados recentemente" somem. Os itens comuns, colar a lista e o código de barras
+// continuam a um toque, em "Mais opções" (o botão ao lado do campo): no mercado também se lê o código de um produto
+// da gôndola, e quem está em casa enquanto outra pessoa compra (o carrinho é da lista, em tempo real) ainda monta a
+// lista. Tocar no campo não abre o cartão inteiro: com o teclado aberto, ele empurraria a lista para baixo
+// justamente na hora de digitar um item rápido.
+//
+// A quantidade não tem campo: ela vem do que a pessoa digita ("2 kg arroz", "leite x2"), lida pela mesma leitura do
+// "Colar lista" (domain/listPaste, readListLine). Sem quantidade na linha, 1 un, como sempre; depois de posto, a
+// quantidade muda nos detalhes do item.
 
 import type { Unit } from '@/lib/types';
+
+import { formatQuantity } from './money';
 
 /** `ver`: a lista arquivada, só para ver; `montar`: pondo o que falta; `compra`: no meio das compras. */
 export type ListMode = 'ver' | 'montar' | 'compra';
@@ -23,26 +29,41 @@ export function listMode({ archived, inCart, ownTrip }: { archived: boolean; inC
   return inCart > 0 || ownTrip ? 'compra' : 'montar';
 }
 
-/** O cartão de pôr item: nenhum (arquivada), só o campo (modo compra) ou inteiro. */
+/**
+ * O cartão de pôr item: nenhum (arquivada), só o campo (modo compra) ou inteiro (o campo e, com ele vazio, os itens
+ * comuns, colar a lista e o código de barras). O que vai junto do item (a quantidade) está no próprio texto do
+ * campo, que fica nos dois jeitos: recolher ou abrir o cartão não muda o que entra.
+ */
 export type AddCardShape = 'nenhum' | 'campo' | 'inteiro';
 
-/** `expanded`: a pessoa tocou em "Mais opções" no modo compra. */
+/** `expanded`: a pessoa tocou em "Mais opções" no modo compra (ao entrar e ao sair do modo compra, recolhe). */
 export function addCardShape(mode: ListMode, expanded: boolean): AddCardShape {
   if (mode === 'ver') return 'nenhum';
   return mode === 'compra' && !expanded ? 'campo' : 'inteiro';
 }
 
-/** A quantidade e a unidade com que o cartão começa (e para onde volta depois de pôr um item). */
-export const DEFAULT_AMOUNT: { quantity: string; unit: Unit } = { quantity: '1', unit: 'un' };
+/**
+ * O campo de pôr item, sem o campo da quantidade ao lado: o exemplo diz que ela vai no próprio texto. Cabe inteiro
+ * num celular de 360 também no modo compra, com o botão "Mais opções" ao lado. Sem rótulo à parte: é ele que o
+ * leitor de tela lê.
+ */
+export const ADD_FIELD_PLACEHOLDER = 'Adicionar (ex.: 2 kg arroz)';
+
+/** A quantidade de sempre, quando a linha não diz outra: 1 un. */
+export function isUsualAmount(quantity: number, unit: Unit): boolean {
+  return quantity === 1 && unit === 'un';
+}
 
 /**
- * O modo compra começa com o cartão inteiro quando a pessoa já tinha mudado a quantidade ou a unidade (alguém pôs o
- * primeiro item no carrinho enquanto ela digitava): recolhido, o item sairia com uma quantidade que ela não vê. Com
- * as de sempre, recolhe. Recolher pelo botão volta as duas para as de sempre, pelo mesmo motivo: só o campo na tela
- * é sempre 1 un.
+ * O botão de pôr o que foi digitado: diz o que vai entrar, o nome lido e, quando não é a de sempre, a quantidade
+ * ('Adicionar "Arroz" · 2 kg'). `label` é o que o leitor de tela diz, sem as aspas e o ponto do meio.
  */
-export function startsExpanded(quantity: string, unit: Unit): boolean {
-  return quantity.trim() !== DEFAULT_AMOUNT.quantity || unit !== DEFAULT_AMOUNT.unit;
+export function addLineButton(line: { name: string; quantity: number; unit: Unit }): { title: string; label: string } {
+  const amount = isUsualAmount(line.quantity, line.unit) ? null : formatQuantity(line.quantity, line.unit);
+  return {
+    title: `Adicionar "${line.name}"${amount ? ` · ${amount}` : ''}`,
+    label: `Adicionar ${line.name}${amount ? `, ${amount}` : ''}`,
+  };
 }
 
 /** "Acho que acabou" e "Comprados recentemente": para montar a lista, e não enquanto a pessoa digita um item. */
@@ -71,8 +92,14 @@ export function emptyListMessage(mode: ListMode): string {
  * só quando a casa tem como lê-lo.
  */
 export function addOptionsLabel(barcode: boolean): string {
-  return `Mais opções: quantidade, unidade, itens comuns, colar lista${barcode ? ' e código de barras' : ''}`;
+  return barcode ? 'Mais opções: itens comuns, colar lista e código de barras' : 'Mais opções: itens comuns e colar lista';
 }
+
+/**
+ * O botão do código de barras, na linha do "Colar lista": o título curto cabe ao lado dele num celular de 360; o
+ * leitor de tela diz a ação inteira.
+ */
+export const BARCODE_BUTTON = { title: 'Código de barras', label: 'Ler código de barras' } as const;
 
 /** O menu do cabeçalho da lista, ao lado da calculadora. */
 export const LIST_MENU_LABEL = 'Opções da lista';

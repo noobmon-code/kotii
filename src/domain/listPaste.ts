@@ -2,7 +2,8 @@
 // o próprio texto que o app manda pelo WhatsApp, listShare) vira itens, um por
 // linha, com quantidade e unidade quando a linha diz. A tela mostra a prévia
 // antes de pôr qualquer coisa: o que já está para comprar na lista não entra
-// de novo.
+// de novo. A mesma leitura serve o campo de pôr item (readListLine): a linha
+// digitada e a linha colada querem dizer sempre a mesma coisa.
 
 import type { Unit } from '@/lib/types';
 
@@ -190,8 +191,14 @@ function isHeading(text: string, first: boolean): boolean {
   return Boolean(marked) && (first || SECTION_TITLES.has(normalizeSearch(marked![1])));
 }
 
+/** Um item lido e se a linha disse a quantidade (sem ela, 1 un). */
+interface ReadItem {
+  item: PastedItem;
+  counted: boolean;
+}
+
 /** Um item da linha, ou null quando ela não diz item nenhum. */
-function readItem(text: string): PastedItem | null {
+function readItem(text: string): ReadItem | null {
   let s = stripTrailing(stripLeading(text.trim()));
   if (!s || s.endsWith(':')) return null;
   // "· urgente", "· se der": a prioridade que o app escreve fica de fora.
@@ -246,6 +253,7 @@ function readItem(text: string): PastedItem | null {
   const timesQuantity = times ? quantityOf(times[1] ?? times[2]) : null;
   if (times && timesQuantity !== null) {
     quantity = timesQuantity;
+    counted = true;
     s = s.slice(0, times.index).trim();
   }
 
@@ -254,7 +262,28 @@ function readItem(text: string): PastedItem | null {
   // Tudo em minúsculas ("arroz", como se digita numa conversa): a primeira letra maiúscula, como os outros itens.
   const shown = name === name.toLocaleLowerCase('pt-BR') ? name.charAt(0).toLocaleUpperCase('pt-BR') + name.slice(1) : name;
   const common = COMMON_BY_KEY.get(listNameKey(shown));
-  return { name: shown, quantity, unit, category: common?.category ?? guessCategory(shown) };
+  return { item: { name: shown, quantity, unit, category: common?.category ?? guessCategory(shown) }, counted };
+}
+
+/** Os caracteres que não se veem (o espaço de largura zero de um texto copiado) saem antes de ler. */
+const cleanText = (text: string) => text.normalize('NFC').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '');
+
+/** O item de uma linha digitada no campo de pôr item: o da colagem, com o que a linha disse da quantidade. */
+export interface TypedLine extends PastedItem {
+  /** A linha disse a quantidade ("2 kg arroz", "leite x2", "1 dz ovos"); sem ela, 1 un, a de sempre. */
+  counted: boolean;
+}
+
+/**
+ * A linha que a pessoa digita no campo de pôr item, lida como a colagem lê cada item: "2 kg arroz", "500 g queijo",
+ * "1 dz ovos", "2 pacotes de arroz", "½ kg presunto", "leite (2)", "leite x2". O tamanho que é parte do nome fica
+ * no nome, como na colagem ("Café Pilão 500g", "Arroz 5kg"), e a observação entre parênteses sai ("Leite (sem
+ * lactose)" é "Leite"). É um item só: a vírgula, que na colagem separa itens, aqui fica no nome. null quando a
+ * linha não diz o que comprar ("2 kg", "3x", só um número).
+ */
+export function readListLine(text: string): TypedLine | null {
+  const read = readItem(cleanText(text).slice(0, LINE_MAX));
+  return read ? { ...read.item, counted: read.counted } : null;
 }
 
 /**
@@ -270,7 +299,7 @@ function readItem(text: string): PastedItem | null {
  */
 export function parsePastedList(text: string): { items: PastedItem[]; cut: number; more: boolean } {
   const items: PastedItem[] = [];
-  const lines = text.normalize('NFC').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '').split(/\r\n|\r|\n/).slice(0, MAX_LINES);
+  const lines = cleanText(text).split(/\r\n|\r|\n/).slice(0, MAX_LINES);
   // Os números no começo seguem 1, 2, 3 ("1- Arroz", "2- Feijão"): numeração, que sai.
   const numbered = isNumbering(lines);
   let first = true;
@@ -284,8 +313,8 @@ export function parsePastedList(text: string): { items: PastedItem[]; cut: numbe
     first = false;
     if (heading) continue;
     for (const part of splitItems(line)) {
-      const item = readItem(part);
-      if (item) items.push(item);
+      const read = readItem(part);
+      if (read) items.push(read.item);
       // Bem além do que entra, a conta para: a tela relê o texto a cada letra e não pode travar num texto enorme.
       if (items.length > COUNT_MAX) return { items: items.slice(0, PASTE_MAX_ITEMS), cut: COUNT_MAX - PASTE_MAX_ITEMS, more: true };
     }

@@ -104,7 +104,8 @@ export function Screen({
   maxWidth?: number;
   /**
    * Tela que usa a largura do computador (as abas, arrumadas em colunas): na janela larga do navegador o conteúdo
-   * vai até DESKTOP_CONTENT_WIDTH. No celular e na janela estreita, a largura de sempre.
+   * vai até DESKTOP_CONTENT_WIDTH (o rodapé, não: fica em `maxWidth`). No celular e na janela estreita, a largura de
+   * sempre.
    */
   wide?: boolean;
   /**
@@ -118,6 +119,9 @@ export function Screen({
   const max = wide && desktop ? DESKTOP_CONTENT_WIDTH : maxWidth;
   // Só a tela que pede outra largura ganha um estilo a mais: as outras ficam como sempre foram.
   const width = max === MAX_WIDTH ? null : { maxWidth: max };
+  // O rodapé (o botão da tela, como o "Finalizar compra" da lista) não se estica pela largura do computador: fica na
+  // da tela, como no celular.
+  const footerWidth = maxWidth === MAX_WIDTH ? null : { maxWidth };
   // Sem a rolagem da tela, o conteúdo ocupa só a altura dela (flex 1, e não só flexGrow): no navegador, com o
   // flexShrink 0 e a base auto do react-native-web, ele cresceria até a altura da lista que tem dentro, e a lista
   // (que rola sozinha) não teria uma altura para rolar.
@@ -151,7 +155,7 @@ export function Screen({
       )}
       {footer ? (
         <View style={[styles.footer, { borderTopColor: c.glassBorder, backgroundColor: c.glassStrong }]}>
-          <View style={[styles.footerInner, width]}>{footer}</View>
+          <View style={[styles.footerInner, footerWidth]}>{footer}</View>
         </View>
       ) : null}
     </SafeAreaView>

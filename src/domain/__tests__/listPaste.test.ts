@@ -1,10 +1,71 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { listShareText, type ShareItem } from '../listShare';
-import { PASTE_MAX_ITEMS, parsePastedList, pastePreview, pasteToAdd, type PastedItem } from '../listPaste';
+import { PASTE_MAX_ITEMS, parsePastedList, pastePreview, pasteToAdd, readListLine, type PastedItem } from '../listPaste';
 
 /** Nome, quantidade e unidade de cada item lido. */
 const read = (text: string) => parsePastedList(text).items.map(({ name, quantity, unit }) => [name, quantity, unit]);
+/** A linha digitada no campo de pôr item: nome, quantidade, unidade e se ela disse a quantidade. */
+const typed = (text: string) => {
+  const line = readListLine(text);
+  return line && [line.name, line.quantity, line.unit, line.counted];
+};
+
+describe('readListLine: a linha digitada no campo de pôr item', () => {
+  it('lê a quantidade como a colagem: na frente, com unidade, embalagem, dúzia e fração', () => {
+    expect(typed('2 kg arroz')).toEqual(['Arroz', 2, 'kg', true]);
+    expect(typed('2kg de arroz')).toEqual(['Arroz', 2, 'kg', true]);
+    expect(typed('500 g queijo')).toEqual(['Queijo', 500, 'g', true]);
+    expect(typed('1 dz ovos')).toEqual(['Ovos', 12, 'un', true]);
+    expect(typed('2 pacotes de arroz')).toEqual(['Arroz', 2, 'un', true]);
+    expect(typed('½ kg presunto')).toEqual(['Presunto', 0.5, 'kg', true]);
+    expect(typed('1,5 l suco de uva')).toEqual(['Suco de uva', 1.5, 'l', true]);
+    expect(typed('3 leite')).toEqual(['Leite', 3, 'un', true]);
+    expect(typed('2x leite')).toEqual(['Leite', 2, 'un', true]);
+  });
+
+  it('a quantidade depois do nome também conta como dita: "leite (2)", "leite x2", "arroz (5 kg)"', () => {
+    expect(typed('leite (2)')).toEqual(['Leite', 2, 'un', true]);
+    expect(typed('Leite x2')).toEqual(['Leite', 2, 'un', true]);
+    expect(typed('Leite 2x')).toEqual(['Leite', 2, 'un', true]);
+    expect(typed('Arroz (5 kg)')).toEqual(['Arroz', 5, 'kg', true]);
+  });
+
+  it('sem quantidade na linha, 1 un, e não conta como dita', () => {
+    expect(typed('arroz')).toEqual(['Arroz', 1, 'un', false]);
+    expect(typed('  Leite desnatado ')).toEqual(['Leite desnatado', 1, 'un', false]);
+  });
+
+  it('o tamanho que é parte do nome fica no nome, como na colagem; o número que é do nome também', () => {
+    expect(typed('Café Pilão 500g')).toEqual(['Café Pilão 500g', 1, 'un', false]);
+    expect(typed('arroz 2kg')).toEqual(['Arroz 2kg', 1, 'un', false]);
+    expect(typed('Coca 2l')).toEqual(['Coca 2l', 1, 'un', false]);
+    expect(typed('2 em 1 shampoo')).toEqual(['2 em 1 shampoo', 1, 'un', false]);
+    expect(typed('Ovos (dúzia)')).toEqual(['Ovos (dúzia)', 1, 'un', false]);
+  });
+
+  it('a mesma leitura da linha colada: cada exemplo dá o mesmo item nos dois caminhos', () => {
+    for (const text of ['2 kg arroz', 'arroz 2kg', '500 g queijo', '1 dz ovos', '2 pacotes de arroz', '½ kg presunto', 'leite (2)', 'Leite (sem lactose)', '- Café']) {
+      const line = readListLine(text)!;
+      const { name, quantity, unit, category } = line;
+      expect([{ name, quantity, unit, category }]).toEqual(parsePastedList(text).items);
+    }
+  });
+
+  it('um item só: a vírgula fica no nome (na colagem ela separa itens), e "1,5 kg" continua a quantidade', () => {
+    expect(typed('arroz, feijão')).toEqual(['Arroz, feijão', 1, 'un', false]);
+    expect(typed('1,5 kg tomate')).toEqual(['Tomate', 1.5, 'kg', true]);
+  });
+
+  it('a linha que não diz o que comprar não é item: só a quantidade, só um número, vazia', () => {
+    for (const text of ['', '   ', '2', '2 kg', '2 kg de', '3x', '---']) expect(readListLine(text)).toBeNull();
+  });
+
+  it('a categoria: a do item comum de mesmo nome, ou o chute pelo nome', () => {
+    expect(readListLine('2 kg banana')!.category).toBe('hortifruti');
+    expect(readListLine('detergente')!.category).toBe('limpeza');
+  });
+});
 
 describe('parsePastedList: os formatos', () => {
   it('um item por linha, com marcadores e emojis no começo, e as linhas vazias de fora', () => {

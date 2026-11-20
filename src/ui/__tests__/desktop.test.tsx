@@ -242,6 +242,20 @@ describe('a tela', () => {
     );
     expect(flat(content(root)).maxWidth).toBe(MAX_WIDTH);
   });
+
+  it('no computador, o rodapé da tela larga (o botão da lista) não se estica: fica na largura de sempre', async () => {
+    /** A caixa de dentro do rodapé: a que centra o botão. */
+    const footer = (root: ReactTestInstance) => boxes(root).find((box) => flat(box).alignSelf === 'center' && flat(box).padding === undefined)!;
+    await browser(1440);
+    const root = await mount(
+      <Screen wide footer={<Text>Finalizar compra</Text>}>
+        <Text>itens</Text>
+      </Screen>,
+    );
+    expect(flat(content(root)).maxWidth).toBe(DESKTOP_CONTENT_WIDTH);
+    expect(text(footer(root))).toBe('Finalizar compra');
+    expect(flat(footer(root)).maxWidth).toBe(MAX_WIDTH);
+  });
 });
 
 describe('o menu de ações', () => {

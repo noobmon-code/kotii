@@ -1,17 +1,20 @@
 import { describe, expect, it } from '@jest/globals';
 
 import {
+  ADD_FIELD_PLACEHOLDER,
   addCardShape,
+  addLineButton,
   addOptionsLabel,
-  DEFAULT_AMOUNT,
+  BARCODE_BUTTON,
   emptyListMessage,
+  isUsualAmount,
   LIST_MENU_LABELS,
   listMenuActions,
   listMode,
   showsEmptyList,
   showsSuggestions,
-  startsExpanded,
 } from '../listMode';
+import { readListLine } from '../listPaste';
 
 describe('listMode: montar a lista ou fazer a compra', () => {
   it('sem nada no carrinho e sem ida própria, montando', () => {
@@ -49,16 +52,32 @@ describe('addCardShape: o cartão de pôr item', () => {
   });
 });
 
-describe('startsExpanded: o modo compra começa recolhido só com a quantidade de sempre', () => {
-  it('1 un, recolhe', () => {
-    expect(startsExpanded(DEFAULT_AMOUNT.quantity, DEFAULT_AMOUNT.unit)).toBe(false);
-    expect(startsExpanded(' 1 ', 'un')).toBe(false);
+describe('o campo de pôr item: a quantidade vem do texto', () => {
+  it('o exemplo do campo diz que a quantidade vai no texto, e é lido como a linha que mostra', () => {
+    expect(ADD_FIELD_PLACEHOLDER).toBe('Adicionar (ex.: 2 kg arroz)');
+    const example = /ex\.: (.+)\)$/.exec(ADD_FIELD_PLACEHOLDER)![1];
+    expect(readListLine(example)).toMatchObject({ name: 'Arroz', quantity: 2, unit: 'kg', counted: true });
   });
 
-  it('outra quantidade, outra unidade ou o campo apagado: fica inteiro, para o item não sair com o que não se vê', () => {
-    expect(startsExpanded('3', 'un')).toBe(true);
-    expect(startsExpanded('1', 'kg')).toBe(true);
-    expect(startsExpanded('', 'un')).toBe(true);
+  it('a quantidade de sempre é 1 un', () => {
+    expect(isUsualAmount(1, 'un')).toBe(true);
+    expect(isUsualAmount(2, 'un')).toBe(false);
+    expect(isUsualAmount(1, 'kg')).toBe(false);
+  });
+
+  it('o botão diz o que vai entrar: o nome lido e, fora a de sempre, a quantidade', () => {
+    expect(addLineButton(readListLine('2 kg arroz')!)).toEqual({ title: 'Adicionar "Arroz" · 2 kg', label: 'Adicionar Arroz, 2 kg' });
+    expect(addLineButton(readListLine('leite x2')!)).toEqual({ title: 'Adicionar "Leite" · 2 un', label: 'Adicionar Leite, 2 un' });
+    expect(addLineButton(readListLine('½ kg presunto')!).title).toBe('Adicionar "Presunto" · 0,5 kg');
+    expect(addLineButton(readListLine('café')!)).toEqual({ title: 'Adicionar "Café"', label: 'Adicionar Café' });
+    // "1 leite" é a de sempre: o botão não repete.
+    expect(addLineButton(readListLine('1 leite')!).title).toBe('Adicionar "Leite"');
+    // O tamanho que é do nome fica no nome, e o botão mostra assim.
+    expect(addLineButton(readListLine('Café Pilão 500g')!).title).toBe('Adicionar "Café Pilão 500g"');
+  });
+
+  it('o botão do código de barras: curto na tela, a ação inteira para o leitor de tela', () => {
+    expect(BARCODE_BUTTON).toEqual({ title: 'Código de barras', label: 'Ler código de barras' });
   });
 });
 
@@ -99,8 +118,8 @@ describe('showsEmptyList e emptyListMessage: a lista sem itens', () => {
 
 describe('addOptionsLabel: o botão "Mais opções" para o leitor de tela', () => {
   it('diz o que ele abre; o código de barras só quando a casa tem como lê-lo', () => {
-    expect(addOptionsLabel(true)).toBe('Mais opções: quantidade, unidade, itens comuns, colar lista e código de barras');
-    expect(addOptionsLabel(false)).toBe('Mais opções: quantidade, unidade, itens comuns, colar lista');
+    expect(addOptionsLabel(true)).toBe('Mais opções: itens comuns, colar lista e código de barras');
+    expect(addOptionsLabel(false)).toBe('Mais opções: itens comuns e colar lista');
   });
 });
 

@@ -52,21 +52,22 @@ import {
   type PantryHit,
 } from '@/domain/listEstimate';
 import { compareForShopping, repeatedQuantity } from '@/domain/listItem';
-import type { PastedItem } from '@/domain/listPaste';
+import { readListLine, type PastedItem } from '@/domain/listPaste';
 import { shoppingSections } from '@/domain/listSections';
 import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { todayISO } from '@/domain/dates';
 import { brandChoice, genericItem, pendingSameItem, productSuggestions, sameListItem } from '@/domain/genericItem';
 import { listNameKey } from '@/domain/listLinks';
 import {
+  ADD_FIELD_PLACEHOLDER,
   addCardShape,
+  addLineButton,
   addOptionsLabel,
-  DEFAULT_AMOUNT,
+  BARCODE_BUTTON,
   emptyListMessage,
   listMode,
   showsEmptyList,
   showsSuggestions,
-  startsExpanded,
   type ListMenuAction,
 } from '@/domain/listMode';
 import {
@@ -81,7 +82,7 @@ import {
 } from '@/domain/finishPurchase';
 import { cartPurchases } from '@/domain/listQueue';
 import { newDuringTrip, ownLiveTrip, type MarketTrip } from '@/domain/marketTrips';
-import { formatQuantity, parseDecimal } from '@/domain/money';
+import { formatQuantity } from '@/domain/money';
 import { fitsList, listExclusion, recentPurchases, type RecentItem } from '@/domain/recentPurchases';
 import { ranOutItems, restockFrom } from '@/domain/restock';
 import { guessCategory, normalizeSearch } from '@/domain/search';
@@ -108,14 +109,14 @@ import { isNetworkFailure } from '@/lib/networkErrors';
 import { pruneAddedItems, useAddedItems } from '@/lib/addedItems';
 import { chooseStore, restoreStoreChoice, useStoreChoice } from '@/lib/storeChoice';
 import { errorMessage } from '@/lib/supabase';
-import { UNITS, type Product, type ShoppingListItem, type Unit } from '@/lib/types';
+import type { Product, ShoppingListItem, Unit } from '@/lib/types';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
+import { Columns, useDesktop } from '@/ui/desktop';
 import { afterPaint, askYesNo, confirmAction, notify } from '@/ui/dialogs';
 import {
   Button,
   Card,
   CategoryIcon,
-  Chip,
   EmptyState,
   ErrorNotice,
   IconBadge,
@@ -141,7 +142,7 @@ interface Repeated {
   listed: ShoppingListItem;
   item: NewListItem;
   otherName: boolean;
-  /** A pessoa disse a quantidade (o campo preenchido ou outra unidade escolhida). */
+  /** A pessoa disse a quantidade (a linha digitada a trazia: "2 kg arroz"). */
   given: boolean;
 }
 
@@ -182,9 +183,10 @@ export default function ShoppingListScreen() {
   const queryClient = useQueryClient();
   const refreshTrips = useRefreshMarketTrips();
 
+  // O que se digita no campo: o item e, quando a linha diz, a quantidade ("2 kg arroz", "leite x2"), lidos como o
+  // "Colar lista" lê cada linha (domain/listPaste). Sem quantidade na linha, 1 un.
   const [name, setName] = useState('');
-  const [quantity, setQuantity] = useState(DEFAULT_AMOUNT.quantity);
-  const [unit, setUnit] = useState<Unit>(DEFAULT_AMOUNT.unit);
+  const line = useMemo(() => readListLine(name), [name]);
   const [pickerOpen, setPickerOpen] = useState(firstList);
   // Guardar na despensa: um item (botão do item) ou o carrinho todo (Limpar),
   // com o carrinho como estava no toque. `finishing`: veio do "Finalizar compra" (sem a nota), e por isso termina
@@ -234,23 +236,17 @@ export default function ShoppingListScreen() {
     inCart: (items.data ?? []).filter((i) => i.checked_at).length,
     ownTrip: Boolean(myTrip),
   });
-  // "Mais opções", no modo compra: o cartão inteiro de volta. Ao entrar no modo compra ele recolhe, a menos que a
-  // quantidade ou a unidade já tivessem mudado (o item sairia com o que não se vê); ao sair, esquece.
+  // "Mais opções", no modo compra: os itens comuns, colar a lista e o código de barras de volta. Ao entrar no modo
+  // compra (e ao sair dele) recolhe: a quantidade está no texto do campo, que fica, e recolher não muda o que entra.
   const [moreOptions, setMoreOptions] = useState(false);
   const [shownMode, setShownMode] = useState(mode);
   if (mode !== shownMode) {
     setShownMode(mode);
-    setMoreOptions(mode === 'compra' && startsExpanded(quantity, unit));
+    setMoreOptions(false);
   }
   const card = addCardShape(mode, moreOptions);
-  /** Recolher volta a quantidade e a unidade às de sempre: só o campo na tela é sempre 1 un. */
-  const toggleMoreOptions = () => {
-    if (moreOptions) {
-      setQuantity(DEFAULT_AMOUNT.quantity);
-      setUnit(DEFAULT_AMOUNT.unit);
-    }
-    setMoreOptions(!moreOptions);
-  };
+  // No computador (ui/desktop) a lista fica na coluna principal: a "Lista vazia" vai para lá.
+  const desktop = useDesktop();
 
   // Fotos dos itens: as enviadas (links guardados para ver sem internet) e as que esperam internet.
   const photos = {
@@ -289,8 +285,9 @@ export default function ShoppingListScreen() {
     return at;
   }, [purchases.data, prices.data]);
 
+  // As sugestões procuram o nome, sem a quantidade ("2 kg arr" procura "arr").
   const suggestions = useMemo(() => {
-    const q = normalizeSearch(name);
+    const q = normalizeSearch(line?.name ?? '');
     if (q.length < 2) return { products: [], common: [] };
     const matched = productSuggestions(products.data ?? [], q, lastUsed);
     const seen = new Set(matched.map(({ product }) => genericItem(product.name, product.category).key));
@@ -298,36 +295,41 @@ export default function ShoppingListScreen() {
       .filter((i) => !productByName.has(normalizeSearch(i.name)) && !seen.has(genericItem(i.name, i.category).key))
       .slice(0, Math.max(2, 6 - matched.length));
     return { products: matched, common };
-  }, [name, products.data, productByName, lastUsed]);
+  }, [line, products.data, productByName, lastUsed]);
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
   function resetForm() {
     setName('');
-    setQuantity(DEFAULT_AMOUNT.quantity);
-    setUnit(DEFAULT_AMOUNT.unit);
   }
 
-  /** O campo da quantidade preenchido ou outra unidade escolhida: a pessoa disse quanto quer. */
-  const quantityGiven = () => quantity.trim() !== '' || unit !== 'un';
+  /**
+   * A quantidade que a linha digitada disse ("2 kg arroz"); sem ela, 1 un, a de sempre, e não conta como dita (o
+   * item que já está em outra unidade só ganha o aviso).
+   */
+  const typedAmount = (): { quantity: number; unit: Unit; given: boolean } =>
+    line?.counted ? { quantity: line.quantity, unit: line.unit, given: true } : { quantity: 1, unit: 'un', given: false };
 
   // Pôr item vai pela fila da lista: aparece na hora, também sem internet, e o campo já fica livre para o próximo.
   // Se a fila desistir, o aviso sai dela (lib/queryClient), também com a tela já fechada. O produto escolhido na
-  // busca entra sem a marca (`productName`, de genericItem), com ele como dica de preço.
+  // busca entra sem a marca (`productName`, de genericItem), com ele como dica de preço, e com a quantidade que a
+  // pessoa digitou antes de escolher.
   function add(product?: Product, productName?: string) {
-    const itemName = productName ?? product?.name ?? name.trim();
-    if (!itemName) return;
-    const qty = parseDecimal(quantity) ?? 1;
+    const typed = !product && !productName;
+    // A linha que não diz o que comprar ("2 kg", só um número) não põe nada.
+    if (typed && !line) return;
+    const itemName = productName ?? product?.name ?? line!.name;
+    const amount = typedAmount();
     put(
       {
         name: itemName,
-        category: product?.category ?? guessCategory(itemName),
+        category: product?.category ?? (typed ? line!.category : guessCategory(itemName)),
         productId: product?.id ?? null,
-        quantity: qty > 0 ? qty : 1,
-        unit,
+        quantity: amount.quantity,
+        unit: amount.unit,
       },
-      !product && !productName,
-      quantityGiven(),
+      typed,
+      amount.given,
     );
   }
 
@@ -338,23 +340,23 @@ export default function ShoppingListScreen() {
   /** Item comum das sugestões: liga ao produto da casa de mesmo nome, se existir. */
   function addCommon(item: CommonItem) {
     const product = productByName.get(normalizeSearch(item.name));
-    const qty = parseDecimal(quantity) ?? 1;
+    const amount = typedAmount();
     put(
       {
         name: item.name,
         category: product?.category ?? item.category,
         productId: product?.id ?? null,
-        quantity: qty > 0 ? qty : 1,
-        // A unidade do catálogo vale, a menos que o usuário tenha escolhido outra.
-        unit: unit !== 'un' ? unit : item.unit,
+        quantity: amount.quantity,
+        // A quantidade digitada vale inteira ("2 kg banana"); sem ela, 1 na unidade do catálogo (a banana, em kg).
+        unit: amount.given ? amount.unit : item.unit,
       },
       false,
-      quantityGiven(),
+      amount.given,
     );
   }
 
   /**
-   * Põe o item do cartão (o digitado, a sugestão da busca ou o código lido), com a quantidade do campo. O mesmo
+   * Põe o item do cartão (o digitado, a sugestão da busca ou o código lido), com a quantidade digitada. O mesmo
    * item já para comprar nesta lista, com este nome ou outro ("Leite IL Desnatado" e "Leite desnatado"), não entra
    * de novo sem a pessoa dizer: ela escolhe entre somar a quantidade, pôr como outro item ou deixar como está.
    * `typed`: o nome digitado, que, diferente do pendente ("Leite" com "Leite IL Desnatado"), pode ser outro pedido.
@@ -912,9 +914,17 @@ export default function ShoppingListScreen() {
     }
   }
 
+  // "Lista vazia": no celular, onde sempre esteve (depois das faixas); no computador, na coluna dos itens.
+  const emptyList = showsEmptyList({ mode, items: pending.length + checked.length, suggestions: recentItems.length + restockItems.length }) ? (
+    <EmptyState icon="cart-outline" title="Lista vazia" message={emptyListMessage(mode)} />
+  ) : null;
+  const addButton = line ? addLineButton(line) : null;
+
   return (
     <Screen
       edges={[]}
+      // No computador, a largura das abas: os itens numa coluna, o cartão de pôr item e a conta na outra.
+      wide
       // Puxar atualiza também os preços (os da casa e os de outras casas), a despensa, as ligações, os produtos, os
       // mercados e o histórico: só os itens chegam sozinhos (tempo real). O indicador segue os itens, para as outras
       // buscas não o fazerem piscar.
@@ -949,197 +959,201 @@ export default function ShoppingListScreen() {
         <FirstListFlow onCatalog={() => setPickerOpen(true)} onFinish={() => router.setParams({ primeira: undefined })} />
       ) : null}
 
-      {archived ? (
-        // A lista arquivada é só para ver: reabrir fica aqui, à vista, e também no menu do cabeçalho.
-        <Card style={styles.archivedCard}>
-          <Row gap={space.md}>
-            <IconBadge icon="archive-outline" tone="neutral" />
-            <Text variant="body" style={styles.flex}>
-              Esta lista está arquivada. Reabra para mexer nela.
-            </Text>
-          </Row>
-          <Button
-            title="Reabrir lista"
-            variant="secondary"
-            icon="archive-arrow-up-outline"
-            loading={reopen.isPending}
-            onPress={reopenList}
-          />
-        </Card>
-      ) : (
-        <>
-          <Card style={styles.addCard}>
-            {/* O campo é o mesmo nos dois jeitos do cartão (o primeiro filho da primeira linha): o modo compra que
-                começa no meio da digitação (alguém pôs no carrinho) não tira o teclado nem o texto. */}
-            <Row>
-              <View style={styles.flex}>
-                <TextField
-                  value={name}
-                  onChangeText={setName}
-                  placeholder="Adicionar item"
-                  returnKeyType="done"
-                  onSubmitEditing={() => add()}
+      {/* No computador (ui/desktop): os itens na coluna principal; o cartão de pôr item, as faixas, a conta e a ida, na
+          do lado, que vem primeiro na ordem do teclado e do leitor de tela, como no celular. No celular, tudo em
+          sequência, como sempre. */}
+      <Columns
+        sideFirst
+        side={
+          <>
+            {archived ? (
+              // A lista arquivada é só para ver: reabrir fica aqui, à vista, e também no menu do cabeçalho.
+              <Card style={styles.archivedCard}>
+                <Row gap={space.md}>
+                  <IconBadge icon="archive-outline" tone="neutral" />
+                  <Text variant="body" style={styles.flex}>
+                    Esta lista está arquivada. Reabra para mexer nela.
+                  </Text>
+                </Row>
+                <Button
+                  title="Reabrir lista"
+                  variant="secondary"
+                  icon="archive-arrow-up-outline"
+                  loading={reopen.isPending}
+                  onPress={reopenList}
+                />
+              </Card>
+            ) : (
+              <>
+                <Card style={styles.addCard}>
+                  {/* O campo é o mesmo nos dois jeitos do cartão (o primeiro filho da primeira linha): o modo compra que
+                      começa no meio da digitação (alguém pôs no carrinho) não tira o teclado nem o texto. A quantidade
+                      vem do que se digita ("2 kg arroz"), e o botão de pôr mostra como ficou. */}
+                  <Row>
+                    <View style={styles.flex}>
+                      <TextField
+                        value={name}
+                        onChangeText={setName}
+                        placeholder={ADD_FIELD_PLACEHOLDER}
+                        returnKeyType="done"
+                        onSubmitEditing={() => add()}
+                      />
+                    </View>
+                    {mode === 'compra' ? (
+                      <IconButton
+                        icon={moreOptions ? 'chevron-up' : 'tune-variant'}
+                        label={addOptionsLabel(barcode.available)}
+                        color="primary"
+                        expanded={moreOptions}
+                        onPress={() => setMoreOptions(!moreOptions)}
+                      />
+                    ) : null}
+                  </Row>
+                  {suggestions.products.map(({ product, name: itemName }) => (
+                    <ListRow
+                      key={product.id}
+                      left={<CategoryIcon category={product.category} name={itemName} size={32} />}
+                      title={itemName}
+                      subtitle="Produto com histórico de preço"
+                      onPress={() => add(product, itemName)}
+                    />
+                  ))}
+                  {suggestions.common.map((item) => (
+                    <ListRow
+                      key={item.name}
+                      left={<CategoryIcon category={item.category} name={item.name} size={32} />}
+                      title={item.name}
+                      subtitle={getCategory(item.category).label}
+                      onPress={() => addCommon(item)}
+                    />
+                  ))}
+                  {addButton ? (
+                    <Button title={addButton.title} accessibilityLabel={addButton.label} icon="plus" compact onPress={() => add()} />
+                  ) : !name.trim() && card === 'inteiro' ? (
+                    <>
+                      <Button title="Escolher dos itens comuns" icon="playlist-plus" variant="secondary" compact onPress={() => setPickerOpen(true)} />
+                      {/* Colar e ler o código numa linha só; sem o código de barras (o banco sem a tabela), colar sozinho. */}
+                      <Row style={styles.tools}>
+                        <Button
+                          title="Colar lista"
+                          icon="clipboard-text-outline"
+                          variant="ghost"
+                          compact
+                          style={styles.tool}
+                          onPress={() => setPasting(true)}
+                        />
+                        {barcode.available ? (
+                          <Button
+                            title={BARCODE_BUTTON.title}
+                            accessibilityLabel={BARCODE_BUTTON.label}
+                            icon="barcode-scan"
+                            variant="ghost"
+                            compact
+                            style={styles.tool}
+                            loading={barcode.busy}
+                            onPress={barcode.start}
+                          />
+                        ) : null}
+                      </Row>
+                    </>
+                  ) : null}
+                </Card>
+                {barcode.element}
+
+                {/* Para montar a lista; no modo compra (e enquanto se digita) saem da frente, e a lista sobe. */}
+                {showsSuggestions(mode, Boolean(name.trim())) ? (
+                  <>
+                    <RestockStrip items={restockItems} onAdd={addRecent} />
+                    <RecentPurchases items={recentItems} onAdd={addRecent} />
+                  </>
+                ) : null}
+              </>
+            )}
+
+            {desktop ? null : emptyList}
+
+            {list.data.kind !== 'outros' && (pending.length || checked.length) ? (
+              <ListEstimateCard
+                estimate={market.estimate}
+                kind={list.data.kind}
+                storeId={storeId}
+                storeNames={storeNames}
+                sourcesLoaded={sourcesLoaded}
+                onChangeStore={(store) => chooseStore(id, store)}
+                inPantry={pending.filter((i) => market.inPantry.has(i.id)).map((i) => i.name)}
+              />
+            ) : null}
+
+            {/* Vale com a lista vazia também: é para os outros porem o que falta. Arquivada, não. */}
+            {archived ? null : <MarketTripAction list={list.data} />}
+          </>
+        }>
+        {desktop ? emptyList : null}
+
+        {pending.length ? (
+          <Section
+            title={`Para comprar (${pending.length})`}
+            // Para quem vai às compras e não tem o app; sem nada para comprar não há o que mandar.
+            action={<Button title="Mandar a lista" variant="ghost" compact onPress={() => setSharing(true)} />}>
+            {/* Lista longa: os urgentes e depois os corredores, com os mesmos títulos do texto do WhatsApp. */}
+            {shoppingSections(pending).map((section) => (
+              <View key={section.title ?? 'lista'} style={styles.aisle}>
+                {section.title ? (
+                  <Text variant="small" accessibilityRole="header">
+                    {section.title}
+                  </Text>
+                ) : null}
+                <ShoppingGrid
+                  items={section.items}
+                  photos={photos}
+                  hints={market.hints}
+                  readOnly={archived}
+                  onToggle={toggleItem}
+                  onOpen={setEditing}
                 />
               </View>
-              {card === 'inteiro' ? (
-                <View style={styles.qty}>
-                  <TextField value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" accessibilityLabel="Quantidade" />
-                </View>
-              ) : null}
-              {mode === 'compra' ? (
-                <IconButton
-                  icon={moreOptions ? 'chevron-up' : 'tune-variant'}
-                  label={addOptionsLabel(barcode.available)}
-                  color="primary"
-                  expanded={moreOptions}
-                  onPress={toggleMoreOptions}
-                />
-              ) : null}
-            </Row>
-            {card === 'inteiro' ? (
-              <Row style={styles.wrap}>
-                {UNITS.map((u) => (
-                  <Chip key={u} label={u} selected={unit === u} onPress={() => setUnit(u)} />
-                ))}
-              </Row>
-            ) : null}
-            {suggestions.products.map(({ product, name: itemName }) => (
-              <ListRow
-                key={product.id}
-                left={<CategoryIcon category={product.category} name={itemName} size={32} />}
-                title={itemName}
-                subtitle="Produto com histórico de preço"
-                onPress={() => add(product, itemName)}
-              />
             ))}
-            {suggestions.common.map((item) => (
-              <ListRow
-                key={item.name}
-                left={<CategoryIcon category={item.category} name={item.name} size={32} />}
-                title={item.name}
-                subtitle={getCategory(item.category).label}
-                onPress={() => addCommon(item)}
-              />
-            ))}
-            {name.trim() ? (
-              <Button title={`Adicionar "${name.trim()}"`} icon="plus" compact onPress={() => add()} />
-            ) : card === 'inteiro' ? (
-              <>
-                <Button title="Escolher dos itens comuns" icon="playlist-plus" variant="secondary" compact onPress={() => setPickerOpen(true)} />
-                <Button
-                  title="Colar lista"
-                  icon="clipboard-text-outline"
-                  variant="ghost"
-                  compact
-                  onPress={() => setPasting(true)}
-                />
-              </>
-            ) : null}
-            {barcode.available && card === 'inteiro' ? (
-              <Button
-                title="Ler código de barras"
-                icon="barcode-scan"
-                variant="ghost"
-                compact
-                loading={barcode.busy}
-                onPress={barcode.start}
-              />
-            ) : null}
-          </Card>
-          {barcode.element}
-
-          {/* Para montar a lista; no modo compra (e enquanto se digita) saem da frente, e a lista sobe. */}
-          {showsSuggestions(mode, Boolean(name.trim())) ? (
-            <>
-              <RestockStrip items={restockItems} onAdd={addRecent} />
-              <RecentPurchases items={recentItems} onAdd={addRecent} />
-            </>
-          ) : null}
-        </>
-      )}
-
-      {showsEmptyList({ mode, items: pending.length + checked.length, suggestions: recentItems.length + restockItems.length }) ? (
-        <EmptyState icon="cart-outline" title="Lista vazia" message={emptyListMessage(mode)} />
-      ) : null}
-
-      {list.data.kind !== 'outros' && (pending.length || checked.length) ? (
-        <ListEstimateCard
-          estimate={market.estimate}
-          kind={list.data.kind}
-          storeId={storeId}
-          storeNames={storeNames}
-          sourcesLoaded={sourcesLoaded}
-          onChangeStore={(store) => chooseStore(id, store)}
-          inPantry={pending.filter((i) => market.inPantry.has(i.id)).map((i) => i.name)}
-        />
-      ) : null}
-
-      {/* Vale com a lista vazia também: é para os outros porem o que falta. Arquivada, não. */}
-      {archived ? null : <MarketTripAction list={list.data} />}
-
-      {pending.length ? (
-        <Section
-          title={`Para comprar (${pending.length})`}
-          // Para quem vai às compras e não tem o app; sem nada para comprar não há o que mandar.
-          action={<Button title="Mandar a lista" variant="ghost" compact onPress={() => setSharing(true)} />}>
-          {/* Lista longa: os urgentes e depois os corredores, com os mesmos títulos do texto do WhatsApp. */}
-          {shoppingSections(pending).map((section) => (
-            <View key={section.title ?? 'lista'} style={styles.aisle}>
-              {section.title ? (
-                <Text variant="small" accessibilityRole="header">
-                  {section.title}
-                </Text>
-              ) : null}
-              <ShoppingGrid
-                items={section.items}
-                photos={photos}
-                hints={market.hints}
-                readOnly={archived}
-                onToggle={toggleItem}
-                onOpen={setEditing}
-              />
-            </View>
-          ))}
-        </Section>
-      ) : checked.length && !archived ? (
-        // O "Finalizar compra" também aqui, no estado (o do rodapé, o primário, fica no mesmo lugar de sempre).
-        <EmptyState
-          icon="cart-check"
-          title="Tudo no carrinho!"
-          message={ALL_IN_CART_MESSAGE}
-          tint="green"
-          action={
-            <Button title={FINISH_LABEL} icon="receipt-text-check-outline" variant="secondary" loading={finish.busy} onPress={finish.start} />
-          }
-        />
-      ) : null}
-
-      {checked.length ? (
-        <Section
-          title={`No carrinho (${checked.length})`}
-          action={
-            archived ? undefined : <Button title="Limpar" variant="ghost" compact onPress={() => void openStore(checked, false)} />
-          }>
-          <ShoppingGrid
-            items={checked}
-            inCart
-            readOnly={archived}
-            onToggle={toggleItem}
-            photos={photos}
-            hints={market.hints}
-            onOpen={setEditing}
-            onStore={archived ? undefined : (item) => void openStore([item], true)}
+          </Section>
+        ) : checked.length && !archived ? (
+          // O "Finalizar compra" também aqui, no estado (o do rodapé, o primário, fica no mesmo lugar de sempre).
+          <EmptyState
+            icon="cart-check"
+            title="Tudo no carrinho!"
+            message={ALL_IN_CART_MESSAGE}
+            tint="green"
+            action={
+              <Button title={FINISH_LABEL} icon="receipt-text-check-outline" variant="secondary" loading={finish.busy} onPress={finish.start} />
+            }
           />
-        </Section>
-      ) : null}
+        ) : null}
 
-      {(pending.length || checked.length) && !archived ? (
-        <Text variant="small" style={styles.center}>
-          Toque num item para pôr no carrinho; toque de novo para devolver. Segure para ver os detalhes: foto,
-          descrição, prioridade e categoria.
-          {checked.length ? ' No carrinho, a geladeira guarda o item na despensa.' : ''}
-        </Text>
-      ) : null}
+        {checked.length ? (
+          <Section
+            title={`No carrinho (${checked.length})`}
+            action={
+              archived ? undefined : <Button title="Limpar" variant="ghost" compact onPress={() => void openStore(checked, false)} />
+            }>
+            <ShoppingGrid
+              items={checked}
+              inCart
+              readOnly={archived}
+              onToggle={toggleItem}
+              photos={photos}
+              hints={market.hints}
+              onOpen={setEditing}
+              onStore={archived ? undefined : (item) => void openStore([item], true)}
+            />
+          </Section>
+        ) : null}
+
+        {(pending.length || checked.length) && !archived ? (
+          <Text variant="small" style={styles.center}>
+            Toque num item para pôr no carrinho; toque de novo para devolver. Segure para ver os detalhes: foto,
+            descrição, prioridade e categoria.
+            {checked.length ? ' No carrinho, a geladeira guarda o item na despensa.' : ''}
+          </Text>
+        ) : null}
+      </Columns>
       {editing ? (
         <ListItemEditor
           item={editing}
@@ -1213,8 +1227,10 @@ export default function ShoppingListScreen() {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   center: { textAlign: 'center' },
-  wrap: { flexWrap: 'wrap' },
-  qty: { width: 72 },
+  // "Colar lista" e o código de barras lado a lado, cada um com a sua metade (do tamanho do rótulo, no mínimo); num
+  // celular de 320 que não os comporta, o segundo desce.
+  tools: { flexWrap: 'wrap' },
+  tool: { flexGrow: 1, paddingHorizontal: space.xs },
   addCard: { gap: space.md },
   archivedCard: { gap: space.md },
   aisle: { gap: space.sm },
