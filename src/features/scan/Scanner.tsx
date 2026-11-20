@@ -94,7 +94,9 @@ async function codeInPhoto(uri: string, types: readonly ScanBarcodeType[]): Prom
  * casa, ou "Qual produto é este?"). A foto vai para a IA dizer se é nota, produto ou prateleira; antes disso, o
  * código que a própria foto pegou vale mais, e não gasta leitura. Os produtos achados ficam na tela até a pessoa
  * dizer para onde vão (a despensa ou a lista de mercado), uma vez só para todos. Sem câmera (o computador, ou a
- * permissão negada), ficam as outras opções: a galeria, o link do QR, o código digitado e a nota à mão.
+ * permissão negada), ficam as outras opções: a galeria, o link do QR, o código digitado e a nota à mão. Com partes de
+ * uma nota esperando, é só "Ler", "Mais uma foto" ou "Descartar": "Mais opções" fica fechado, porque qualquer outra
+ * opção tomaria o lugar das fotos tiradas sem aviso.
  *
  * No modo da nota (`?para=nota`: o "Adicionar nota" e o "Finalizar compra"), só a nota: o QR segue como sempre, o
  * código de barras não é nada, e a foto vai para a leitura de sempre da nota (useScanReceipt, sem `classify`).
@@ -125,6 +127,8 @@ export function Scanner({ mode }: { mode: ScanMode }) {
   const leaving = useRef(false);
 
   const state: ScanState = { mode, found: tray.length };
+  // No meio das partes de uma nota, nenhuma: a galeria, o link e a nota à mão perderiam as fotos tiradas.
+  const options = scanOptions(state, parts.length);
   const barcode = useProductBarcode({
     onProduct: (product) => setTray((items) => addScanItems(items, [scanItemFromProduct(product)])),
   });
@@ -232,7 +236,11 @@ export function Scanner({ mode }: { mode: ScanMode }) {
     if (source === 'library') return read(uris);
     const next = [...parts, ...uris];
     if (photoStep(state, next.length) === 'ler') read(next);
-    else setParts(next);
+    else {
+      setParts(next);
+      // A foto virou uma parte da nota: o link ou o código que estava sendo digitado sai, e não toma o lugar dela.
+      setField(null);
+    }
   }
 
   async function shoot() {
@@ -273,6 +281,8 @@ export function Scanner({ mode }: { mode: ScanMode }) {
   }
 
   function choose(option: ScanOption) {
+    // Só o que a tela oferece agora (com partes da nota esperando, nada).
+    if (!options.includes(option)) return;
     if (option === 'galeria') void pickFromGallery();
     else if (option === 'manual') startManual();
     else {
@@ -336,7 +346,6 @@ export function Scanner({ mode }: { mode: ScanMode }) {
     }
   }
 
-  const options = scanOptions(state);
   const optionButton = (option: ScanOption) => (
     <Button
       key={option}
@@ -374,7 +383,12 @@ export function Scanner({ mode }: { mode: ScanMode }) {
               onPress={() => void shoot()}
               style={styles.flex}
             />
-            <IconButton icon="dots-horizontal" label={SCAN_MORE} disabled={busy} onPress={() => setOptionsOpen(true)} />
+            <IconButton
+              icon="dots-horizontal"
+              label={SCAN_MORE}
+              disabled={busy || !options.length}
+              onPress={() => setOptionsOpen(true)}
+            />
           </Row>
         </>
       ) : (

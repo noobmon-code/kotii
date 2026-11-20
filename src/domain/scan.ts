@@ -302,9 +302,12 @@ export const SCAN_OPTION_LABELS: Record<ScanOption, string> = {
 
 /**
  * As opções além da câmera. No modo da despensa (e com produtos achados), as da nota ficam de fora; no modo da
- * nota, o código de barras digitado.
+ * nota, o código de barras digitado. Com partes da nota já fotografadas e não lidas (`parts`), nenhuma: a galeria,
+ * o link do QR e a nota à mão tomariam o lugar delas e as perderiam sem aviso. Ali é só "Ler", "Mais uma foto" ou
+ * "Descartar", como no leitor de nota de antes; descartadas as partes, as opções voltam.
  */
-export function scanOptions(state: ScanState): ScanOption[] {
+export function scanOptions(state: ScanState, parts = 0): ScanOption[] {
+  if (parts > 0) return [];
   if (state.mode === 'nota') return ['galeria', 'link', 'manual'];
   return onlyProducts(state) ? ['galeria', 'codigo'] : ['galeria', 'link', 'codigo', 'manual'];
 }

@@ -10,7 +10,7 @@ import ScanScreen from '@/app/escanear';
 import ReceiptScreen from '@/app/nota/[id]';
 import type { ConfirmedReceipt } from '@/domain/finishPurchase';
 import { accessKeyCheckDigit } from '@/domain/nfce';
-import { SCAN_MORE } from '@/domain/scan';
+import { SCAN_MORE, SCAN_PANTRY_TITLE, SCAN_RECEIPT_TITLE, SCAN_TITLE } from '@/domain/scan';
 import { useFinishPurchase } from '@/features/FinishPurchase';
 import { handConfirmedReceipt } from '@/lib/finishPurchase';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
@@ -266,6 +266,8 @@ async function open(location: string) {
 }
 
 const where = () => store.getRouteInfo().pathname as string;
+/** O título da tela aberta, como a rota o pôs no cabeçalho. */
+const title = () => (store.navigationRef.getCurrentOptions() as { title?: string } | undefined)?.title;
 const tap = async (label: string) => {
   const target = renderer!.root.findAll((node) => node.props.accessibilityLabel === label && typeof node.props.onPress === 'function')[0];
   expect(target).toBeDefined();
@@ -301,6 +303,8 @@ async function toCamera() {
   await pick('Ler a nota');
   expect(where()).toBe('/escanear');
   expect(store.getRouteInfo().params).toMatchObject({ para: 'nota' });
+  // O título que a rota dá à câmera: o da nota, nunca o "Escanear" de nota ou produto.
+  expect(title()).toBe('Ler a nota');
 }
 
 /** A câmera vê o QR code da nota (sozinha, sem toque). */
@@ -440,6 +444,17 @@ describe('"Finalizar compra" com a nota, de ponta a ponta', () => {
     expect(where()).toBe('/lista/l1');
     expect(mockList.confirmed).toHaveLength(0);
     expect(handConfirmedReceipt({ tappedAt: Date.now(), onlineAtTap: true, pantryCount: 0, removedListItems: [] })).toBe(false);
+  });
+
+  it('a câmera tem o título do modo pedido na URL: só a nota, o que já tem em casa, ou o "Escanear" de sempre', async () => {
+    await open('/escanear?para=nota');
+    expect(title()).toBe(SCAN_RECEIPT_TITLE);
+    await act(async () => renderer?.unmount());
+    await open('/escanear?para=despensa');
+    expect(title()).toBe(SCAN_PANTRY_TITLE);
+    await act(async () => renderer?.unmount());
+    await open('/escanear');
+    expect(title()).toBe(SCAN_TITLE);
   });
 
   it('sem a nota: o "Limpar" da lista, sem abrir a câmera', async () => {

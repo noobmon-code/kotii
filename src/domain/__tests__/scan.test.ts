@@ -255,6 +255,14 @@ describe('os textos', () => {
     expect(scanOptions(RECEIPT)).toEqual(['galeria', 'link', 'manual']);
   });
 
+  it('com partes da nota fotografadas e não lidas, nenhuma opção: elas tomariam o lugar das fotos tiradas', () => {
+    for (const state of [EMPTY, RECEIPT]) {
+      expect(scanOptions(state, 1)).toEqual([]);
+      expect(scanOptions(state, MAX_RECEIPT_PHOTOS - 1)).toEqual([]);
+      expect(scanOptions(state, 0)).toEqual(scanOptions(state));
+    }
+  });
+
   it('no modo da nota, nenhum texto fala de produto: o título, a frase, as partes, a espera, o erro e a câmera', () => {
     expect([scanTitle('tudo'), scanTitle('despensa'), scanTitle('nota')]).toEqual(['Escanear', 'O que já tem em casa', 'Ler a nota']);
     const texts = [

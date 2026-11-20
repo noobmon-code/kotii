@@ -459,6 +459,32 @@ describe('o modo da nota (o "Adicionar nota" de Compras → Notas e o "Finalizar
     expect(mockScan.mutate).not.toHaveBeenCalled();
   });
 
+  it.each(['nota', 'tudo'] as const)(
+    'com partes da nota tiradas (%s), nada de "Mais opções": a galeria, o link e a nota à mão não tomam o lugar delas',
+    async (mode) => {
+      const root = await mount(mode);
+      const more = () => root.findAllByType(IconButton).find((b) => b.props.label === 'Mais opções')!;
+      // O link aberto antes da foto: a foto que vira parte da nota fecha o campo, que não a troca pela tela do QR.
+      await act(async () => sheetActions(root).find((a) => a.label === 'Colar o link do QR code')!.onPress());
+      expect(root.findAllByType(TextField)).toHaveLength(1);
+      await shoot(root);
+      await shoot(root, 'Mais uma foto');
+      expect(button(root, 'Ler (2 fotos)')).toBeDefined();
+      expect(root.findAllByType(TextField)).toHaveLength(0);
+      expect(more().props.disabled).toBe(true);
+      expect(sheetActions(root)).toEqual([]);
+      // As duas partes seguem esperando "Ler": nada foi lido, e a galeria nem abriu.
+      expect(mockPick).not.toHaveBeenCalled();
+      expect(mockReceiptScan.mutate).not.toHaveBeenCalled();
+      expect(mockScan.mutate).not.toHaveBeenCalled();
+      expect(mockManual.mutate).not.toHaveBeenCalled();
+      // Descartadas as partes, as opções voltam.
+      await act(async () => button(root, 'Descartar')!.props.onPress());
+      expect(more().props.disabled).toBe(false);
+      expect(sheetActions(root).map((a) => a.label)).toContain('Escolher da galeria');
+    },
+  );
+
   it('sem câmera, os botões são os da nota, sem o código de barras', async () => {
     mockCamera.permission = { granted: false };
     const root = await mount('nota');

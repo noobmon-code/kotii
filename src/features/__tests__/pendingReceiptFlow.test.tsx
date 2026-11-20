@@ -329,7 +329,9 @@ describe('nota da Sefaz com "não sou robô"', () => {
     expect(callsTo('parse-receipt')).toEqual([
       { name: 'parse-receipt', body: { image_paths: ['h1/0.jpg', 'h1/1.jpg', 'h1/2.jpg', 'h1/3.jpg', 'h1/4.jpg', 'h1/5.jpg'], access_key: KEY } },
     ]);
+    // A revisão toma o lugar da pendente (quem a abriu fica logo embaixo da revisão).
     expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'r1' } });
+    expect(mockRouter.push).not.toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'r1' } });
     await settle();
     expect(await stored()).toEqual([]);
 

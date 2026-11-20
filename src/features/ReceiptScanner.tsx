@@ -11,16 +11,17 @@ import { notify } from '@/ui/dialogs';
 /**
  * A leitura pela foto de uma nota cuja chave já se conhece (do QR code): os prints da Sefaz da nota pendente
  * (nota/pendente e, quando a pendente não pôde ser guardada, nota/qrcode). `readPhotos(source, chave)` abre a
- * câmera (uma parte de cada vez) ou a galeria; `element` precisa ser renderizado pela tela. `replace`: a revisão
- * toma o lugar da tela atual. Adicionar uma nota (Compras → Notas, o Mercado do mês, o "Finalizar compra" da lista)
- * é a câmera só da nota do "Escanear" (features/scan/receiptCamera), não daqui.
+ * câmera (uma parte de cada vez) ou a galeria; `element` precisa ser renderizado pela tela. A revisão sempre toma o
+ * lugar da tela atual (a pendente ou a do QR), para que quem abriu a nota (a lista do "Finalizar compra", Compras →
+ * Notas) fique logo embaixo dela. Adicionar uma nota (Compras → Notas, o Mercado do mês, o "Finalizar compra" da
+ * lista) é a câmera só da nota do "Escanear" (features/scan/receiptCamera), não daqui.
  */
-export function useReceiptScanner({ replace = false }: { replace?: boolean } = {}) {
+export function useReceiptScanner() {
   const householdId = useHouseholdId();
   const scan = useScanReceipt(householdId);
   // Nota comprida pela câmera: partes já fotografadas, esperando a próxima ou a leitura.
   const [parts, setParts] = useState<string[]>([]);
-  // Chave da nota que está sendo fotografada, quando veio do QR code.
+  // Chave da nota que está sendo fotografada (a do QR code da pendente).
   const accessKey = useRef<string | null>(null);
 
   const read = useCallback(
@@ -31,16 +32,14 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
         { uris, accessKey: accessKey.current },
         {
           onSuccess: ({ receipt_id, duplicate }) => {
-            const review = { pathname: '/nota/[id]', params: { id: receipt_id } } as const;
-            if (replace) router.replace(review);
-            else router.push(review);
+            router.replace({ pathname: '/nota/[id]', params: { id: receipt_id } });
             if (duplicate) notify('Nota já importada', 'Esta nota já estava no app — abrimos a existente.');
           },
           onError: (err) => notify('Não foi possível ler a nota', errorMessage(err)),
         },
       );
     },
-    [scan, replace],
+    [scan],
   );
 
   const start = useCallback(
@@ -74,7 +73,7 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
   );
 
   const readPhotos = useCallback(
-    (source: ScanSource, key: string | null = null) => {
+    (source: ScanSource, key: string) => {
       accessKey.current = key;
       void start(source);
     },

@@ -41,7 +41,7 @@ export default function NfceQrScreen() {
   const givenSent = useRef(false);
   const [permission, requestPermission] = useCameraPermissions();
   const importNfce = useImportNfce();
-  const scanner = useReceiptScanner({ replace: true });
+  const scanner = useReceiptScanner();
   const pendingReceipts = usePendingReceipts();
   const [pasted, setPasted] = useState('');
   // Nota que só dá para ler pelos prints ou pela foto: a chave e o link do QR.
