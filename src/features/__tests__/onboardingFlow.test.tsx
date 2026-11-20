@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import type { ReactElement } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
@@ -44,6 +44,7 @@ import {
 import { FirstListFlow } from '@/features/onboarding/FirstListFlow';
 import { OnboardingContinuation } from '@/features/onboarding/OnboardingContinuation';
 import { FEATURES } from '@/lib/features';
+import { OFFLINE_TRY_AGAIN } from '@/lib/networkErrors';
 import { clearOnboardingNext, clearPendingInvite, markHadAccount, savePendingInvite, setOnboardingNext } from '@/lib/onboarding';
 import { notify } from '@/ui/dialogs';
 
@@ -258,6 +259,31 @@ describe('o começo depois da conta (bem-vindo, com a chave ligada)', () => {
     await press('Entrar na casa');
     expect(calls('join_household')).toEqual([['join_household', { p_invite_code: 'KM2P9Q', p_display_name: 'Bia' }]]);
     expect(await AsyncStorage.getItem('kotii:onboarding-next:dela')).toBe('entrou');
+  });
+
+  it('sem internet, nada chega ao banco, e o aviso não fala em trocar de casa (é a primeira da pessoa)', async () => {
+    // Como no app (lib/queryClient): sem internet, a ação falha na hora e avisa, em vez de esperar a conexão.
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false, networkMode: 'always' } } });
+    onlineManager.setOnline(false);
+    try {
+      await mount(<WelcomeScreen />);
+      await type('Seu nome', 'Ana');
+      await press('Continuar');
+      await choose(CHOICE_NEW);
+      await type('Nome da casa', 'Casa da Ana');
+      await press('Criar casa');
+      expect(calls('create_household')).toHaveLength(0);
+      expect(notify).toHaveBeenLastCalledWith('Não foi possível criar a casa', OFFLINE_TRY_AGAIN);
+      expect(await AsyncStorage.getItem('kotii:onboarding-next:nova')).toBeNull();
+      await press('Voltar');
+      await choose(CHOICE_INVITE);
+      await type('Código de convite', 'KM2P9Q');
+      await press('Entrar na casa');
+      expect(calls('join_household')).toHaveLength(0);
+      expect(notify).toHaveBeenLastCalledWith('Não deu para entrar na casa', OFFLINE_TRY_AGAIN);
+    } finally {
+      onlineManager.setOnline(true);
+    }
   });
 
   it('um código com letras que o convite não usa não chega ao banco', async () => {

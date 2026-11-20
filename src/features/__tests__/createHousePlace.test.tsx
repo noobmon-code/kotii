@@ -21,12 +21,15 @@ import {
   placeFoundAnnouncement,
   placeNotSavedMessage,
 } from '@/domain/housePlace';
+import { CHOICE_INVITE, CHOICE_NEW, HOUSE_PLACE_ROW } from '@/domain/onboarding';
+import { FEATURES } from '@/lib/features';
 import { notify } from '@/ui/dialogs';
 
 // Criar uma casa (bem-vindo e Suas casas) com a parte opcional "Onde fica a casa": sem o bairro, como antes; com o
 // bairro achado, ele vai para a casa nova (pelo id dela), uma casa só; o CEP digitado e não buscado é buscado antes
 // e, se não for achado, nada é criado; o bairro que não foi salvo não desfaz a casa, e a pessoa fica sabendo.
-// Entrar com um código não pergunta o lugar.
+// Entrar com um código não pergunta o lugar. O bem-vindo é o do começo novo (a chave ligada, como o app sai: o lugar
+// fechado numa linha, no passo do nome da casa) e o de antes (a chave desligada: um formulário só).
 
 const PINHEIROS: HouseholdLocation = { label: 'Pinheiros, São Paulo', latitude: -23.56, longitude: -46.69, source: 'cep' };
 const PERTO: HouseholdLocation = { label: 'Vila Madalena, São Paulo', latitude: -23.55, longitude: -46.69, source: 'gps' };
@@ -169,7 +172,134 @@ afterEach(async () => {
   queryClient.clear();
 });
 
-describe('bem-vindo: criar a casa', () => {
+describe('bem-vindo (o começo novo): criar a casa com o lugar', () => {
+  beforeEach(() => {
+    jest.replaceProperty(FEATURES, 'onboarding', true);
+  });
+
+  /** O nome, "Não, vou começar a casa" e o nome da casa: o passo em que o lugar fica. */
+  async function fill() {
+    await mount(<WelcomeScreen />);
+    await type('Seu nome', 'Ana');
+    await press('Continuar');
+    const card = renderer!.root.findAll(
+      (node) => node.props.accessibilityLabel === `${CHOICE_NEW.title}. ${CHOICE_NEW.subtitle}` && typeof node.props.onPress === 'function',
+    )[0];
+    await act(async () => card.props.onPress());
+    await settle();
+    await type('Nome da casa', 'Casa da Ana');
+  }
+
+  it('o lugar fica fechado numa linha; aberto, diz que é opcional e o que fica guardado; sem ele, cria e abre a casa', async () => {
+    await fill();
+    expect(page()).toContain(HOUSE_PLACE_ROW.title);
+    expect(field('CEP')).toBeUndefined();
+    await press(HOUSE_PLACE_ROW.title);
+    expect(page()).toContain(HOUSE_PLACE_PRIVACY);
+    expect(page()).toContain(HOUSE_PLACE_OPTIONAL);
+    expect(field('CEP')).toBeDefined();
+    await press('Criar casa');
+    expect(creates()).toEqual([['create_household', { p_name: 'Casa da Ana', p_display_name: 'Ana' }]]);
+    expect(mockWeather.findPlaceByCep).not.toHaveBeenCalled();
+    expect(mockWeather.saveHouseholdLocationFor).not.toHaveBeenCalled();
+    expect(mockOpened).toEqual(['nova']);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('com o bairro achado pelo CEP: uma casa só, e o lugar salvo nela, pelo id dela, antes de abri-la', async () => {
+    const order: string[] = [];
+    mockWeather.saveHouseholdLocationFor.mockImplementation(async () => {
+      order.push(`lugar (aberta: ${mockOpened.join(',') || 'outra'})`);
+    });
+    await fill();
+    await press(HOUSE_PLACE_ROW.title);
+    await type('CEP', '05422030');
+    await press('Buscar pelo CEP');
+    expect(page()).toContain('Pinheiros, São PauloPelo CEP');
+    // A busca é opcional: o botão cheio continua sendo o de criar.
+    expect(button('Buscar pelo CEP').props.variant).toBe('secondary');
+    expect(button('Criar casa').props.variant).toBeUndefined();
+    await press('Criar casa');
+    expect(creates()).toHaveLength(1);
+    expect(mockWeather.saveHouseholdLocationFor).toHaveBeenCalledWith('nova', PINHEIROS);
+    expect(order).toEqual(['lugar (aberta: outra)']);
+    expect(mockOpened).toEqual(['nova']);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('o CEP digitado e não buscado é buscado no toque de criar: não achado, nada é criado; achado, vale ele', async () => {
+    mockWeather.findPlaceByCep.mockImplementationOnce(async () => {
+      throw new Error('CEP não encontrado. Confira os números.');
+    });
+    await fill();
+    await press(HOUSE_PLACE_ROW.title);
+    await type('CEP', '00000000');
+    await press('Criar casa');
+    expect(notify).toHaveBeenCalledWith(CEP_LOOKUP_FAILED_TITLE, cepLookupFailedMessage('CEP não encontrado. Confira os números.'));
+    expect(creates()).toHaveLength(0);
+    expect(mockOpened).toEqual([]);
+    // O CEP fica no campo para corrigir.
+    expect(field('CEP').props.value).toBe('00000-000');
+    await type('CEP', '05422-030');
+    await press('Criar casa');
+    expect(mockWeather.findPlaceByCep).toHaveBeenLastCalledWith('05422030');
+    expect(creates()).toHaveLength(1);
+    expect(mockWeather.saveHouseholdLocationFor).toHaveBeenCalledWith('nova', PINHEIROS);
+  });
+
+  it('o lugar que não foi salvo: a casa fica criada e aberta, e a pessoa sabe onde definir depois', async () => {
+    mockWeather.saveHouseholdLocationFor.mockImplementation(async () => {
+      throw new Error('Sem internet agora.');
+    });
+    await fill();
+    await press(HOUSE_PLACE_ROW.title);
+    await press('Usar a localização do celular');
+    await press('Criar casa');
+    expect(creates()).toHaveLength(1);
+    expect(mockOpened).toEqual(['nova']);
+    expect(notify).toHaveBeenCalledWith(PLACE_NOT_SAVED_TITLE, placeNotSavedMessage('Sem internet agora.'));
+    expect(notify).not.toHaveBeenCalledWith('Não foi possível criar a casa', expect.anything());
+  });
+
+  it('dois toques seguidos criam uma casa só', async () => {
+    await fill();
+    await press(HOUSE_PLACE_ROW.title);
+    await type('CEP', '05422030');
+    await act(async () => {
+      button('Criar casa').props.onPress();
+      button('Criar casa').props.onPress();
+    });
+    await settle();
+    expect(creates()).toHaveLength(1);
+    expect(mockWeather.saveHouseholdLocationFor).toHaveBeenCalledTimes(1);
+  });
+
+  it('o lugar achado em "Criar casa" não vai para a casa em que se entra pelo código', async () => {
+    await fill();
+    await press(HOUSE_PLACE_ROW.title);
+    await press('Usar a localização do celular');
+    expect(page()).toContain('Vila Madalena, São Paulo');
+    await press('Voltar');
+    const card = renderer!.root.findAll(
+      (node) => node.props.accessibilityLabel === `${CHOICE_INVITE.title}. ${CHOICE_INVITE.subtitle}` && typeof node.props.onPress === 'function',
+    )[0];
+    await act(async () => card.props.onPress());
+    await settle();
+    expect(page()).not.toContain('Onde fica a casa');
+    await type('Código de convite', 'abc234');
+    await press('Entrar na casa');
+    expect(mockRpc).toHaveBeenCalledWith('join_household', { p_invite_code: 'ABC234', p_display_name: 'Ana' });
+    expect(creates()).toHaveLength(0);
+    expect(mockWeather.saveHouseholdLocationFor).not.toHaveBeenCalled();
+    expect(mockOpened).toEqual(['dela']);
+  });
+});
+
+describe('bem-vindo (o de antes, com a chave do começo desligada): criar a casa', () => {
+  beforeEach(() => {
+    jest.replaceProperty(FEATURES, 'onboarding', false);
+  });
+
   async function fill() {
     await mount(<WelcomeScreen />);
     await type('Seu nome', 'Ana');

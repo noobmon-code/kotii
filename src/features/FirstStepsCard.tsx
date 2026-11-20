@@ -11,6 +11,7 @@ import {
   firstStepsProgress,
   showFirstSteps,
   type FirstStep,
+  type FirstStepInvite,
   type FirstStepKey,
 } from '@/domain/firstSteps';
 import type { IconName } from '@/domain/categories';
@@ -64,7 +65,7 @@ export function useFirstSteps({
   drafts,
   pantry,
   people,
-  inviteByLink = false,
+  invite = 'configuracoes',
 }: {
   householdId: string | undefined;
   /** Quantos moradores a casa tem. */
@@ -77,8 +78,8 @@ export function useFirstSteps({
   drafts: readonly unknown[] | undefined;
   pantry: readonly unknown[] | undefined;
   people: readonly Pick<Person, 'member_user_id'>[] | undefined;
-  /** O começo novo (lib/onboarding): "Convidar" abre o convite com o link, e a dica diz isso. */
-  inviteByLink?: boolean;
+  /** Para onde "Convidar" leva (domain/firstSteps): no começo novo (lib/onboarding), o convite ali mesmo. */
+  invite?: FirstStepInvite;
 }) {
   const dismissed = useFirstStepsDismissed(householdId);
   const skipped = useFirstStepsSkipped(householdId);
@@ -105,7 +106,7 @@ export function useFirstSteps({
             peopleWithoutApp: people?.filter((person) => !person.member_user_id).length,
           },
           skipped,
-          { inviteByLink },
+          { invite },
         );
   // Os passos todos feitos fecham o cartão de vez, mas só com tudo da casa aberta: no meio de uma troca de casa, a tela
   // ainda tem a casa anterior (os moradores dela) enquanto as listas e as fichas já são da próxima, que passou a ser

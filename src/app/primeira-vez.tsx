@@ -18,8 +18,9 @@ type Step = 'boas-vindas' | 'criar' | 'confirmar' | 'entrar' | 'casa';
  * A prévia do começo (domain/onboarding), para quem mantém o app ver o que uma conta nova vê, com a conta de sempre:
  * as boas-vindas, criar a conta e confirmar o e-mail são só as telas (nada é criado nem enviado); do nome em diante é
  * de verdade: a casa nasce, abre por cima das outras, e a Hoje segue com a primeira lista, o convite e a tela de
- * início. Só para app_admins (Configurações → Manutenção do app). Abrir a prévia liga, neste aparelho, as partes do
- * começo novo que ficam dentro do app (lib/onboarding).
+ * início. Só para app_admins (Configurações → Manutenção do app). Com a chave do começo desligada (lib/features), abrir
+ * a prévia liga, neste aparelho, as partes do começo novo que ficam dentro do app (lib/onboarding); com ela ligada,
+ * essas partes já valem para todos.
  */
 export default function OnboardingPreviewScreen() {
   const admin = useIsAppAdmin();

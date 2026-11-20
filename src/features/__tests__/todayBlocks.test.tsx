@@ -1,15 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
-import { Text as RNText } from 'react-native';
+import { Platform, Text as RNText } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import TodayScreen from '@/app/(tabs)/index';
 import { toTimestamp } from '@/domain/health';
-import { FIRST_STEPS_TITLE } from '@/domain/firstSteps';
+import { FIRST_STEP_INVITE_BY_CODE, FIRST_STEP_INVITE_BY_LINK, FIRST_STEPS_TITLE } from '@/domain/firstSteps';
+import { INVITE_TITLE } from '@/domain/onboarding';
 import { ALL_CLEAR_TITLE, PANTRY_SHOWN, TODAY_BLOCK_TITLES } from '@/domain/today';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
+import { FEATURES } from '@/lib/features';
 import type { Chore, Equipment, HomeDocument, Medication, PantryItem, Supply } from '@/lib/types';
 import { Button, LinkButton, ListRow, Section } from '@/ui/primitives';
 
@@ -17,7 +19,8 @@ import { Button, LinkButton, ListRow, Section } from '@/ui/primitives';
 // antes do que é de hoje), "Em breve" (o mais perto antes) e "Sugestões" (que não contam nem seguram o "Tudo em
 // dia"); a frase do topo com a mesma conta das linhas; e os "Primeiros passos", que se marcam pelo que a casa tem,
 // esperam saber todos para aparecer e somem de vez dispensados ou com todos feitos (no aparelho, por casa); o da
-// despensa pode ser pulado.
+// despensa pode ser pulado. A chave do começo novo (lib/features) fica ligada, como o app sai; o caso de antes (o
+// convite e as fichas em Configurações) a desliga.
 
 // O relógio parado no meio do dia (só a data: os tempos de espera continuam de verdade): a dose das 8h passou, a
 // das 20h não.
@@ -294,6 +297,7 @@ beforeEach(async () => {
     doNotFake: ['nextTick', 'setImmediate', 'clearImmediate', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'queueMicrotask'],
   });
   await AsyncStorage.clear();
+  jest.replaceProperty(FEATURES, 'onboarding', true);
   // Cada teste numa casa nova: a dispensa fica na memória do módulo, por casa.
   house += 1;
   Object.assign(mockData, {
@@ -643,9 +647,50 @@ describe('os primeiros passos', () => {
     expect(last(mockData.seen.pantry)).toBe(true);
   });
 
-  it('cada passo leva aonde ele se faz', async () => {
+  const step = (title: string) => section(FIRST_STEPS_TITLE)!.findAllByType(ListRow).find((row) => row.props.title === title)!;
+  /** O convite (features/onboarding/InviteSheet), que a Hoje monta fechado. */
+  const inviteSheet = () => renderer!.root.findAll((node) => node.props.title === INVITE_TITLE && typeof node.props.onClose === 'function')[0];
+
+  it('com o começo novo (como o app sai), "Convidar" abre o convite ali mesmo e "Pessoas e pets" abre o cadastro', async () => {
     await mount();
-    const step = (title: string) => section(FIRST_STEPS_TITLE)!.findAllByType(ListRow).find((row) => row.props.title === title)!;
+    // No aparelho, a mensagem do convite leva só o código: a dica não fala de link.
+    expect(step('Convidar alguém da casa').props.subtitle).toBe(FIRST_STEP_INVITE_BY_CODE);
+    expect(inviteSheet().props.visible).toBe(false);
+    await act(async () => step('Convidar alguém da casa').props.onPress());
+    expect(inviteSheet().props.visible).toBe(true);
+    expect(rawText(renderer!.root)).toContain('ABC123');
+    expect(router.push).not.toHaveBeenCalled();
+    await act(async () => inviteSheet().props.onClose());
+    expect(inviteSheet().props.visible).toBe(false);
+    await act(async () => step('Cadastrar pessoas e pets').props.onPress());
+    expect(router.push).toHaveBeenLastCalledWith({ pathname: '/pessoa/[id]', params: { id: 'nova', kind: 'pessoa' } });
+    // Os outros passos levam aonde sempre levaram.
+    await act(async () => step('Escanear a primeira nota').props.onPress());
+    expect(router.push).toHaveBeenLastCalledWith('/escanear');
+    await act(async () => step('Guardar o que já tem em casa').props.onPress());
+    expect(router.push).toHaveBeenLastCalledWith({ pathname: '/escanear', params: { para: 'despensa' } });
+    await act(async () => step('Criar a primeira lista').props.onPress());
+    expect(router.push).toHaveBeenLastCalledWith({ pathname: '/lista/[id]', params: { id: 'mercado' } });
+  });
+
+  it('no navegador, a dica de convidar fala do link, que vai na mensagem do convite', async () => {
+    const web = jest.replaceProperty(Platform, 'OS', 'web');
+    const hadLocation = Object.getOwnPropertyDescriptor(window, 'location');
+    Object.defineProperty(window, 'location', { value: { origin: 'https://kotii.app' }, configurable: true });
+    try {
+      await mount();
+      expect(step('Convidar alguém da casa').props.subtitle).toBe(FIRST_STEP_INVITE_BY_LINK);
+    } finally {
+      if (hadLocation) Object.defineProperty(window, 'location', hadLocation);
+      else delete (window as { location?: unknown }).location;
+      web.restore();
+    }
+  });
+
+  it('cada passo leva aonde ele se faz (o de antes, com a chave do começo desligada: o convite e as fichas em Configurações)', async () => {
+    jest.replaceProperty(FEATURES, 'onboarding', false);
+    await mount();
+    expect(step('Convidar alguém da casa').props.subtitle).toBe('Em Configurações, com o código de convite');
     await act(async () => step('Convidar alguém da casa').props.onPress());
     expect(router.push).toHaveBeenLastCalledWith('/configuracoes');
     await act(async () => step('Cadastrar pessoas e pets').props.onPress());

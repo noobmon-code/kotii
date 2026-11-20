@@ -4,8 +4,9 @@
 // - o código de um link de convite (/convite/ABC234), até a pessoa ter conta e entrar na casa (7 dias no máximo);
 // - o passo seguinte de uma casa que acabou de nascer, para a tela Hoje: abrir a primeira lista (quem criou) ou dizer
 //   que a pessoa entrou (quem entrou com o código);
-// - se este aparelho abriu a prévia do começo (Configurações → Manutenção do app): aí as partes do começo novo que
-//   ficam dentro do app (o convite pelo link, nos Primeiros passos e em Configurações) valem aqui também.
+// - se este aparelho abriu a prévia do começo (Configurações → Manutenção do app): com a chave do começo desligada
+//   (lib/features), as partes do começo novo que ficam dentro do app (o convite pelo link, nos Primeiros passos e em
+//   Configurações) valem aqui também; com ela ligada, já valem para todos, e a marca não muda nada.
 // Sem armazenamento (modo privado, cota cheia), cada coisa dura enquanto o app está aberto.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';

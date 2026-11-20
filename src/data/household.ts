@@ -15,7 +15,7 @@ import { signOutQuestion } from '@/domain/listQueue';
 import { clearConversation, conversationOwner } from '@/features/nuke/conversation';
 import { setActiveHousehold } from '@/lib/activeHousehold';
 import type { HouseholdState } from '@/lib/auth';
-import { isNetworkFailure } from '@/lib/networkErrors';
+import { isNetworkFailure, OFFLINE_TRY_AGAIN } from '@/lib/networkErrors';
 import { forgetPendingReceiptsOf } from '@/lib/pendingReceipts';
 import { saveNow } from '@/lib/queryClient';
 import { disableHouseholdReminders } from '@/lib/reminders';
@@ -54,10 +54,10 @@ export function householdErrorMessage(error: unknown): string {
 /**
  * Trocar de casa busca tudo de novo, da outra casa: precisa de internet, e
  * as marcações da lista que esperam internet (feitas nesta casa) precisam
- * subir antes, senão iriam para a outra.
+ * subir antes, senão iriam para a outra. `offline`: a frase sem internet.
  */
-function assertCanSwitch(queryClient: QueryClient) {
-  if (!onlineManager.isOnline()) throw new Error('Sem internet agora. Troque de casa quando a conexão voltar.');
+function assertCanSwitch(queryClient: QueryClient, offline = 'Sem internet agora. Troque de casa quando a conexão voltar.') {
+  if (!onlineManager.isOnline()) throw new Error(offline);
   if (listQueueBusy(queryClient) || photoQueueBusy(queryClient)) {
     throw new Error('Ainda há marcações ou fotos da lista esperando internet nesta casa. Troque quando elas subirem.');
   }
@@ -141,7 +141,8 @@ export function useAddHousehold(userId: string | undefined) {
   return useMutation({
     mutationFn: async (input: AddHousehold): Promise<AddedHousehold> => {
       if (!userId) throw new Error('Entre na conta de novo.');
-      assertCanSwitch(queryClient);
+      // Sem internet, a frase não fala em trocar de casa: no começo (bem-vindo), esta é a primeira casa da pessoa.
+      assertCanSwitch(queryClient, OFFLINE_TRY_AGAIN);
       const { data, error } =
         input.mode === 'criar'
           ? await supabase.rpc('create_household', { p_name: input.name, p_display_name: input.displayName })
