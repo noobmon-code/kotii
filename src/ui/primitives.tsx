@@ -21,7 +21,7 @@ import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
 import Svg, { Circle, Line } from 'react-native-svg';
 
 import { getCategory, type IconName } from '@/domain/categories';
-import { DESKTOP_CONTENT_WIDTH } from '@/domain/desktop';
+import { DESKTOP_CONTENT_WIDTH, REFRESH_LABEL } from '@/domain/desktop';
 import { formatBRDate, maskBRDate, parseBRDate } from '@/domain/dates';
 import { matchItemArt } from '@/domain/itemArt';
 // Só o detector puro: lib/supabase cria o cliente e não entra nos primitivos.
@@ -86,10 +86,16 @@ export function Screen({
   maxWidth = MAX_WIDTH,
   wide,
   heading,
+  ownRefreshButton,
 }: {
   children: ReactNode;
   scroll?: boolean;
+  /** Buscando de novo: o "girando" de puxar a tela (no celular) e do botão "Atualizar" (no computador). */
   refreshing?: boolean;
+  /**
+   * Buscar de novo o que a tela mostra: no celular, puxando a tela para baixo. No navegador do computador, onde não
+   * se puxa a tela, um botão "Atualizar" no alto, à direita do conteúdo.
+   */
   onRefresh?: () => void;
   edges?: Edge[];
   footer?: ReactNode;
@@ -112,10 +118,21 @@ export function Screen({
    * quem navega pelos títulos ainda acha o começo da página). Não aparece nem ocupa lugar.
    */
   heading?: string;
+  /** A tela já tem o próprio botão de atualizar (o dos bancos, no Consultor): no computador, não ganha um segundo. */
+  ownRefreshButton?: boolean;
 }) {
   const c = useColors();
   const desktop = useDesktop();
   const max = wide && desktop ? DESKTOP_CONTENT_WIDTH : maxWidth;
+  // Puxar para atualizar não existe no navegador: no computador, o mesmo pedido vira um botão. Nas abas (`wide`) ele
+  // fica por cima, no canto de cima à direita, onde a coluna larga tem lugar (ao lado do seletor das partes, sobre o
+  // véu da Hoje); nas outras telas, numa linha só dele antes do conteúdo, para não cobrir o primeiro cartão.
+  const refreshButton =
+    desktop && onRefresh && !ownRefreshButton ? (
+      <View style={wide ? styles.refreshFloating : styles.refreshRow}>
+        <RefreshButton refreshing={Boolean(refreshing)} onRefresh={onRefresh} />
+      </View>
+    ) : null;
   // Só a tela que pede outra largura ganha um estilo a mais: as outras ficam como sempre foram.
   const width = max === MAX_WIDTH ? null : { maxWidth: max };
   // Sem a rolagem da tela, o conteúdo ocupa só a altura dela (flex 1, e não só flexGrow): no navegador, com o
@@ -124,6 +141,7 @@ export function Screen({
   const content = (
     // No computador o Nuke está na barra lateral, e não por cima da tela: não é preciso deixar o lugar dele no fim.
     <View style={[styles.content, width, !scroll && styles.flex, fab && !desktop && styles.contentWithFab]}>
+      {refreshButton}
       {heading ? (
         // Um ponto de 1 por 1, da cor do fundo: fora da vista, mas lido (com opacidade 0, o VoiceOver o pularia).
         <Text accessibilityRole="header" numberOfLines={1} color="background" style={styles.screenReaderOnly}>
@@ -155,6 +173,26 @@ export function Screen({
         </View>
       ) : null}
     </SafeAreaView>
+  );
+}
+
+/**
+ * O botão "Atualizar" do computador (Screen): redondo, de vidro, com a área de toque de 44; girando enquanto busca, e
+ * sem novo toque nesse meio (como o puxar do celular, que não puxa de novo enquanto gira).
+ */
+function RefreshButton({ refreshing, onRefresh }: { refreshing: boolean; onRefresh: () => void }) {
+  const c = useColors();
+  const glass = useGlassStyle();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={REFRESH_LABEL}
+      accessibilityState={{ busy: refreshing, disabled: refreshing }}
+      disabled={refreshing}
+      onPress={onRefresh}
+      style={({ pressed }) => [styles.refreshButton, glass, pressed && !refreshing && styles.pressed]}>
+      {refreshing ? <ActivityIndicator color={c.primary} /> : <Icon name="refresh" size={22} color="primary" />}
+    </Pressable>
   );
 }
 
@@ -991,6 +1029,11 @@ const styles = StyleSheet.create({
     gap: space.xl,
   },
   contentWithFab: { paddingBottom: 96 },
+  // O botão "Atualizar" do computador. Nas abas, por cima do conteúdo e na frente dele (o véu da Hoje vem depois na
+  // árvore), na altura do seletor das partes; nas outras telas, à direita, numa linha dele.
+  refreshFloating: { position: 'absolute', top: SCREEN_PADDING + 3, right: SCREEN_PADDING, zIndex: 1 },
+  refreshRow: { alignSelf: 'flex-end' },
+  refreshButton: { width: 44, height: 44, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
   screenReaderOnly: { position: 'absolute', top: 0, left: 0, width: 1, height: 1, overflow: 'hidden' },
   footer: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: space.lg, paddingVertical: space.md },
   footerInner: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', gap: space.sm },

@@ -58,6 +58,59 @@ export function sheetHeights(windowHeight: number): { max: number; tall: number 
   return { max, tall: Math.min(DESKTOP_SHEET_TALL_HEIGHT, max) };
 }
 
+/**
+ * As fotos (de um documento, da nota): no celular tomam a tela inteira; no computador, uma caixa no meio da janela,
+ * mais larga que a dos formulários (a foto é o que se quer ver), e alta (a da janela, até DESKTOP_SHEET_HEIGHT_SHARE).
+ */
+export const DESKTOP_PHOTO_WIDTH = 960;
+
+/**
+ * As telas que no celular sobem como janela por cima das outras (editar uma tarefa, um remédio, uma consulta, o
+ * Nuke…; `presentation: 'modal'` no Stack da raiz): no computador, uma caixa no meio da janela, desta largura (a
+ * mesma da coluna das telas de formulário, MAX_WIDTH, para o conteúdo delas caber como sempre coube)…
+ */
+export const DESKTOP_WINDOW_WIDTH = 720;
+
+/** …e desta altura, no máximo (numa janela mais baixa, a parte dela que as caixas tomam). */
+export const DESKTOP_WINDOW_HEIGHT = 860;
+
+/**
+ * A altura dessa caixa numa janela desta altura: fixa (o conteúdo rola dentro dela, e a conversa do Nuke e os
+ * formulários com rodapé precisam de uma altura para se arrumar), até DESKTOP_WINDOW_HEIGHT.
+ */
+export function windowHeight(windowHeight: number): number {
+  return Math.min(DESKTOP_WINDOW_HEIGHT, sheetHeights(windowHeight).max);
+}
+
+/**
+ * Para onde vai o "Fechar" de uma dessas caixas quando não há tela para onde voltar (a página aberta direto pelo
+ * endereço, ou recarregada): a aba da área da tela (a tarefa é da Casa), ou a Hoje para a que não é de nenhuma (o
+ * Nuke). `routeName` é o nome da rota no Stack ("tarefa/[id]").
+ */
+export function windowFallback(routeName: string): string {
+  const area = SCREEN_AREAS[routeName.split('/')[0]];
+  return APP_AREAS.find((entry) => entry.key === area)?.href ?? '/';
+}
+
+/**
+ * A altura máxima da coluna do lado que fica parada enquanto a principal rola (ui/desktop `Columns` com
+ * `stickySide`): o lugar que a tela tem para rolar (a janela menos o cabeçalho da tela) menos a margem de cima e a de
+ * baixo do conteúdo. Nunca menos que uma altura de botão, para a coluna não sumir numa janela muito baixa.
+ */
+export function stickySideHeight(windowHeight: number, headerHeight: number, padding: number): number {
+  const room = (Number.isFinite(windowHeight) ? windowHeight : 0) - (Number.isFinite(headerHeight) ? headerHeight : 0) - 2 * padding;
+  return Math.max(STICKY_SIDE_MIN_HEIGHT, Math.floor(room));
+}
+
+/** A coluna parada nunca fica mais baixa que isto. */
+export const STICKY_SIDE_MIN_HEIGHT = 240;
+
+/**
+ * O nome do botão que, no computador, faz o que puxar a tela para baixo faz no celular (buscar de novo o que ela
+ * mostra): no navegador não se puxa a tela.
+ */
+export const REFRESH_LABEL = 'Atualizar';
+
 /** A janela é de computador: só no navegador, e larga o bastante. Uma largura que não é um número (a janela ainda sem medida) não é. */
 export function isDesktop(web: boolean, width: number): boolean {
   return web && Number.isFinite(width) && width >= DESKTOP_MIN_WIDTH;

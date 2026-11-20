@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { Profiler } from 'react';
+import { Dimensions, Platform, StyleSheet } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import ReceiptScreen from '@/app/nota/[id]';
@@ -12,7 +13,7 @@ import { stopWaitingForReceipt, takeConfirmedReceipt, waitForReceipt } from '@/l
 import { formatBRL } from '@/domain/money';
 import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
-import { Button, Card, CheckCircle, Chip, IconButton, TextField } from '@/ui/primitives';
+import { Button, Card, CheckCircle, Chip, IconButton, Screen, TextField } from '@/ui/primitives';
 
 // A tela da nota de verdade, com as consultas e gravações de verdade de
 // src/data/receipts.ts e um "banco" em memória atrás do cliente do Supabase.
@@ -2649,5 +2650,81 @@ describe('quantos ovos vêm na embalagem', () => {
     expect(page()).not.toContain('R$ 0,00 o ovo');
     // A resposta guardada continua podendo ser mudada, como no ovo com valor.
     expect(chip('Mudar')).toBeDefined();
+  });
+});
+
+describe('no computador (ui/desktop): a revisão em duas colunas', () => {
+  const WINDOW = Dimensions.get('window');
+  /** O navegador, numa janela de computador (ou estreita). */
+  async function browser(width: number) {
+    jest.replaceProperty(Platform, 'OS', 'web');
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width, height: 900 } }));
+  }
+  afterEach(async () => {
+    await act(async () => Dimensions.set({ window: WINDOW }));
+  });
+  const flat = (node: ReactTestInstance) => (StyleSheet.flatten(node.props.style) ?? {}) as Record<string, unknown>;
+  const boxes = () => renderer!.root.findAll((node) => (node.type as unknown) === 'View');
+  /** A coluna do lado (a parada) e a principal; sem elas, a tela de uma coluna só. */
+  const side = () => boxes().find((node) => flat(node).position === 'sticky');
+  const main = () => boxes().find((node) => flat(node).flex === 1 && flat(node).minWidth === 0);
+  const footer = () => renderer!.root.findByType(Screen).props.footer;
+
+  beforeEach(() => seed(receipt(), item('a', 'DETERGENTE YPE', 50), item('b', 'ARROZ 5KG', 12.9)));
+
+  it('no celular, como sempre: "Confirmar nota" no rodapé, e "Descartar nota" depois dos itens', async () => {
+    await open();
+    expect(side()).toBeUndefined();
+    expect(footer().props.title).toBe('Confirmar nota (2 itens)');
+    expect(renderer!.root.findByType(Screen).props.wide).toBe(true);
+    const all = lines();
+    expect(all.indexOf('Mercado')).toBeLessThan(all.indexOf('Itens (2)'));
+    expect(all.indexOf('Itens (2)')).toBeLessThan(all.indexOf('ARROZ 5KG'));
+    expect(all.indexOf('ARROZ 5KG')).toBeLessThan(all.indexOf('Descartar nota'));
+  });
+
+  it('na janela estreita do navegador, também', async () => {
+    await browser(800);
+    await open();
+    expect(side()).toBeUndefined();
+    expect(footer().props.title).toBe('Confirmar nota (2 itens)');
+  });
+
+  it('no computador, os itens na principal; o cabeçalho, o total e as ações da nota na do lado, que vem antes na ordem', async () => {
+    await browser(1440);
+    await open();
+    // Sem o rodapé: "Confirmar nota" vai para a coluna do lado, parada enquanto os itens rolam.
+    expect(footer()).toBeUndefined();
+    const aside = said(side()!);
+    expect(aside).toEqual(expect.arrayContaining(['Mercado', 'Assaí', 'Soma dos itens', 'Total da nota', 'Confirmar nota (2 itens)', 'Descartar nota']));
+    expect(aside).not.toContain('DETERGENTE YPE');
+    // As ações no fim da coluna do lado, a de confirmar antes da de descartar.
+    expect(aside.slice(-2)).toEqual(['Confirmar nota (2 itens)', 'Descartar nota']);
+    const items = said(main()!);
+    expect(items).toEqual(expect.arrayContaining(['Itens (2)', 'DETERGENTE YPE', 'ARROZ 5KG']));
+    expect(items).not.toContain('Descartar nota');
+    // A do lado vem antes na ordem do teclado e do leitor de tela (como no celular, o cabeçalho antes dos itens).
+    const all = lines();
+    expect(all.indexOf('Mercado')).toBeLessThan(all.indexOf('Itens (2)'));
+    // Um botão de cada: nada fica repetido entre o rodapé e a coluna.
+    expect(renderer!.root.findAllByType(Button).filter((entry) => String(entry.props.title).startsWith('Confirmar nota'))).toHaveLength(1);
+    expect(renderer!.root.findAllByType(Button).filter((entry) => entry.props.title === 'Descartar nota')).toHaveLength(1);
+  });
+
+  it('no computador, "Confirmar nota" na coluna do lado confirma como o do rodapé', async () => {
+    await browser(1440);
+    await open();
+    await press(button('Confirmar nota'));
+    expect(mockDb.rpcs.map((rpc) => rpc.fn)).toEqual(['confirm_receipt']);
+    expect((mockDb.rpcs[0].args.p_items as Row[]).map((entry) => entry.id)).toEqual(['a', 'b']);
+  });
+
+  it('a nota confirmada, no computador: sem "Confirmar nota", e "Excluir nota" no fim da coluna do lado', async () => {
+    seed(receipt({ status: 'confirmed', source: 'qrcode' }), item('a', 'DETERGENTE YPE', 50));
+    await browser(1440);
+    await open();
+    expect(footer()).toBeUndefined();
+    expect(button('Confirmar nota')).toBeUndefined();
+    expect(said(side()!).slice(-1)).toEqual(['Excluir nota']);
   });
 });

@@ -1,11 +1,12 @@
 // O arranjo do computador (domain/desktop): saber se a janela é de computador e pôr o conteúdo em duas colunas.
 // No celular (e na janela estreita do navegador) nada daqui muda a tela: uma coluna, na ordem de sempre.
 
+import { HeaderHeightContext } from 'expo-router/react-navigation';
 import { createContext, useContext, type ReactNode } from 'react';
-import { Platform, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { Platform, StyleSheet, useWindowDimensions, View, type ViewStyle } from 'react-native';
 
-import { DESKTOP_SIDE_MAX_SHARE, DESKTOP_SIDE_WIDTH, isDesktop, SIDEBAR_SPACE } from '@/domain/desktop';
-import { space } from './theme';
+import { DESKTOP_SIDE_MAX_SHARE, DESKTOP_SIDE_WIDTH, isDesktop, SIDEBAR_SPACE, stickySideHeight } from '@/domain/desktop';
+import { SCREEN_PADDING, space } from './theme';
 
 /** A janela é de computador: o navegador, numa janela larga. Acompanha a janela quando ela muda de tamanho. */
 export function useDesktop(): boolean {
@@ -32,6 +33,10 @@ export function useAreaWidth(): number {
  * lado depois da principal, ou antes dela com `sideFirst` (as ações do alto de uma parte: no computador elas ficam
  * à direita, mas continuam vindo antes na ordem do teclado e do leitor de tela, como no celular). `gap` é o espaço
  * entre as partes dentro de cada coluna (o mesmo que a tela ou o painel põe entre elas no celular).
+ *
+ * `stickySide`: no computador, a do lado fica parada enquanto a principal rola (a revisão da nota: o "Confirmar nota"
+ * continua à vista com os itens rolando, como o rodapé fixo do celular), com no máximo a altura do lugar que a tela
+ * tem para rolar; o que não cabe nela rola por dentro. Para uma tela sem rodapé.
  */
 export function Columns({
   children,
@@ -39,14 +44,19 @@ export function Columns({
   sideFirst,
   sideWidth = DESKTOP_SIDE_WIDTH,
   gap = space.xl,
+  stickySide,
 }: {
   children: ReactNode;
   side: ReactNode;
   sideFirst?: boolean;
   sideWidth?: number;
   gap?: number;
+  stickySide?: boolean;
 }) {
   const desktop = useDesktop();
+  const { height } = useWindowDimensions();
+  // A altura do cabeçalho da tela (fora de um navegador, nenhum): o lugar que a tela tem para rolar é o resto da janela.
+  const headerHeight = useContext(HeaderHeightContext) ?? 0;
   if (!desktop) {
     return (
       <>
@@ -62,7 +72,17 @@ export function Columns({
     </View>
   );
   const aside = (
-    <View key="side" style={[styles.side, { width: sideWidth, gap }]}>
+    <View
+      key="side"
+      style={[
+        styles.side,
+        { width: sideWidth, gap },
+        stickySide && [
+          sticky,
+          // A folga em volta deixa a sombra dos cartões fora do corte da rolagem; a margem negativa a desconta.
+          { width: sideWidth + 2 * STICKY_ROOM, maxHeight: stickySideHeight(height, headerHeight, SCREEN_PADDING) + 2 * STICKY_ROOM },
+        ],
+      ]}>
       {side}
     </View>
   );
@@ -80,6 +100,19 @@ export function Actions({ children }: { children: ReactNode }) {
   if (!desktop) return <>{children}</>;
   return <View style={styles.actions}>{children}</View>;
 }
+
+/** A folga, em volta da coluna do lado parada, para a sombra dos cartões (que a rolagem de dentro cortaria). */
+const STICKY_ROOM = space.md;
+
+// Só do navegador (a coluna parada só existe no computador): `sticky` e a rolagem só na vertical não estão nos tipos do
+// React Native, e o react-native-web os passa para o CSS.
+const sticky = {
+  position: 'sticky',
+  top: SCREEN_PADDING - STICKY_ROOM,
+  overflowY: 'auto',
+  padding: STICKY_ROOM,
+  margin: -STICKY_ROOM,
+} as unknown as ViewStyle;
 
 const styles = StyleSheet.create({
   actions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: space.md },

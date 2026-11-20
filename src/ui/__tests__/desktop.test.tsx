@@ -2,25 +2,28 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { useState, type ReactElement } from 'react';
-import { Dimensions, Modal, Platform, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Dimensions, Modal, Platform, StyleSheet, Text, View } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import {
   DESKTOP_CONTENT_WIDTH,
   DESKTOP_DIALOG_WIDTH,
+  DESKTOP_PHOTO_WIDTH,
   DESKTOP_SHEET_WIDTH,
   DESKTOP_SIDE_MAX_SHARE,
   DESKTOP_SIDE_WIDTH,
   DESKTOP_TABS_WIDTH,
+  REFRESH_LABEL,
   SIDEBAR_SPACE,
   sheetHeights,
+  stickySideHeight,
 } from '@/domain/desktop';
 import { ActionSheet } from '../ActionSheet';
 import { Backdrop } from '../Backdrop';
 import { Actions, Columns, SidebarContext, useAreaWidth, useDesktop } from '../desktop';
 import { Screen, Segmented } from '../primitives';
 import { SheetModal } from '../SheetModal';
-import { MAX_WIDTH } from '../theme';
+import { MAX_WIDTH, SCREEN_PADDING } from '../theme';
 
 // O arranjo do computador (ui/desktop): só no navegador e na janela larga. No celular, e na janela estreita do
 // navegador, as mesmas peças deixam a tela exatamente como era: uma coluna, na ordem de sempre, sem caixa a mais.
@@ -152,6 +155,49 @@ describe('as duas colunas', () => {
     expect(flat(main).gap).toBe(16);
     expect(flat(side)).toMatchObject({ width: 400, gap: 16 });
   });
+
+  describe('a do lado parada (stickySide: a revisão da nota)', () => {
+    const sticky = (
+      <Columns stickySide sideFirst sideWidth={400} side={<Text>Confirmar nota</Text>}>
+        <Text>itens</Text>
+      </Columns>
+    );
+
+    it('no celular, nada muda: os dois soltos, na ordem de sempre', async () => {
+      const root = await mount(sticky);
+      expect(boxes(root)).toHaveLength(0);
+      expect(text(root)).toBe('Confirmar notaitens');
+    });
+
+    it('no computador, fica parada enquanto a principal rola, da altura que a janela dá, e rola por dentro', async () => {
+      await browser(1440);
+      await act(async () => Dimensions.set({ window: { ...WINDOW, width: 1440, height: 900 } }));
+      const root = await mount(sticky);
+      const [, side] = boxes(root);
+      expect(text(side)).toBe('Confirmar nota');
+      const style = flat(side) as Record<string, unknown>;
+      expect(style).toMatchObject({ position: 'sticky', overflowY: 'auto' });
+      // A folga em volta (para a sombra dos cartões) é descontada pela margem: o conteúdo fica com a largura pedida.
+      const room = style.padding as number;
+      expect(style.margin).toBe(-room);
+      expect(style.width).toBe(400 + 2 * room);
+      // Fora de uma tela com cabeçalho, o lugar de rolar é a janela inteira, menos as margens do conteúdo.
+      expect(style.maxHeight).toBe(stickySideHeight(900, 0, SCREEN_PADDING) + 2 * room);
+      // O conteúdo fica na margem de cima do conteúdo da tela, como antes de rolar.
+      expect((style.top as number) + room).toBe(SCREEN_PADDING);
+    });
+
+    it('sem stickySide, a do lado rola com a tela, como sempre', async () => {
+      await browser(1440);
+      const root = await mount(
+        <Columns side={<Text>ações</Text>}>
+          <Text>lista</Text>
+        </Columns>,
+      );
+      const [, , side] = boxes(root);
+      expect(flat(side).position).toBeUndefined();
+    });
+  });
 });
 
 describe('as ações do alto de uma parte', () => {
@@ -242,6 +288,104 @@ describe('a tela', () => {
     );
     expect(flat(content(root)).maxWidth).toBe(MAX_WIDTH);
   });
+
+  describe('o "Atualizar" do computador (no navegador não se puxa a tela)', () => {
+    const onRefresh = jest.fn();
+    const refresh = (root: ReactTestInstance) =>
+      root.findAll((node) => node.props.accessibilityLabel === REFRESH_LABEL && typeof node.props.onPress === 'function');
+    /** A caixa em volta do botão: a que diz onde ele fica (a de verdade mais próxima, acima do botão). */
+    const holder = (root: ReactTestInstance) => {
+      const button = refresh(root)[0];
+      const around = boxes(root).filter((box) => box.findAll((node) => node === button).length > 0);
+      return around[around.length - 1];
+    };
+    const page = (props: { wide?: boolean; refreshing?: boolean; ownRefreshButton?: boolean } = {}) => (
+      <Screen onRefresh={onRefresh} {...props}>
+        <Text>conteúdo</Text>
+      </Screen>
+    );
+
+    it('no celular, não existe: puxa-se a tela, como sempre', async () => {
+      const root = await mount(page({ wide: true }));
+      expect(refresh(root)).toHaveLength(0);
+    });
+
+    it('na janela estreita do navegador, também não', async () => {
+      await browser(800);
+      const root = await mount(page({ wide: true }));
+      expect(refresh(root)).toHaveLength(0);
+    });
+
+    it('no computador, um botão redondo de 44 que faz o que puxar a tela faz', async () => {
+      await browser(1440);
+      onRefresh.mockClear();
+      const root = await mount(page());
+      const [button] = refresh(root);
+      expect(button.props.accessibilityRole).toBe('button');
+      expect(StyleSheet.flatten(button.props.style({ pressed: false }))).toMatchObject({ width: 44, height: 44 });
+      await act(async () => button.props.onPress());
+      expect(onRefresh).toHaveBeenCalledTimes(1);
+      expect(root.findAllByType(ActivityIndicator)).toHaveLength(0);
+    });
+
+    it('buscando, gira, e não aceita outro toque', async () => {
+      await browser(1440);
+      const root = await mount(page({ refreshing: true }));
+      const [button] = refresh(root);
+      expect(button.props.disabled).toBe(true);
+      expect(button.props.accessibilityState).toMatchObject({ busy: true, disabled: true });
+      expect(root.findAllByType(ActivityIndicator)).toHaveLength(1);
+    });
+
+    it('nas abas fica por cima, no canto de cima à direita; nas outras telas, numa linha dele, à direita, antes do conteúdo', async () => {
+      await browser(1440);
+      const tab = await mount(page({ wide: true }));
+      expect(flat(holder(tab))).toMatchObject({ position: 'absolute', right: SCREEN_PADDING, zIndex: 1 });
+      // Antes do conteúdo, na ordem do teclado e do leitor de tela: a primeira caixa dentro da do conteúdo.
+      const first = (root: ReactTestInstance) => boxes(content(root))[1] === holder(root);
+      expect(first(tab)).toBe(true);
+      await act(async () => renderer!.unmount());
+      const form = await mount(page());
+      expect(flat(holder(form))).toEqual({ alignSelf: 'flex-end' });
+      expect(first(form)).toBe(true);
+    });
+
+    it('a tela que já tem o próprio botão de atualizar (o Consultor) não ganha um segundo', async () => {
+      await browser(1440);
+      const root = await mount(page({ ownRefreshButton: true }));
+      expect(refresh(root)).toHaveLength(0);
+    });
+
+    it('sem o que buscar de novo, não aparece', async () => {
+      await browser(1440);
+      const root = await mount(
+        <Screen wide>
+          <Text>conteúdo</Text>
+        </Screen>,
+      );
+      expect(refresh(root)).toHaveLength(0);
+    });
+
+    it('a janela que cruza a largura do computador não monta o conteúdo de novo', async () => {
+      let mounts = 0;
+      function Field() {
+        const [first] = useState(() => (mounts += 1));
+        return <Text>{`montagem ${first}`}</Text>;
+      }
+      jest.replaceProperty(Platform, 'OS', 'web');
+      await act(async () => Dimensions.set({ window: { ...WINDOW, width: 800 } }));
+      const root = await mount(
+        <Screen wide onRefresh={onRefresh}>
+          <Field />
+        </Screen>,
+      );
+      await act(async () => Dimensions.set({ window: { ...WINDOW, width: 1440 } }));
+      expect(refresh(root)).toHaveLength(1);
+      await act(async () => Dimensions.set({ window: { ...WINDOW, width: 800 } }));
+      expect(refresh(root)).toHaveLength(0);
+      expect(mounts).toBe(1);
+    });
+  });
 });
 
 describe('o menu de ações', () => {
@@ -264,7 +408,7 @@ describe('o menu de ações', () => {
 });
 
 describe('as janelas de formulário', () => {
-  const sheet = (props: { tall?: boolean; visible?: boolean } = {}) => (
+  const sheet = (props: { tall?: boolean; photo?: boolean; visible?: boolean } = {}) => (
     <SheetModal onClose={onClose} onShow={onShow} onDismiss={onDismiss} {...props}>
       <Text>Renomear lista</Text>
     </SheetModal>
@@ -319,6 +463,23 @@ describe('as janelas de formulário', () => {
     expect(box.maxHeight).toBeUndefined();
   });
 
+  it('as fotos, no celular, aparecem no lugar (sem subir do rodapé) e tomam a tela, como sempre', async () => {
+    const root = await mount(sheet({ photo: true }));
+    expect(root.findByType(Modal).props).toMatchObject({ animationType: 'fade', transparent: false });
+    expect(root.findAllByType(Backdrop)).toHaveLength(1);
+    expect(flat(frame(root))).toEqual({ flex: 1 });
+  });
+
+  it('as fotos, no computador, numa caixa mais larga, com a altura que a janela dá', async () => {
+    await browser(1440);
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width: 1440, height: 900 } }));
+    const root = await mount(sheet({ photo: true }));
+    expect(root.findByType(Modal).props).toMatchObject({ animationType: 'fade', transparent: true });
+    const box = flat(frame(root));
+    expect(box).toMatchObject({ maxWidth: DESKTOP_PHOTO_WIDTH, height: sheetHeights(900).max });
+    expect(box.maxHeight).toBeUndefined();
+  });
+
   it('a janela que cruza a largura do computador não monta o formulário de novo', async () => {
     let mounts = 0;
     function Field() {
@@ -341,7 +502,7 @@ describe('as janelas de formulário', () => {
     expect(mounts).toBe(1);
   });
 
-  it('todo formulário em janela usa a mesma peça: só ela, o menu de ações, a espera e as fotos abrem um Modal', () => {
+  it('todo formulário e toda foto em janela usam a mesma peça: só ela, o menu de ações e a espera abrem um Modal', () => {
     const SRC = join(__dirname, '..', '..');
     const files: string[] = [];
     const walk = (dir: string) => {
@@ -357,8 +518,8 @@ describe('as janelas de formulário', () => {
       .filter((path) => /<Modal\b/.test(readFileSync(path, 'utf8')))
       .map((path) => path.slice(SRC.length + 1).split('\\').join('/'))
       .sort();
-    // Uma janela nova de formulário usa o SheetModal: sozinha, ela tomaria a janela inteira no computador.
-    expect(withModal).toEqual(['app/nota/[id].tsx', 'features/PhotoStrip.tsx', 'ui/ActionSheet.tsx', 'ui/BusyOverlay.tsx', 'ui/SheetModal.tsx']);
+    // Uma janela nova de formulário (ou de ver fotos) usa o SheetModal: sozinha, ela tomaria a janela inteira no computador.
+    expect(withModal).toEqual(['ui/ActionSheet.tsx', 'ui/BusyOverlay.tsx', 'ui/SheetModal.tsx']);
   });
 });
 

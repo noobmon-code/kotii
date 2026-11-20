@@ -9,11 +9,14 @@ import {
   DESKTOP_CONTENT_WIDTH,
   DESKTOP_MIN_WIDTH,
   DESKTOP_PANEL_SIDE_WIDTH,
+  DESKTOP_PHOTO_WIDTH,
   DESKTOP_SHEET_HEIGHT_SHARE,
   DESKTOP_SHEET_TALL_HEIGHT,
   DESKTOP_SHEET_WIDTH,
   DESKTOP_SIDE_MAX_SHARE,
   DESKTOP_SIDE_WIDTH,
+  DESKTOP_WINDOW_HEIGHT,
+  DESKTOP_WINDOW_WIDTH,
   isDesktop,
   onTabs,
   SCREEN_AREAS,
@@ -21,7 +24,11 @@ import {
   SIDEBAR_MARGIN,
   SIDEBAR_SPACE,
   SIDEBAR_WIDTH,
+  STICKY_SIDE_MIN_HEIGHT,
+  stickySideHeight,
   tabParams,
+  windowFallback,
+  windowHeight,
   type NavRoute,
 } from '../desktop';
 
@@ -75,6 +82,50 @@ describe('as janelas de formulário no computador', () => {
     for (const height of [0, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(sheetHeights(height)).toEqual({ max: DESKTOP_SHEET_TALL_HEIGHT, tall: DESKTOP_SHEET_TALL_HEIGHT });
     }
+  });
+
+  it('as fotos: mais larga que a dos formulários, e ainda cabe na janela mais estreita do computador', () => {
+    expect(DESKTOP_PHOTO_WIDTH).toBeGreaterThan(DESKTOP_SHEET_WIDTH);
+    expect(DESKTOP_PHOTO_WIDTH).toBeLessThan(DESKTOP_MIN_WIDTH - 2 * 24);
+  });
+});
+
+describe('as telas em janela no computador (as que no celular sobem por cima das outras)', () => {
+  it('a caixa tem a largura da coluna das telas de formulário (MAX_WIDTH) e cabe na janela mais estreita do computador', () => {
+    expect(DESKTOP_WINDOW_WIDTH).toBe(720);
+    expect(DESKTOP_WINDOW_WIDTH).toBeLessThan(DESKTOP_MIN_WIDTH - 2 * 24);
+  });
+
+  it('a altura é fixa: a parte da janela que as caixas tomam, até DESKTOP_WINDOW_HEIGHT', () => {
+    expect(windowHeight(900)).toBe(Math.floor(900 * DESKTOP_SHEET_HEIGHT_SHARE));
+    expect(windowHeight(1400)).toBe(DESKTOP_WINDOW_HEIGHT);
+    expect(windowHeight(600)).toBe(528);
+    // A janela ainda sem medida: a das listas de escolher.
+    expect(windowHeight(Number.NaN)).toBe(DESKTOP_SHEET_TALL_HEIGHT);
+  });
+
+  it('sem tela para onde voltar, o "Fechar" leva à aba da área da tela (ou à Hoje)', () => {
+    expect(windowFallback('tarefa/[id]')).toBe('/casa');
+    expect(windowFallback('nota/qrcode')).toBe('/compras');
+    expect(windowFallback('despensa/[id]')).toBe('/compras');
+    expect(windowFallback('remedio/[id]')).toBe('/saude');
+    expect(windowFallback('consultor/conversa')).toBe('/casa');
+    expect(windowFallback('nuke')).toBe('/');
+    expect(windowFallback('nao-existe')).toBe('/');
+  });
+});
+
+describe('a coluna do lado parada (a revisão da nota)', () => {
+  it('cabe no lugar que a tela tem para rolar: a janela menos o cabeçalho e as margens', () => {
+    expect(stickySideHeight(900, 64, 20)).toBe(796);
+    expect(stickySideHeight(900.6, 64, 20)).toBe(796);
+    expect(stickySideHeight(1080, 0, 20)).toBe(1040);
+  });
+
+  it('nunca some numa janela muito baixa, nem sem medida', () => {
+    expect(stickySideHeight(200, 64, 20)).toBe(STICKY_SIDE_MIN_HEIGHT);
+    expect(stickySideHeight(Number.NaN, 64, 20)).toBe(STICKY_SIDE_MIN_HEIGHT);
+    expect(stickySideHeight(900, Number.NaN, 20)).toBe(860);
   });
 });
 

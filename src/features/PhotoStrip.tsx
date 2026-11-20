@@ -1,12 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { signedImageUrl } from '@/data/images';
-import { Backdrop } from '@/ui/Backdrop';
 import { Icon, IconButton, Row, Text } from '@/ui/primitives';
+import { SheetModal } from '@/ui/SheetModal';
 import { radius, space, useColors } from '@/ui/theme';
 
 const THUMB = 84;
@@ -21,7 +20,7 @@ function usePhotoUrl(bucket: string, path: string | null) {
   });
 }
 
-/** Miniaturas das fotos de um documento; toque abre em tela cheia. */
+/** Miniaturas das fotos de um documento; toque abre em tela cheia (no computador, numa caixa grande no meio da janela). */
 export function PhotoStrip({
   bucket,
   paths,
@@ -99,22 +98,19 @@ function Viewer({
   onClose: () => void;
   onRemove?: () => void;
 }) {
-  const c = useColors();
   const url = usePhotoUrl(bucket, path);
   return (
-    <Modal visible={Boolean(path)} animationType="fade" onRequestClose={onClose}>
-      <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
-        <Backdrop />
-        <Row style={styles.header}>
-          <Text variant="heading" style={styles.flex}>
-            {title}
-          </Text>
-          {onRemove ? <IconButton icon="trash-can-outline" label="Remover foto" color="danger" onPress={onRemove} /> : null}
-          <IconButton icon="close" label="Fechar" onPress={onClose} />
-        </Row>
-        {path && url.data ? <Image source={{ uri: url.data }} style={styles.flex} contentFit="contain" /> : null}
-      </SafeAreaView>
-    </Modal>
+    // Fecha pelo X e, no navegador, pelo Esc (e pelo voltar do Android).
+    <SheetModal visible={Boolean(path)} photo onClose={onClose}>
+      <Row style={styles.header}>
+        <Text variant="heading" style={styles.flex}>
+          {title}
+        </Text>
+        {onRemove ? <IconButton icon="trash-can-outline" label="Remover foto" color="danger" onPress={onRemove} /> : null}
+        <IconButton icon="close" label="Fechar" onPress={onClose} />
+      </Row>
+      {path && url.data ? <Image source={{ uri: url.data }} style={styles.flex} contentFit="contain" /> : null}
+    </SheetModal>
   );
 }
 

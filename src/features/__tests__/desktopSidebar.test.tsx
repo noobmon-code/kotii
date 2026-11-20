@@ -3,13 +3,16 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { Tabs } from 'expo-router/js-tabs';
-import { Text, View } from 'react-native';
+import { useState } from 'react';
+import { Dimensions, Platform, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import TabsLayout from '@/app/(tabs)/_layout';
-import { APP_AREAS } from '@/domain/desktop';
+import { APP_AREAS, DESKTOP_WINDOW_WIDTH, windowHeight } from '@/domain/desktop';
+import { routeWindowLayout, WINDOW_CLOSE_LABEL, windowOptions } from '@/features/desktop/RouteWindow';
 import { NUKE_LABEL, Sidebar } from '@/features/desktop/Sidebar';
 import { NukeButton } from '@/features/nuke/NukeButton';
+import { useDesktop } from '@/ui/desktop';
 import { TabBar } from '@/ui/TabBar';
 
 // A barra lateral do computador num roteador de verdade (o Expo Router, com as rotas montadas na memória), ao lado
@@ -29,6 +32,11 @@ jest.mock('expo-linking', () => ({
   resolveScheme: () => 'kotii',
   addEventListener: () => ({ remove() {} }),
 }));
+// A barra lateral e as telas em janela só existem no navegador: o Stack desenha as telas como no navegador (todas as da
+// pilha, a de baixo de uma `transparentModal` à vista), e não como no celular (react-native-screens).
+jest.mock('expo-router/build/react-navigation/native-stack/views/NativeStackView', () =>
+  jest.requireActual('expo-router/build/react-navigation/native-stack/views/NativeStackView.js'),
+);
 jest.mock('@/ui/NukeLive', () => ({ NukeLive: () => null }));
 // O layout das abas de verdade: os avisos não entram nesta história.
 jest.mock('@/features/useReminderSync', () => ({ useReminderSync: () => undefined }));
@@ -280,5 +288,185 @@ describe('a casca do computador', () => {
     await press('sidebar-compras');
     expect(where().pathname).toBe('/compras');
     expect(lit()).toEqual(['compras']);
+  });
+});
+
+describe('as telas em janela (no celular sobem por cima das outras)', () => {
+  const WINDOW = Dimensions.get('window');
+  afterEach(async () => {
+    await act(async () => Dimensions.set({ window: WINDOW }));
+    jest.restoreAllMocks();
+  });
+
+  /** Quantas vezes a tarefa foi montada: montada de novo, ela perderia o que foi digitado. */
+  let mounts = 0;
+  function Task() {
+    useState(() => (mounts += 1));
+    return <Text>tarefa</Text>;
+  }
+
+  // Como o layout da raiz: as opções das telas em janela vêm de `windowOptions`, e a caixa, do `screenLayout`.
+  const WINDOWS = {
+    ...ROUTES,
+    _layout: function Layout() {
+      const desktop = useDesktop();
+      // Redesenha quando a janela muda de tamanho (o useDesktop de verdade a acompanha).
+      useWindowDimensions();
+      return (
+        <Stack screenLayout={routeWindowLayout}>
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen name="precos" />
+          <Stack.Screen name="tarefa/[id]" options={windowOptions(desktop, { title: 'Tarefa' })} />
+          <Stack.Screen name="nuke" options={windowOptions(desktop, { headerShown: false })} />
+        </Stack>
+      );
+    },
+    'tarefa/[id]': Task,
+  };
+
+  /** A caixa (a de verdade, com a tela dentro). */
+  const box = () => renderer!.root.findAll((node) => node.props.testID === 'route-window' && (node.type as unknown) === 'View')[0];
+  const flat = (node: ReactTestInstance) => (StyleSheet.flatten(node.props.style) ?? {}) as Record<string, unknown>;
+  const closeButton = () =>
+    renderer!.root.findAll((node) => node.props.accessibilityLabel === WINDOW_CLOSE_LABEL && typeof node.props.onPress === 'function')[0];
+  const titleBar = () =>
+    renderer!.root.findAll(
+      (node) => typeof node.type === 'string' && node.props.accessibilityRole === 'header' && node.props.children === 'Tarefa',
+    );
+
+  /** A tela de onde a pessoa veio (a Hoje, nas abas) está desenhada: a caixa da pilha dela não está escondida. */
+  const behindShown = () => {
+    let node: ReactTestInstance | null = renderer!.root.findAll((entry) => (entry.type as unknown) === 'Text' && entry.props.children === 'hoje')[0];
+    while (node && !((node.type as unknown) === 'View' && flat(node).display !== undefined)) node = node.parent;
+    return flat(node!).display !== 'none';
+  };
+
+  async function web(desktop: boolean, width = desktop ? 1440 : 800) {
+    jest.replaceProperty(Platform, 'OS', 'web');
+    mockDesktop = desktop;
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width, height: 900 } }));
+  }
+  async function openTask() {
+    await act(async () => router.push({ pathname: '/tarefa/[id]', params: { id: 'nova' } }));
+    await settle();
+  }
+
+  it('as opções: no celular, a janela que sobe de sempre; no computador, por cima da tela de antes, sem fundo e sem o cabeçalho do Stack', () => {
+    expect(windowOptions(false, { title: 'Tarefa' })).toEqual({ title: 'Tarefa', presentation: 'modal' });
+    const desktop = windowOptions(true, { title: 'Tarefa' });
+    expect(desktop).toMatchObject({ title: 'Tarefa', presentation: 'transparentModal', contentStyle: { backgroundColor: 'transparent' } });
+    // O cabeçalho do Stack fica vazio: o título vai na barra da caixa.
+    expect('header' in desktop && desktop.header()).toBeNull();
+    expect(windowOptions(true, { headerShown: false })).toMatchObject({ headerShown: false, presentation: 'transparentModal' });
+  });
+
+  it('no celular e no tablet, nada em volta da tela', async () => {
+    mockDesktop = true;
+    await open('/', WINDOWS);
+    await openTask();
+    expect(where().pathname).toBe('/tarefa/nova');
+    expect(box()).toBeUndefined();
+  });
+
+  it('na janela estreita do navegador, a página de sempre: as caixas só ocupam a tela, sem título a mais nem "Fechar"', async () => {
+    await web(false);
+    await open('/', WINDOWS);
+    await openTask();
+    expect(flat(box())).toEqual({ flex: 1 });
+    expect(flat(box().parent!.parent!)).toEqual({ flex: 1 });
+    expect(box().props.role).toBeUndefined();
+    // Uma página: a de antes fica escondida.
+    expect(behindShown()).toBe(false);
+    expect(titleBar()).toHaveLength(0);
+    expect(closeButton()).toBeUndefined();
+  });
+
+  it('no computador, uma caixa no meio da janela, com o app escurecido atrás, o título e o "Fechar"', async () => {
+    await web(true);
+    await open('/', WINDOWS);
+    await openTask();
+    expect(box().props).toMatchObject({ role: 'dialog', 'aria-modal': true, 'aria-label': 'Tarefa' });
+    expect(flat(box())).toMatchObject({ width: '100%', maxWidth: DESKTOP_WINDOW_WIDTH, height: windowHeight(900), overflow: 'hidden' });
+    // O fundo escurecido cobre a janela inteira (a barra lateral também), por cima do cabeçalho da tela de trás.
+    const dim = flat(box().parent!.parent!);
+    expect(dim).toMatchObject({ position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, alignItems: 'center', justifyContent: 'center' });
+    expect(dim.backgroundColor).toBe('rgba(0,0,0,0.4)');
+    expect(titleBar()).toHaveLength(1);
+    // A tela de onde a pessoa veio continua embaixo, na pilha, e desenhada atrás do fundo escurecido.
+    expect(stacked()).toEqual(['(tabs)', 'tarefa/[id]']);
+    expect(behindShown()).toBe(true);
+    await act(async () => closeButton().props.onPress());
+    await settle();
+    expect(where().pathname).toBe('/');
+    expect(stacked()).toEqual(['(tabs)']);
+  });
+
+  it('a janela que cruza a largura do computador com a tela aberta não a monta de novo', async () => {
+    mounts = 0;
+    await web(false);
+    await open('/', WINDOWS);
+    await openTask();
+    expect(titleBar()).toHaveLength(0);
+    await web(true);
+    expect(titleBar()).toHaveLength(1);
+    expect(box().props.role).toBe('dialog');
+    expect(behindShown()).toBe(true);
+    await web(false);
+    expect(titleBar()).toHaveLength(0);
+    expect(behindShown()).toBe(false);
+    expect(mounts).toBe(1);
+  });
+
+  it('aberta direto pelo endereço (nada embaixo), o "Fechar" leva à aba da área da tela', async () => {
+    await web(true);
+    await open('/tarefa/nova', WINDOWS);
+    expect(stacked()).toEqual(['tarefa/[id]']);
+    await act(async () => closeButton().props.onPress());
+    await settle();
+    expect(where().pathname).toBe('/casa');
+  });
+
+  it('a tela que desenha o próprio alto (o Nuke) ganha a caixa, sem a barra do título', async () => {
+    await web(true);
+    await open('/', WINDOWS);
+    await act(async () => router.push('/nuke'));
+    await settle();
+    expect(box().props.role).toBe('dialog');
+    expect(closeButton()).toBeUndefined();
+  });
+
+  it('as outras telas, no computador, ficam como eram', async () => {
+    await web(true);
+    await open('/', WINDOWS);
+    await act(async () => router.push('/precos'));
+    await settle();
+    expect(where().pathname).toBe('/precos');
+    expect(box()).toBeUndefined();
+  });
+
+  it('no layout da raiz, toda tela que sobe como janela passa por windowOptions, e o Stack desenha a caixa', () => {
+    const layout = readFileSync(join(__dirname, '..', '..', 'app', '_layout.tsx'), 'utf8');
+    expect(layout).toContain('screenLayout={routeWindowLayout}');
+    // Uma janela nova escrita à mão (presentation: 'modal') seria, no computador, uma página inteira.
+    expect(layout).not.toMatch(/presentation:/);
+    const windows = [...layout.matchAll(/<Stack\.Screen name="([^"]+)" options=\{windowOptions\(desktop, /g)].map((match) => match[1]);
+    expect(windows).toEqual([
+      'nota/qrcode',
+      'nota/pendente',
+      'despensa/[id]',
+      'reposicao/[id]',
+      'tarefa/[id]',
+      'remedio/[id]',
+      'pessoa/[id]',
+      'consulta/[id]',
+      'compromisso/[id]',
+      'vacina/[id]',
+      'servico/[id]',
+      'nuke',
+      'orcamento',
+      'conta/[id]',
+      'gasto/[id]',
+      'consultor/conversa',
+    ]);
   });
 });
