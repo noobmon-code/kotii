@@ -1,5 +1,6 @@
 // O "Escanear" da tela Hoje: uma câmera só, que lê sozinha o QR code da nota e o código de barras de um produto,
-// e em que a foto vai para a IA dizer se é nota, produto ou prateleira. Aqui ficam as regras e os textos: o que um
+// e em que a foto vai para a IA dizer se é nota, produto ou prateleira. A mesma câmera, só da nota, é a do
+// "Adicionar nota" de Compras → Notas e a do "Finalizar compra" da lista. Aqui ficam as regras e os textos: o que um
 // código lido é, quando a foto espera a próxima parte, o que a função respondeu, os produtos achados (que se juntam
 // até a pessoa dizer para onde vão) e as linhas que eles viram na despensa e na lista. Sem React nem Supabase.
 
@@ -10,16 +11,27 @@ import { parseNfceQr } from './nfce';
 import { estimateExpiry } from './pantry';
 import { MAX_RECEIPT_PHOTOS } from './receiptPhotos';
 
-/** `tudo`: a câmera da tela Hoje (nota ou produto). `despensa`: o que a casa já tem, só produtos, direto para a despensa. */
-export type ScanMode = 'tudo' | 'despensa';
+/**
+ * `tudo`: a câmera da tela Hoje (nota ou produto). `despensa`: o que a casa já tem, só produtos, direto para a
+ * despensa. `nota`: só a nota (o "Adicionar nota" de Compras → Notas e o "Finalizar compra" da lista): o QR code e
+ * a foto da nota, sem produto nenhum.
+ */
+export type ScanMode = 'tudo' | 'despensa' | 'nota';
 
-/** O modo pedido na URL (?para=despensa); o que não for isso é a câmera de sempre. */
+/** O modo pedido na URL (?para=despensa, ?para=nota); o que não for isso é a câmera de sempre. */
 export function scanModeFromParam(value: string | string[] | undefined): ScanMode {
-  return (Array.isArray(value) ? value[0] : value) === 'despensa' ? 'despensa' : 'tudo';
+  const asked = Array.isArray(value) ? value[0] : value;
+  return asked === 'despensa' || asked === 'nota' ? asked : 'tudo';
 }
 
 /** Os códigos que a câmera procura: o QR da nota e os códigos de barras de produto. */
 export const SCAN_BARCODE_TYPES = ['qr', 'ean13', 'ean8', 'upc_a'] as const;
+export type ScanBarcodeType = (typeof SCAN_BARCODE_TYPES)[number];
+
+/** Os códigos que a câmera procura em cada modo: só da nota, só o QR (o código de barras nem é visto). */
+export function scanBarcodeTypes(mode: ScanMode): readonly ScanBarcodeType[] {
+  return mode === 'nota' ? ['qr'] : SCAN_BARCODE_TYPES;
+}
 
 /** Um código lido que serve para alguma coisa. */
 export type ScanCode = { kind: 'nota'; text: string; accessKey: string } | { kind: 'produto'; gtin: string };
@@ -48,11 +60,12 @@ const onlyProducts = ({ mode, found }: ScanState) => mode === 'despensa' || foun
 
 /**
  * O que fazer com o código lido. A nota só abre com a tela vazia: com produtos achados e não guardados, abrir a
- * nota os perderia, e no modo da despensa ninguém pediu nota.
+ * nota os perderia, e no modo da despensa ninguém pediu nota. No modo da nota, o código de barras de um produto
+ * não é nada: ninguém pediu produto.
  */
 export function scanCodeStep(code: ScanCode | null, state: ScanState): 'nota' | 'produto' | 'ignorar' {
   if (!code) return 'ignorar';
-  if (code.kind === 'produto') return 'produto';
+  if (code.kind === 'produto') return state.mode === 'nota' ? 'ignorar' : 'produto';
   return onlyProducts(state) ? 'ignorar' : 'nota';
 }
 
@@ -68,7 +81,14 @@ export function photoStep(state: ScanState, parts: number): 'partes' | 'ler' {
 /** Como pedir a leitura à função: `any` aceita nota ou produtos; `products`, só produtos (a nota não é lida). */
 export type ScanClassify = 'any' | 'products';
 
-export const classifyFor = (state: ScanState): ScanClassify => (onlyProducts(state) ? 'products' : 'any');
+/**
+ * Como a foto é lida. null, no modo da nota: a leitura de sempre da nota, sem `classify`, que não gasta a cota das
+ * fotos de produto (a foto de um produto ganha a resposta de sempre, "não parece ser uma nota").
+ */
+export function classifyFor(state: ScanState): ScanClassify | null {
+  if (state.mode === 'nota') return null;
+  return onlyProducts(state) ? 'products' : 'any';
+}
 
 // ---------------------------------------------------------------------------
 // O que a função respondeu
@@ -240,9 +260,19 @@ export function listItemsFromScan(items: readonly ScanItem[]): ScanListItem[] {
 
 export const SCAN_TITLE = 'Escanear';
 export const SCAN_PANTRY_TITLE = 'O que já tem em casa';
+export const SCAN_RECEIPT_TITLE = 'Ler a nota';
+
+/** O título da tela, pelo modo. */
+export function scanTitle(mode: ScanMode): string {
+  if (mode === 'despensa') return SCAN_PANTRY_TITLE;
+  return mode === 'nota' ? SCAN_RECEIPT_TITLE : SCAN_TITLE;
+}
 
 /** A frase em cima da câmera: o que ela lê agora. */
 export function scanHint(state: ScanState): string {
+  if (state.mode === 'nota') {
+    return 'Aponte para o QR code no rodapé da nota: os itens vêm direto da Sefaz. Ou tire uma foto da nota; se ela for comprida, vai em partes.';
+  }
   if (state.mode === 'despensa') {
     return 'Aponte para o código de barras de cada produto, ou tire uma foto do produto ou da prateleira inteira. O que for achado fica aqui embaixo até você guardar.';
   }
@@ -255,6 +285,11 @@ export const SCAN_SHUTTER = 'Tirar foto';
 export const SCAN_MORE = 'Mais opções';
 export const SCAN_ALLOW_CAMERA = 'Permitir a câmera';
 export const SCAN_NEEDS_CAMERA = 'Para ler códigos e tirar fotos, o Kotii precisa usar a câmera. Sem ela, dá para usar as opções abaixo.';
+const SCAN_NEEDS_CAMERA_RECEIPT =
+  'Para ler o QR code e fotografar a nota, o Kotii precisa usar a câmera. Sem ela, dá para usar as opções abaixo.';
+
+/** O pedido da câmera, pelo modo. */
+export const scanNeedsCamera = (mode: ScanMode) => (mode === 'nota' ? SCAN_NEEDS_CAMERA_RECEIPT : SCAN_NEEDS_CAMERA);
 
 export type ScanOption = 'galeria' | 'link' | 'codigo' | 'manual';
 
@@ -265,8 +300,12 @@ export const SCAN_OPTION_LABELS: Record<ScanOption, string> = {
   manual: 'Digitar a nota manualmente',
 };
 
-/** As opções além da câmera. No modo da despensa (e com produtos achados), as da nota ficam de fora. */
+/**
+ * As opções além da câmera. No modo da despensa (e com produtos achados), as da nota ficam de fora; no modo da
+ * nota, o código de barras digitado.
+ */
 export function scanOptions(state: ScanState): ScanOption[] {
+  if (state.mode === 'nota') return ['galeria', 'link', 'manual'];
   return onlyProducts(state) ? ['galeria', 'codigo'] : ['galeria', 'link', 'codigo', 'manual'];
 }
 
@@ -283,11 +322,27 @@ export function tooManyImagesMessage(limit: number): string {
 export const partsTitle = (parts: number) => (parts === 1 ? 'Foto tirada' : `${parts} fotos tiradas`);
 export const PARTS_MESSAGE =
   'Se for uma nota comprida, fotografe o resto de cima para baixo, deixando um pedaço repetido entre as fotos. Produto ou prateleira é uma foto só.';
+const PARTS_MESSAGE_RECEIPT =
+  'Se a nota for comprida, fotografe o resto de cima para baixo, deixando um pedaço repetido entre as fotos: a leitura junta tudo numa nota só.';
+
+/** O que fazer depois da primeira foto, pelo modo (no da nota, nada de produto). */
+export const partsMessage = (state: ScanState) => (state.mode === 'nota' ? PARTS_MESSAGE_RECEIPT : PARTS_MESSAGE);
 export const partsRead = (parts: number) => (parts === 1 ? 'Ler' : `Ler (${parts} fotos)`);
 export const PARTS_MORE = 'Mais uma foto';
 
 export const SCAN_READING_TITLE = 'Lendo a foto…';
 export const SCAN_READING_MESSAGE = 'Vendo se é uma nota ou produtos. Nota comprida pode levar até um minuto.';
+
+/** A espera da leitura, pelo modo: no da nota, só a nota. */
+export function scanReading(state: ScanState): { title: string; message: string } {
+  return state.mode === 'nota'
+    ? { title: 'Lendo a nota…', message: 'Identificando mercado, itens e preços. Nota comprida pode levar até um minuto.' }
+    : { title: SCAN_READING_TITLE, message: SCAN_READING_MESSAGE };
+}
+
+/** O título do aviso quando a leitura falha. */
+export const scanReadFailedTitle = (state: ScanState) =>
+  state.mode === 'nota' ? 'Não foi possível ler a nota' : 'Não foi possível ler a foto';
 
 export const foundTitle = (count: number) => (count === 1 ? '1 produto achado' : `${count} produtos achados`);
 export const SCAN_TO_PANTRY = 'Pôr na despensa';

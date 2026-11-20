@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { useAddToMarketList } from '@/data/market';
-import { pickReceiptImages, useCreateManualReceipt } from '@/data/receipts';
+import { pickReceiptImages, useCreateManualReceipt, useScanReceipt } from '@/data/receipts';
 import { useSaveScanToPantry, useScanPhotos } from '@/data/scan';
 import { GTIN_INVALID, GTIN_INVALID_TITLE, GTIN_RESTRICTED, GTIN_RESTRICTED_TITLE, readTypedGtin } from '@/domain/barcode';
 import type { IconName } from '@/domain/categories';
@@ -16,8 +16,8 @@ import {
   classifyFor,
   galleryLimit,
   listItemsFromScan,
-  PARTS_MESSAGE,
   PARTS_MORE,
+  partsMessage,
   partsRead,
   partsTitle,
   photoStep,
@@ -26,27 +26,28 @@ import {
   savedToListMessage,
   savedToPantryMessage,
   SCAN_ALLOW_CAMERA,
-  SCAN_BARCODE_TYPES,
   SCAN_LEAVE_TITLE,
   SCAN_MORE,
-  SCAN_NEEDS_CAMERA,
   SCAN_NOTHING_TITLE,
   SCAN_OPTION_LABELS,
   SCAN_QR_NOT_RECEIPT,
   SCAN_QR_NOT_RECEIPT_TITLE,
-  SCAN_READING_MESSAGE,
-  SCAN_READING_TITLE,
   SCAN_RECEIPT_LATER_TITLE,
   SCAN_SHUTTER,
+  scanBarcodeTypes,
   scanCodeStep,
   scanHint,
   scanItemFromProduct,
   scanItemsFromRead,
   scanLeaveQuestion,
+  scanNeedsCamera,
   scanNothingMessage,
   scanOptions,
+  scanReadFailedTitle,
+  scanReading,
   scanReceiptLaterMessage,
   tooManyImagesMessage,
+  type ScanBarcodeType,
   type ScanItem,
   type ScanMode,
   type ScanOption,
@@ -78,9 +79,9 @@ const OPTION_ICONS: Record<ScanOption, IconName> = {
 };
 
 /** O QR ou o código de barras que uma foto pegou, se pegou algum que sirva; a leitura que falha não é erro. */
-async function codeInPhoto(uri: string): Promise<string | null> {
+async function codeInPhoto(uri: string, types: readonly ScanBarcodeType[]): Promise<string | null> {
   try {
-    const results = await scanFromURLAsync(uri, [...SCAN_BARCODE_TYPES]);
+    const results = await scanFromURLAsync(uri, [...types]);
     return results.find((result) => readScanCode(result.data))?.data ?? null;
   } catch {
     return null;
@@ -94,6 +95,9 @@ async function codeInPhoto(uri: string): Promise<string | null> {
  * código que a própria foto pegou vale mais, e não gasta leitura. Os produtos achados ficam na tela até a pessoa
  * dizer para onde vão (a despensa ou a lista de mercado), uma vez só para todos. Sem câmera (o computador, ou a
  * permissão negada), ficam as outras opções: a galeria, o link do QR, o código digitado e a nota à mão.
+ *
+ * No modo da nota (`?para=nota`: o "Adicionar nota" e o "Finalizar compra"), só a nota: o QR segue como sempre, o
+ * código de barras não é nada, e a foto vai para a leitura de sempre da nota (useScanReceipt, sem `classify`).
  */
 export function Scanner({ mode }: { mode: ScanMode }) {
   const c = useColors();
@@ -102,6 +106,8 @@ export function Scanner({ mode }: { mode: ScanMode }) {
   const [permission, requestPermission] = useCameraPermissions();
   const camera = useRef<CameraView>(null);
   const scan = useScanPhotos(householdId);
+  // Só a nota: a leitura de sempre, a do leitor de nota, que não pergunta à IA se é produto.
+  const receiptScan = useScanReceipt(householdId);
   const savePantry = useSaveScanToPantry();
   const addToList = useAddToMarketList();
   const manual = useCreateManualReceipt();
@@ -122,7 +128,9 @@ export function Scanner({ mode }: { mode: ScanMode }) {
   const barcode = useProductBarcode({
     onProduct: (product) => setTray((items) => addScanItems(items, [scanItemFromProduct(product)])),
   });
-  const busy = scan.isPending || savePantry.isPending || listing || manual.isPending || shooting;
+  const reading = scan.isPending || receiptScan.isPending;
+  const busy = reading || savePantry.isPending || listing || manual.isPending || shooting;
+  const barcodeTypes = scanBarcodeTypes(mode);
   const hasCamera = Boolean(permission?.granted);
 
   useEffect(() => {
@@ -176,16 +184,32 @@ export function Scanner({ mode }: { mode: ScanMode }) {
     handleCode(data);
   }
 
+  /** A nota lida: a revisão toma o lugar da câmera (quem abriu a câmera fica logo embaixo dela). */
+  function openReview(id: string, duplicate: boolean) {
+    leave(() => router.replace({ pathname: '/nota/[id]', params: { id } }));
+    if (duplicate) notify('Nota já importada', 'Esta nota já estava no app — abrimos a existente.');
+  }
+
   function read(uris: string[]) {
     setParts([]);
     const asked = state;
+    const classify = classifyFor(asked);
+    if (classify === null) {
+      receiptScan.mutate(
+        { uris },
+        {
+          onSuccess: ({ receipt_id, duplicate }) => openReview(receipt_id, duplicate),
+          onError: (err) => notify(scanReadFailedTitle(asked), errorMessage(err)),
+        },
+      );
+      return;
+    }
     scan.mutate(
-      { uris, classify: classifyFor(asked) },
+      { uris, classify },
       {
         onSuccess: (reply) => {
           if (reply.kind === 'nota') {
-            leave(() => router.replace({ pathname: '/nota/[id]', params: { id: reply.receiptId } }));
-            if (reply.duplicate) notify('Nota já importada', 'Esta nota já estava no app — abrimos a existente.');
+            openReview(reply.receiptId, reply.duplicate);
           } else if (reply.kind === 'produtos') {
             setTray((items) => addScanItems(items, scanItemsFromRead(reply.products)));
           } else if (reply.kind === 'nota-nao-lida') {
@@ -194,7 +218,7 @@ export function Scanner({ mode }: { mode: ScanMode }) {
             notify(SCAN_NOTHING_TITLE, scanNothingMessage(asked));
           }
         },
-        onError: (err) => notify('Não foi possível ler a foto', errorMessage(err)),
+        onError: (err) => notify(scanReadFailedTitle(asked), errorMessage(err)),
       },
     );
   }
@@ -202,7 +226,7 @@ export function Scanner({ mode }: { mode: ScanMode }) {
   /** As fotos novas: primeiro o código que a própria foto pegou; senão, a próxima parte da nota ou a leitura. */
   async function afterPhotos(uris: string[], source: 'camera' | 'library') {
     if (!parts.length) {
-      const found = await codeInPhoto(uris[0]);
+      const found = await codeInPhoto(uris[0], barcodeTypes);
       if (found && handleCode(found)) return;
     }
     if (source === 'library') return read(uris);
@@ -336,7 +360,7 @@ export function Scanner({ mode }: { mode: ScanMode }) {
               ref={camera}
               style={StyleSheet.absoluteFill}
               facing="back"
-              barcodeScannerSettings={{ barcodeTypes: [...SCAN_BARCODE_TYPES] }}
+              barcodeScannerSettings={{ barcodeTypes: [...barcodeTypes] }}
               onBarcodeScanned={({ data }) => onLiveCode(data)}
             />
           </View>
@@ -355,7 +379,7 @@ export function Scanner({ mode }: { mode: ScanMode }) {
         </>
       ) : (
         <Card style={styles.gap}>
-          <Text variant="body">{SCAN_NEEDS_CAMERA}</Text>
+          <Text variant="body">{scanNeedsCamera(mode)}</Text>
           {/* O navegador sem câmera também responde "negado": o botão fica, e as outras opções vêm logo abaixo. */}
           <Button title={SCAN_ALLOW_CAMERA} icon="camera-outline" onPress={() => void requestPermission()} />
           {options.map(optionButton)}
@@ -365,7 +389,7 @@ export function Scanner({ mode }: { mode: ScanMode }) {
       {parts.length ? (
         <Card style={styles.gap}>
           <Text variant="label">{partsTitle(parts.length)}</Text>
-          <Text variant="small">{PARTS_MESSAGE}</Text>
+          <Text variant="small">{partsMessage(state)}</Text>
           <Button title={partsRead(parts.length)} icon="check" disabled={busy} onPress={() => read(parts)} />
           <Button title="Descartar" variant="ghost" disabled={busy} onPress={() => setParts([])} />
         </Card>
@@ -413,7 +437,7 @@ export function Scanner({ mode }: { mode: ScanMode }) {
         actions={options.map((option) => ({ label: SCAN_OPTION_LABELS[option], icon: OPTION_ICONS[option], onPress: () => choose(option) }))}
       />
       {barcode.element}
-      <BusyOverlay visible={scan.isPending} title={SCAN_READING_TITLE} message={SCAN_READING_MESSAGE} />
+      <BusyOverlay visible={reading} {...scanReading(state)} />
     </Screen>
   );
 }

@@ -15,12 +15,13 @@ import {
 import { Scanner } from '@/features/scan/Scanner';
 import { goBackOr } from '@/lib/navigation';
 import { ActionSheet } from '@/ui/ActionSheet';
+import { BusyOverlay } from '@/ui/BusyOverlay';
 import { confirmAction, notify } from '@/ui/dialogs';
 import { Button, IconButton, ListRow, TextField } from '@/ui/primitives';
 
 // A tela do "Escanear" de verdade, com a câmera, os dados e o roteador de mentira: o que cada código lido faz, o que
 // a foto faz (a parte da nota, a leitura pela IA, o código que a própria foto pegou), os produtos achados que se
-// juntam até a pessoa dizer para onde vão, e o que muda no modo da despensa e sem câmera.
+// juntam até a pessoa dizer para onde vão, e o que muda no modo da despensa, no modo da nota e sem câmera.
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 
@@ -28,8 +29,9 @@ const mockCamera = {
   permission: { granted: true } as { granted: boolean; status?: string; canAskAgain?: boolean } | null,
   request: jest.fn(),
   take: jest.fn(async (_options?: unknown) => ({ uri: 'file://foto.jpg' })),
-  // O que a leitura local acha numa foto (QR ou código de barras).
+  // O que a leitura local acha numa foto (QR ou código de barras), e os tipos que a tela pediu a ela.
   codes: [] as { data: string }[],
+  photoTypes: [] as unknown[],
 };
 jest.mock('expo-camera', () => {
   const React = require('react');
@@ -42,7 +44,10 @@ jest.mock('expo-camera', () => {
   return {
     CameraView: MockCameraView,
     useCameraPermissions: () => [mockCamera.permission, mockCamera.request],
-    scanFromURLAsync: async () => mockCamera.codes,
+    scanFromURLAsync: async (_uri: string, types: unknown) => {
+      mockCamera.photoTypes.push(types);
+      return mockCamera.codes;
+    },
   };
 });
 
@@ -55,10 +60,13 @@ const mockAddToList = jest.fn(async (_item: unknown) => ({ id: 'l1', name: 'Merc
 jest.mock('@/data/market', () => ({ useAddToMarketList: () => ({ mutateAsync: mockAddToList }) }));
 
 const mockPick = jest.fn(async (_source: string, _limit: number) => [] as string[]);
-const mockManual = { mutate: jest.fn(), isPending: false };
+const mockManual = { mutate: jest.fn((_input: unknown, _callbacks: Callbacks) => undefined), isPending: false };
+// A leitura de sempre da nota (a do leitor de nota, sem `classify`): a do modo da nota.
+const mockReceiptScan = { mutate: jest.fn((_input: unknown, _callbacks: Callbacks) => undefined), isPending: false };
 jest.mock('@/data/receipts', () => ({
   pickReceiptImages: (source: string, limit: number) => mockPick(source, limit),
   useCreateManualReceipt: () => mockManual,
+  useScanReceipt: () => mockReceiptScan,
 }));
 
 type Product = { id: string; name: string; category: string; shelf_life_days: number | null };
@@ -107,6 +115,7 @@ beforeEach(() => {
   clock = 1_000_000;
   mockCamera.permission = { granted: true };
   mockCamera.codes = [];
+  mockCamera.photoTypes = [];
   mockCamera.take.mockClear();
   mockScan.mutate.mockClear();
   mockSavePantry.mutate.mockClear();
@@ -114,6 +123,8 @@ beforeEach(() => {
   mockPick.mockReset();
   mockPick.mockResolvedValue([]);
   mockManual.mutate.mockClear();
+  mockReceiptScan.mutate.mockClear();
+  mockReceiptScan.isPending = false;
   mockBarcode.read.mockClear();
   mockBarcode.busy = false;
   mockDispatch.mockClear();
@@ -144,6 +155,14 @@ const found = (product: Product) => act(async () => mockBarcode.onProduct(produc
 const quantityOf = (root: ReactTestInstance, name: string) =>
   root.findAll((node) => typeof node.type === 'string' && typeof node.props.accessibilityLabel === 'string' && node.props.accessibilityLabel.endsWith(` de ${name}`) && /^\d+ de /.test(node.props.accessibilityLabel))[0]?.props.accessibilityLabel;
 const lastScan = () => mockScan.mutate.mock.calls[mockScan.mutate.mock.calls.length - 1];
+const lastReceiptScan = () => mockReceiptScan.mutate.mock.calls[mockReceiptScan.mutate.mock.calls.length - 1];
+const sheetActions = (root: ReactTestInstance) => root.findByType(ActionSheet).props.actions as { label: string; onPress: () => void }[];
+/** Todo o texto da tela, para conferir as palavras. */
+const screenText = (): string => {
+  const walk = (node: ReturnType<ReactTestRenderer['toJSON']> | string): string[] =>
+    node == null ? [] : typeof node === 'string' ? [node] : Array.isArray(node) ? node.flatMap(walk) : (node.children ?? []).flatMap(walk);
+  return walk(renderer!.toJSON()).join(' ');
+};
 
 async function shoot(root: ReactTestInstance, title = 'Tirar foto') {
   await act(async () => button(root, title)!.props.onPress());
@@ -368,6 +387,108 @@ describe('o modo da despensa (o que a casa já tem)', () => {
     await shoot(root);
     await act(async () => lastScan()[1].onSuccess({ kind: 'nota-nao-lida' }));
     expect(notify).toHaveBeenLastCalledWith(SCAN_RECEIPT_LATER_TITLE, expect.stringContaining('Escanear da tela Hoje'));
+  });
+});
+
+describe('o modo da nota (o "Adicionar nota" de Compras → Notas e o "Finalizar compra" da lista)', () => {
+  it('a câmera procura só o QR: o da nota segue para a tela do QR, como sempre; o código de barras não é nada', async () => {
+    const root = await mount('nota');
+    expect(root.findByType(CameraView).props.barcodeScannerSettings.barcodeTypes).toEqual(['qr']);
+    await sawCode(root, EAN);
+    expect(mockBarcode.read).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalled();
+    await sawCode(root, QR);
+    expect(router.replace).toHaveBeenCalledWith({ pathname: '/nota/qrcode', params: { qr: QR } });
+    expect(mockScan.mutate).not.toHaveBeenCalled();
+    expect(mockReceiptScan.mutate).not.toHaveBeenCalled();
+  });
+
+  it('a foto espera as partes da nota e vai para a leitura de sempre da nota, sem perguntar à IA se é produto', async () => {
+    const root = await mount('nota');
+    await shoot(root);
+    expect(mockReceiptScan.mutate).not.toHaveBeenCalled();
+    expect(button(root, 'Ler')).toBeDefined();
+    await shoot(root, 'Mais uma foto');
+    await act(async () => button(root, 'Ler (2 fotos)')!.props.onPress());
+    // A leitura do leitor de nota (useScanReceipt), que manda as fotos sem `classify`: nenhuma leitura do "Escanear".
+    expect(lastReceiptScan()[0]).toEqual({ uris: ['file://foto.jpg', 'file://foto.jpg'] });
+    expect(mockScan.mutate).not.toHaveBeenCalled();
+    expect(button(root, 'Ler (2 fotos)')).toBeUndefined();
+    // A nota lida: a revisão toma o lugar da câmera.
+    await act(async () => lastReceiptScan()[1].onSuccess({ receipt_id: 'r1', duplicate: true }));
+    expect(router.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'r1' } });
+    expect(notify).toHaveBeenLastCalledWith('Nota já importada', expect.any(String));
+  });
+
+  it('a foto de um produto ganha a resposta de sempre da nota, com o título da nota', async () => {
+    const root = await mount('nota');
+    await shoot(root);
+    await act(async () => button(root, 'Ler')!.props.onPress());
+    await act(async () => lastReceiptScan()[1].onError(new Error('A imagem não parece ser uma nota fiscal.')));
+    expect(notify).toHaveBeenLastCalledWith('Não foi possível ler a nota', 'A imagem não parece ser uma nota fiscal.');
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  it('na foto, só o QR conta: o código de barras que ela pegou não é nada, e a foto é a primeira parte da nota', async () => {
+    mockCamera.codes = [{ data: EAN }];
+    const root = await mount('nota');
+    await shoot(root);
+    expect(mockCamera.photoTypes).toEqual([['qr']]);
+    expect(mockBarcode.read).not.toHaveBeenCalled();
+    expect(button(root, 'Ler')).toBeDefined();
+    // O QR que a foto pegou segue para a tela do QR, sem gastar leitura.
+    mockCamera.codes = [{ data: QR }];
+    await act(async () => button(root, 'Descartar')!.props.onPress());
+    await shoot(root);
+    expect(router.replace).toHaveBeenCalledWith({ pathname: '/nota/qrcode', params: { qr: QR } });
+    expect(mockReceiptScan.mutate).not.toHaveBeenCalled();
+  });
+
+  it('"Mais opções" tem só as da nota; a galeria lê até 6 imagens como nota, e a nota à mão abre a revisão', async () => {
+    const root = await mount('nota');
+    expect(sheetActions(root).map((a) => a.label)).toEqual(['Escolher da galeria', 'Colar o link do QR code', 'Digitar a nota manualmente']);
+    mockPick.mockResolvedValue(['a.jpg', 'b.jpg']);
+    await act(async () => sheetActions(root).find((a) => a.label === 'Escolher da galeria')!.onPress());
+    await flush();
+    expect(mockPick).toHaveBeenCalledWith('library', 6);
+    expect(lastReceiptScan()[0]).toEqual({ uris: ['a.jpg', 'b.jpg'] });
+    await act(async () => sheetActions(root).find((a) => a.label === 'Digitar a nota manualmente')!.onPress());
+    await act(async () => mockManual.mutate.mock.calls[0][1].onSuccess({ id: 'r9' }));
+    expect(router.replace).toHaveBeenLastCalledWith({ pathname: '/nota/[id]', params: { id: 'r9' } });
+    expect(mockScan.mutate).not.toHaveBeenCalled();
+  });
+
+  it('sem câmera, os botões são os da nota, sem o código de barras', async () => {
+    mockCamera.permission = { granted: false };
+    const root = await mount('nota');
+    expect(root.findAllByType(Button).map((b) => b.props.title)).toEqual([
+      'Permitir a câmera',
+      'Escolher da galeria',
+      'Colar o link do QR code',
+      'Digitar a nota manualmente',
+    ]);
+  });
+
+  it('nenhuma palavra de produto na tela: a frase, as partes, a espera e o pedido da câmera falam da nota', async () => {
+    const root = await mount('nota');
+    const noProduct = (text: string) => expect(text).not.toMatch(/produto|prateleira|código de barras/i);
+    expect(screenText()).toContain('QR code');
+    noProduct(screenText());
+    await shoot(root);
+    expect(screenText()).toContain('nota for comprida');
+    noProduct(screenText());
+    await act(async () => renderer!.unmount());
+    mockReceiptScan.isPending = true;
+    const reading = await mount('nota');
+    expect(reading.findByType(BusyOverlay).props).toMatchObject({ visible: true, title: 'Lendo a nota…' });
+    noProduct(String(reading.findByType(BusyOverlay).props.message));
+    await act(async () => renderer!.unmount());
+    mockReceiptScan.isPending = false;
+    mockCamera.permission = { granted: false };
+    await mount('nota');
+    expect(screenText()).toContain('fotografar a nota');
+    noProduct(screenText());
   });
 });
 

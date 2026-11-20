@@ -1,5 +1,5 @@
-// "Finalizar compra" com a nota: a lista que abriu o leitor, e a nota que a revisão confirmou nesse meio. A revisão
-// (nota/[id]) não sabe de onde veio (o leitor, o QR code, a pendente da Sefaz, que trocam de tela entre si): ela
+// "Finalizar compra" com a nota: a lista que abriu a câmera da nota, e a nota que a revisão confirmou nesse meio. A
+// revisão (nota/[id]) não sabe de onde veio (a câmera, o QR code, a pendente da Sefaz, que trocam de tela entre si): ela
 // entrega aqui o que aconteceu e volta, e a lista, de novo em foco, é quem diz, com a pergunta de encerrar a ida no
 // fim do fluxo (domain/finishPurchase). Uma espera por vez, só na memória: recarregar a página ou fechar o app
 // esquece, e a revisão então avisa sozinha, como antes.
@@ -20,7 +20,7 @@ export function waitForReceipt(listId: string, now: number = Date.now()) {
 }
 
 /**
- * A revisão confirmou uma nota. Com uma lista esperando (e o toque de confirmar depois de ela abrir o leitor), o
+ * A revisão confirmou uma nota. Com uma lista esperando (e o toque de confirmar depois de ela abrir a câmera), o
  * que houve fica para a lista dizer: true, e a revisão não avisa ela mesma. Sem lista esperando, false.
  */
 export function handConfirmedReceipt(receipt: Omit<ConfirmedReceipt, 'confirmedAt'>, now: number = Date.now()): boolean {

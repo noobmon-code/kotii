@@ -5,6 +5,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { productCategoryNote } from '@/domain/productCategory';
 import { MARKET_MONTH_CARD, ReceiptsPanel } from '@/features/market/ReceiptsPanel';
 import { ShoppingListsPanel } from '@/features/ShoppingListsPanel';
+import { ActionSheet } from '@/ui/ActionSheet';
 import { PickerModal } from '@/ui/PickerModal';
 import { FeatureCard } from '@/ui/FeatureCard';
 import { Button, TextField, Tile } from '@/ui/primitives';
@@ -31,7 +32,6 @@ jest.mock('@/data/receipts', () => ({
   useReceiptHistory: () => ({ data: { pages: [{ rows: [], remaining: 0 }] }, isPending: false, isError: false, hasNextPage: false }),
 }));
 jest.mock('@/data/pendingReceipts', () => ({ usePendingReceipts: () => ({ pending: [], storeNames: {} }) }));
-jest.mock('@/features/ReceiptScanner', () => ({ useReceiptScanner: () => ({ open: jest.fn(), busy: false, element: null }) }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: { message?: string }) => error?.message ?? 'Algo deu errado.' }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
@@ -73,6 +73,17 @@ describe('Compras > Notas', () => {
     expect(mockRouter.push).toHaveBeenCalledWith('/mercado');
     expect(renderer!.root.findAllByType(Button).map((b) => b.props.title)).toEqual(['Adicionar nota']);
     expect(text).not.toContain('Preços');
+  });
+
+  it('"Adicionar nota" abre direto a câmera só da nota, sem um menu antes', async () => {
+    await act(async () => {
+      renderer = create(<ReceiptsPanel />);
+    });
+    const add = renderer!.root.findAllByType(Button).find((b) => b.props.title === 'Adicionar nota')!;
+    await act(async () => add.props.onPress());
+    expect(mockRouter.push).toHaveBeenCalledTimes(1);
+    expect(mockRouter.push).toHaveBeenCalledWith({ pathname: '/escanear', params: { para: 'nota' } });
+    expect(renderer!.root.findAllByType(ActionSheet)).toHaveLength(0);
   });
 });
 

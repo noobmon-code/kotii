@@ -12,6 +12,7 @@ import {
   MAX_SCAN_QUANTITY,
   pantryRowsFromScan,
   parseScanReply,
+  partsMessage,
   partsRead,
   partsTitle,
   photoStep,
@@ -19,15 +20,21 @@ import {
   removeScanItem,
   savedToListMessage,
   savedToPantryMessage,
+  SCAN_BARCODE_TYPES,
+  scanBarcodeTypes,
   scanCodeStep,
   scanHint,
   scanItemFromProduct,
   scanItemsFromRead,
   scanLeaveQuestion,
   scanModeFromParam,
+  scanNeedsCamera,
   scanNothingMessage,
   scanOptions,
+  scanReadFailedTitle,
+  scanReading,
   scanReceiptLaterMessage,
+  scanTitle,
   type ScanState,
 } from '../scan';
 
@@ -39,6 +46,7 @@ const QR = `https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/Consu
 const EMPTY: ScanState = { mode: 'tudo', found: 0 };
 const WITH_PRODUCTS: ScanState = { mode: 'tudo', found: 2 };
 const PANTRY: ScanState = { mode: 'despensa', found: 0 };
+const RECEIPT: ScanState = { mode: 'nota', found: 0 };
 
 describe('o que a câmera leu', () => {
   it('o QR de uma NFC-e é uma nota', () => {
@@ -69,6 +77,14 @@ describe('o que a câmera leu', () => {
     for (const state of [EMPTY, WITH_PRODUCTS, PANTRY]) expect(scanCodeStep(produto, state)).toBe('produto');
     expect(scanCodeStep(null, EMPTY)).toBe('ignorar');
   });
+
+  it('no modo da nota, o QR abre a nota e o código de barras não é nada; a câmera nem procura código de barras', () => {
+    expect(scanCodeStep(readScanCode(QR), RECEIPT)).toBe('nota');
+    expect(scanCodeStep(readScanCode('7891000100103'), RECEIPT)).toBe('ignorar');
+    expect(scanBarcodeTypes('nota')).toEqual(['qr']);
+    expect(scanBarcodeTypes('tudo')).toEqual(SCAN_BARCODE_TYPES);
+    expect(scanBarcodeTypes('despensa')).toEqual(SCAN_BARCODE_TYPES);
+  });
 });
 
 describe('depois da foto', () => {
@@ -86,16 +102,25 @@ describe('depois da foto', () => {
     expect(classifyFor(PANTRY)).toBe('products');
   });
 
+  it('no modo da nota, a foto espera as partes e é lida como nota, sem classify (sem a cota das fotos de produto)', () => {
+    expect(photoStep(RECEIPT, 1)).toBe('partes');
+    expect(photoStep(RECEIPT, MAX_RECEIPT_PHOTOS)).toBe('ler');
+    expect(classifyFor(RECEIPT)).toBeNull();
+    expect(galleryLimit(RECEIPT)).toBe(MAX_RECEIPT_PHOTOS);
+  });
+
   it('a galeria deixa escolher as partes de uma nota, ou uma foto só quando são produtos', () => {
     expect(galleryLimit(EMPTY)).toBe(MAX_RECEIPT_PHOTOS);
     expect(galleryLimit(WITH_PRODUCTS)).toBe(1);
     expect(galleryLimit(PANTRY)).toBe(1);
   });
 
-  it('o modo vem da URL: só "despensa" muda a câmera', () => {
+  it('o modo vem da URL: "despensa" e "nota" mudam a câmera', () => {
     expect(scanModeFromParam('despensa')).toBe('despensa');
     expect(scanModeFromParam(['despensa', 'x'])).toBe('despensa');
-    for (const value of [undefined, '', 'nota', 'tudo']) expect(scanModeFromParam(value)).toBe('tudo');
+    expect(scanModeFromParam('nota')).toBe('nota');
+    expect(scanModeFromParam(['nota', 'despensa'])).toBe('nota');
+    for (const value of [undefined, '', 'notas', 'NOTA', 'tudo', 'produto']) expect(scanModeFromParam(value)).toBe('tudo');
   });
 });
 
@@ -223,10 +248,33 @@ describe('os textos', () => {
     expect(scanHint(PANTRY)).not.toContain('nota');
   });
 
-  it('as opções além da câmera: as da nota saem quando a tela está só nos produtos', () => {
+  it('as opções além da câmera: as da nota saem quando a tela está só nos produtos; o código de barras, no modo da nota', () => {
     expect(scanOptions(EMPTY)).toEqual(['galeria', 'link', 'codigo', 'manual']);
     expect(scanOptions(WITH_PRODUCTS)).toEqual(['galeria', 'codigo']);
     expect(scanOptions(PANTRY)).toEqual(['galeria', 'codigo']);
+    expect(scanOptions(RECEIPT)).toEqual(['galeria', 'link', 'manual']);
+  });
+
+  it('no modo da nota, nenhum texto fala de produto: o título, a frase, as partes, a espera, o erro e a câmera', () => {
+    expect([scanTitle('tudo'), scanTitle('despensa'), scanTitle('nota')]).toEqual(['Escanear', 'O que já tem em casa', 'Ler a nota']);
+    const texts = [
+      scanTitle('nota'),
+      scanHint(RECEIPT),
+      partsMessage(RECEIPT),
+      scanReading(RECEIPT).title,
+      scanReading(RECEIPT).message,
+      scanReadFailedTitle(RECEIPT),
+      scanNeedsCamera('nota'),
+    ];
+    for (const text of texts) expect(text).not.toMatch(/produto|prateleira|código de barras/i);
+    expect(scanHint(RECEIPT)).toContain('QR code');
+    expect(scanReading(RECEIPT).title).toBe('Lendo a nota…');
+    expect(scanReadFailedTitle(RECEIPT)).toBe('Não foi possível ler a nota');
+    // Nos outros modos, os de sempre.
+    expect(partsMessage(EMPTY)).toContain('Produto ou prateleira');
+    expect(scanReading(EMPTY).title).toBe('Lendo a foto…');
+    expect(scanReadFailedTitle(EMPTY)).toBe('Não foi possível ler a foto');
+    expect(scanNeedsCamera('tudo')).toContain('ler códigos');
   });
 
   it('contagens no singular e no plural', () => {
