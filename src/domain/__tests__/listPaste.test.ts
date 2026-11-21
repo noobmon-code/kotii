@@ -52,6 +52,13 @@ describe('readListLine: a linha digitada no campo de pôr item', () => {
     }
   });
 
+  it('a observação entre parênteses sai, como na colagem, menos a que diz o que se pode comprar', () => {
+    expect(typed('Leite (marca X)')).toEqual(['Leite', 1, 'un', false]);
+    expect(typed('Leite (sem lactose)')).toEqual(['Leite (sem lactose)', 1, 'un', false]);
+    expect(typed('2 pão (sem glúten)')).toEqual(['Pão (sem glúten)', 2, 'un', true]);
+    expect(typed('fralda (infantil) x3')).toEqual(['Fralda (infantil)', 3, 'un', true]);
+  });
+
   it('um item só: a vírgula fica no nome (na colagem ela separa itens), e "1,5 kg" continua a quantidade', () => {
     expect(typed('arroz, feijão')).toEqual(['Arroz, feijão', 1, 'un', false]);
     expect(typed('1,5 kg tomate')).toEqual(['Tomate', 1.5, 'kg', true]);
@@ -97,11 +104,27 @@ describe('parsePastedList: os formatos', () => {
   });
 
   it('a observação entre parênteses sai do nome; parênteses que são o nome do item comum ficam', () => {
-    expect(read('Leite (sem lactose)')).toEqual([['Leite', 1, 'un']]);
     expect(read('Leite (marca X (ou Y))')).toEqual([['Leite', 1, 'un']]);
+    expect(read('Café (o de sempre)')).toEqual([['Café', 1, 'un']]);
     expect(read('Ovos (dúzia)')).toEqual([['Ovos (dúzia)', 1, 'un']]);
     expect(read('Ovos (30 un)')).toEqual([['Ovos (30 un)', 1, 'un']]);
     expect(read('Ovos (dúzia) (caipira)')).toEqual([['Ovos (dúzia)', 1, 'un']]);
+  });
+
+  it('a observação que diz o que se pode comprar fica no nome: sem ela viria o item comum', () => {
+    // As palavras que decidem o que se pode comprar (NEVER_DROP, de genericItem): a dieta, a idade, o tipo do leite.
+    expect(read('Leite (sem lactose)')).toEqual([['Leite (sem lactose)', 1, 'un']]);
+    expect(read('Pão de forma (sem glúten)')).toEqual([['Pão de forma (sem glúten)', 1, 'un']]);
+    expect(read('Refrigerante (zero)')).toEqual([['Refrigerante (zero)', 1, 'un']]);
+    expect(read('Arroz (integral)')).toEqual([['Arroz (integral)', 1, 'un']]);
+    expect(read('Shampoo (infantil)')).toEqual([['Shampoo (infantil)', 1, 'un']]);
+    expect(read('Leite em pó (Ninho)')).toEqual([['Leite em pó (Ninho)', 1, 'un']]);
+    // A quantidade depois dela continua sendo a quantidade; a observação que não decide nada, depois dela, sai.
+    expect(read('Leite (sem lactose) (2)')).toEqual([['Leite (sem lactose)', 2, 'un']]);
+    expect(read('2 kg arroz (integral)')).toEqual([['Arroz (integral)', 2, 'kg']]);
+    expect(read('Leite (desnatado) (o de caixinha)')).toEqual([['Leite (desnatado)', 1, 'un']]);
+    // Cada linha, um item: a vírgula dentro da observação que fica não separa.
+    expect(read('Pão (sem glúten, sem lactose), café')).toEqual([['Pão (sem glúten, sem lactose)', 1, 'un'], ['Café', 1, 'un']]);
   });
 
   it('vírgulas e ponto e vírgula separam itens numa linha só, mas não "1,5 kg" nem a observação', () => {
@@ -253,6 +276,16 @@ describe('parsePastedList: o texto que o próprio app manda', () => {
     const one = [item('Dipirona', { category: 'medicamentos', notes: 'em gotas' })];
     expect(listShareText({ name: 'Farmácia' }, one)).toBe('*Farmácia*\n- Dipirona (em gotas)');
     expect(back(listShareText({ name: 'Farmácia' }, one)!)).toEqual([['Dipirona', 1, 'un']]);
+  });
+
+  it('ida e volta: a observação que diz o que se pode comprar volta no nome (a colagem não tem observação)', () => {
+    const text = listShareText({ name: 'Mercado' }, [
+      item('Leite', { category: 'laticinios', notes: 'sem lactose', quantity: 2 }),
+      item('Pão de forma', { category: 'padaria', notes: 'o integral' }),
+      item('Sabão em pó', { category: 'limpeza', notes: 'caixa azul' }),
+    ])!;
+    expect(text).toBe('*Mercado* · 3 itens\n- 2 un Leite (sem lactose)\n- Pão de forma (o integral)\n- Sabão em pó (caixa azul)');
+    expect(read(text)).toEqual([['Leite (sem lactose)', 2, 'un'], ['Pão de forma (o integral)', 1, 'un'], ['Sabão em pó', 1, 'un']]);
   });
 
   it('limites conhecidos: vírgula no nome separa em dois itens, e parêntese sem par na descrição fica no nome', () => {

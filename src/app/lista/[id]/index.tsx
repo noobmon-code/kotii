@@ -42,6 +42,7 @@ import { scannedListItem } from '@/domain/barcode';
 import { cartPantryRows, joinNames, type CartPantryEntry, type CartPantryRow } from '@/domain/cartPantry';
 import { compareByAisle, getCategory } from '@/domain/categories';
 import {
+  chosenItemQuantity,
   currentStoreChoice,
   estimateList,
   formatItemCost,
@@ -69,6 +70,7 @@ import {
   showsAddOptionsButton,
   showsEmptyList,
   showsSuggestions,
+  suggestionRow,
   type ListMenuAction,
 } from '@/domain/listMode';
 import {
@@ -310,26 +312,63 @@ export default function ShoppingListScreen() {
   const typedAmount = (): { quantity: number; unit: Unit; counted: boolean } =>
     line?.counted ? { quantity: line.quantity, unit: line.unit, counted: true } : { quantity: 1, unit: 'un', counted: false };
 
+  /**
+   * A quantidade digitada, no item escolhido nas sugestões (o produto, o item comum, o código lido): a mesma, a não
+   * ser nos ovos, em que vão os mesmos ovos que a linha pede ("30 ovos" é 1 "Ovos (30 un)", e não trinta cartelas;
+   * chosenItemQuantity). Sem quantidade digitada, a de sempre.
+   */
+  const chosenQuantity = (itemName: string, category: string): number => {
+    const amount = typedAmount();
+    return amount.counted && line ? chosenItemQuantity(line, { name: itemName, category }) : amount.quantity;
+  };
+
+  /**
+   * O item que o produto escolhido (na busca, ou pelo código lido) põe: sem a marca (`itemName`, de genericItem), com
+   * ele como dica de preço e com a quantidade que a pessoa digitou antes de escolher.
+   */
+  const productItem = (product: Product, itemName: string): NewListItem => ({
+    name: itemName,
+    category: product.category,
+    productId: product.id,
+    quantity: chosenQuantity(itemName, product.category),
+    unit: typedAmount().unit,
+  });
+
+  /** O item comum das sugestões: ligado ao produto da casa de mesmo nome, se existir. */
+  const commonListItem = (item: CommonItem): NewListItem => {
+    const product = productByName.get(normalizeSearch(item.name));
+    const category = product?.category ?? item.category;
+    const amount = typedAmount();
+    return {
+      name: item.name,
+      category,
+      productId: product?.id ?? null,
+      // "30 ovos" no "Ovos (30 un)" do catálogo: uma cartela (chosenQuantity).
+      quantity: chosenQuantity(item.name, category),
+      // A quantidade digitada vale inteira ("2 kg banana"); sem ela, 1 na unidade do catálogo (a banana, em kg).
+      unit: amount.counted ? amount.unit : item.unit,
+    };
+  };
+
+  /**
+   * A linha de baixo da sugestão: com a quantidade digitada, ela diz quanto o toque põe (domain/listMode,
+   * suggestionRow), também quando a conta dos ovos a mudou; sem ela, a de sempre.
+   */
+  const suggestionLine = (item: NewListItem, subtitle: string) => suggestionRow(item.name, subtitle, line?.counted ? item : null);
+
   // Pôr item vai pela fila da lista: aparece na hora, também sem internet, e o campo já fica livre para o próximo.
   // Se a fila desistir, o aviso sai dela (lib/queryClient), também com a tela já fechada. O produto escolhido na
   // busca entra sem a marca (`productName`, de genericItem), com ele como dica de preço, e com a quantidade que a
   // pessoa digitou antes de escolher.
   function add(product?: Product, productName?: string) {
-    const typed = !product && !productName;
+    if (product) {
+      put(productItem(product, productName ?? product.name), false);
+      return;
+    }
     // A linha que não diz o que comprar ("2 kg", só um número) não põe nada.
-    if (typed && !line) return;
-    const itemName = productName ?? product?.name ?? line!.name;
+    if (!line) return;
     const amount = typedAmount();
-    put(
-      {
-        name: itemName,
-        category: product?.category ?? (typed ? line!.category : guessCategory(itemName)),
-        productId: product?.id ?? null,
-        quantity: amount.quantity,
-        unit: amount.unit,
-      },
-      typed,
-    );
+    put({ name: line.name, category: line.category, productId: null, quantity: amount.quantity, unit: amount.unit }, true);
   }
 
   // O código de barras lido põe o produto como a sugestão da busca: sem a marca, com ele como dica de preço, e com
@@ -338,19 +377,7 @@ export default function ShoppingListScreen() {
 
   /** Item comum das sugestões: liga ao produto da casa de mesmo nome, se existir. */
   function addCommon(item: CommonItem) {
-    const product = productByName.get(normalizeSearch(item.name));
-    const amount = typedAmount();
-    put(
-      {
-        name: item.name,
-        category: product?.category ?? item.category,
-        productId: product?.id ?? null,
-        quantity: amount.quantity,
-        // A quantidade digitada vale inteira ("2 kg banana"); sem ela, 1 na unidade do catálogo (a banana, em kg).
-        unit: amount.counted ? amount.unit : item.unit,
-      },
-      false,
-    );
+    put(commonListItem(item), false);
   }
 
   /**
@@ -907,10 +934,13 @@ export default function ShoppingListScreen() {
     }
   }
 
-  // "Lista vazia": no celular, onde sempre esteve (depois das faixas); no computador, na coluna dos itens, e então o
-  // texto diz que o campo está ao lado, e não acima.
-  const emptyList = showsEmptyList({ mode, items: pending.length + checked.length, suggestions: recentItems.length + restockItems.length }) ? (
-    <EmptyState icon="cart-outline" title="Lista vazia" message={emptyListMessage(mode, desktop)} />
+  // "Lista vazia": no celular, onde sempre esteve (depois das faixas, que no modo de montar a lista já mostram por
+  // onde começar); no computador, sempre na coluna dos itens, também com as faixas na coluna do lado (sem ela, a
+  // coluna mais larga ficaria em branco), e então o texto diz que o campo e as faixas estão ao lado, e não acima.
+  const suggestionCount = recentItems.length + restockItems.length;
+  const stripsShown = showsSuggestions(mode, Boolean(name.trim())) && suggestionCount > 0;
+  const emptyList = showsEmptyList({ mode, items: pending.length + checked.length, suggestions: suggestionCount, desktop }) ? (
+    <EmptyState icon="cart-outline" title="Lista vazia" message={emptyListMessage(mode, desktop, stripsShown)} />
   ) : null;
   const addButton = line ? addLineButton(line) : null;
 
@@ -1005,24 +1035,33 @@ export default function ShoppingListScreen() {
                       />
                     ) : null}
                   </Row>
-                  {suggestions.products.map(({ product, name: itemName }) => (
-                    <ListRow
-                      key={product.id}
-                      left={<CategoryIcon category={product.category} name={itemName} size={32} />}
-                      title={itemName}
-                      subtitle="Produto com histórico de preço"
-                      onPress={() => add(product, itemName)}
-                    />
-                  ))}
-                  {suggestions.common.map((item) => (
-                    <ListRow
-                      key={item.name}
-                      left={<CategoryIcon category={item.category} name={item.name} size={32} />}
-                      title={item.name}
-                      subtitle={getCategory(item.category).label}
-                      onPress={() => addCommon(item)}
-                    />
-                  ))}
+                  {/* Com a quantidade digitada, cada sugestão diz quanto põe ("Frutas e verduras · 2 kg"), como o botão de pôr. */}
+                  {suggestions.products.map(({ product, name: itemName }) => {
+                    const row = suggestionLine(productItem(product, itemName), 'Produto com histórico de preço');
+                    return (
+                      <ListRow
+                        key={product.id}
+                        left={<CategoryIcon category={product.category} name={itemName} size={32} />}
+                        title={itemName}
+                        subtitle={row.subtitle}
+                        accessibilityLabel={row.label}
+                        onPress={() => add(product, itemName)}
+                      />
+                    );
+                  })}
+                  {suggestions.common.map((item) => {
+                    const row = suggestionLine(commonListItem(item), getCategory(item.category).label);
+                    return (
+                      <ListRow
+                        key={item.name}
+                        left={<CategoryIcon category={item.category} name={item.name} size={32} />}
+                        title={item.name}
+                        subtitle={row.subtitle}
+                        accessibilityLabel={row.label}
+                        onPress={() => addCommon(item)}
+                      />
+                    );
+                  })}
                   {addButton ? (
                     <Button title={addButton.title} accessibilityLabel={addButton.label} icon="plus" compact onPress={() => add()} />
                   ) : !name.trim() && card === 'inteiro' ? (

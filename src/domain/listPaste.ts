@@ -9,7 +9,7 @@ import type { Unit } from '@/lib/types';
 
 import { CATEGORIES } from './categories';
 import { COMMON_ITEMS } from './commonItems';
-import { pendingSameItem, sameListItem } from './genericItem';
+import { decidesPurchase, pendingSameItem, sameListItem } from './genericItem';
 import { PRIORITIES } from './listItem';
 import { listNameKey } from './listLinks';
 import { parseDecimal } from './money';
@@ -238,11 +238,12 @@ function readItem(text: string): ReadItem | null {
   }
 
   // Quantidade no fim: "Leite (2)", "Leite x2", "Leite 2x"; a do começo vale mais. Outro parêntese no fim é a
-  // observação, que sai, a não ser que seja o nome de um item comum ("Ovos (dúzia)").
+  // observação, que sai, a não ser que seja o nome de um item comum ("Ovos (dúzia)") ou que diga o que se pode
+  // comprar ("Leite (sem lactose)", "Pão (integral)": decidesPurchase, de genericItem), que fica no nome.
   const group = trailingGroup(s);
   if (group && !COMMON_WITH_PARENS.has(listNameKey(s))) {
     const after = quantityPhrase(group.inner);
-    s = stripTrailing(s.slice(0, group.start).trim());
+    if (after || !decidesPurchase(group.inner)) s = stripTrailing(s.slice(0, group.start).trim());
     if (after && !counted) {
       quantity = after.quantity;
       unit = after.unit ?? 'un';
@@ -277,9 +278,10 @@ export interface TypedLine extends PastedItem {
 /**
  * A linha que a pessoa digita no campo de pôr item, lida como a colagem lê cada item: "2 kg arroz", "500 g queijo",
  * "1 dz ovos", "2 pacotes de arroz", "½ kg presunto", "leite (2)", "leite x2". O tamanho que é parte do nome fica
- * no nome, como na colagem ("Café Pilão 500g", "Arroz 5kg"), e a observação entre parênteses sai ("Leite (sem
- * lactose)" é "Leite"). É um item só: a vírgula, que na colagem separa itens, aqui fica no nome. null quando a
- * linha não diz o que comprar ("2 kg", "3x", só um número).
+ * no nome, como na colagem ("Café Pilão 500g", "Arroz 5kg"), e a observação entre parênteses sai ("Leite (marca X)"
+ * é "Leite"), menos a que diz o que se pode comprar ("Leite (sem lactose)" fica assim, decidesPurchase). É um item
+ * só: a vírgula, que na colagem separa itens, aqui fica no nome. null quando a linha não diz o que comprar ("2 kg",
+ * "3x", só um número).
  */
 export function readListLine(text: string): TypedLine | null {
   const read = readItem(cleanText(text).slice(0, LINE_MAX));
@@ -292,7 +294,8 @@ export function readListLine(text: string): TypedLine | null {
  * quantidade antes ("2 kg arroz", "2x leite") ou depois ("leite (2)", "leite
  * x2") e o texto que o app manda pelo WhatsApp: o título e as seções em
  * negrito ficam de fora, e a observação entre parênteses e a prioridade
- * ("· urgente") saem do nome. Linhas vazias e títulos ("Feira:") não viram
+ * ("· urgente") saem do nome (a observação que diz o que se pode comprar,
+ * "(sem lactose)", fica). Linhas vazias e títulos ("Feira:") não viram
  * item. A categoria é a do item comum de mesmo nome, ou o chute pelo nome.
  * Até PASTE_MAX_ITEMS itens; `cut` diz quantos ficaram de fora e `more`, que
  * eram tantos que a conta parou (a tela diz "mais de").

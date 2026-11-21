@@ -14,6 +14,7 @@ import {
   showsAddOptionsButton,
   showsEmptyList,
   showsSuggestions,
+  suggestionRow,
 } from '../listMode';
 import { readListLine } from '../listPaste';
 
@@ -110,6 +111,13 @@ describe('showsEmptyList e emptyListMessage: a lista sem itens', () => {
     expect(showsEmptyList({ mode: 'ver', items: 0, suggestions: 3 })).toBe(true);
   });
 
+  it('no computador as faixas ficam na coluna do lado: a lista vazia vai sempre na dos itens, que não fica em branco', () => {
+    for (const mode of ['montar', 'compra', 'ver'] as const) {
+      for (const suggestions of [0, 3]) expect(showsEmptyList({ mode, items: 0, suggestions, desktop: true })).toBe(true);
+      expect(showsEmptyList({ mode, items: 1, suggestions: 3, desktop: true })).toBe(false);
+    }
+  });
+
   it('o texto de cada momento só fala do que está na tela', () => {
     expect(emptyListMessage('montar')).toBe('Digite um item ou escolha do catálogo de itens comuns da casa.');
     expect(emptyListMessage('compra')).toBe('Digite no campo acima o que faltou.');
@@ -122,6 +130,32 @@ describe('showsEmptyList e emptyListMessage: a lista sem itens', () => {
     expect(emptyListMessage('montar', true)).toBe(emptyListMessage('montar'));
     expect(emptyListMessage('ver', true)).toBe(emptyListMessage('ver'));
     for (const mode of ['montar', 'compra', 'ver'] as const) expect(emptyListMessage(mode, true)).not.toMatch(/acima/);
+  });
+
+  it('montando no computador com as faixas na tela, o texto aponta para elas, embaixo do campo ao lado', () => {
+    expect(emptyListMessage('montar', true, true)).toBe(
+      'Digite um item no campo ao lado, escolha do catálogo de itens comuns ou toque numa das sugestões embaixo dele.',
+    );
+    // No celular a lista vazia não aparece com as faixas; no modo compra e na arquivada elas não estão na tela.
+    expect(emptyListMessage('montar', false, true)).toBe(emptyListMessage('montar'));
+    expect(emptyListMessage('compra', true, true)).toBe(emptyListMessage('compra', true));
+    expect(emptyListMessage('ver', true, true)).toBe(emptyListMessage('ver'));
+  });
+});
+
+describe('suggestionRow: a sugestão da busca diz quanto põe, quando a quantidade foi digitada', () => {
+  it('com a quantidade digitada, a linha de baixo diz quanto, também 1 un', () => {
+    expect(suggestionRow('Banana', 'Frutas e verduras', { quantity: 2, unit: 'kg' })).toEqual({
+      subtitle: 'Frutas e verduras · 2 kg',
+      label: 'Banana, Frutas e verduras, 2 kg',
+    });
+    // "30 ovos" no "Ovos (30 un)": uma cartela, e a linha diz antes do toque.
+    expect(suggestionRow('Ovos (30 un)', 'Ovos', { quantity: 1, unit: 'un' }).subtitle).toBe('Ovos · 1 un');
+    expect(suggestionRow('Queijo', 'Frios', { quantity: 500, unit: 'g' }).subtitle).toBe('Frios · 500 g');
+  });
+
+  it('sem quantidade digitada, a linha de sempre, e o leitor de tela lê os textos como estão', () => {
+    expect(suggestionRow('Banana', 'Frutas e verduras', null)).toEqual({ subtitle: 'Frutas e verduras' });
   });
 });
 

@@ -66,27 +66,58 @@ export function addLineButton(line: { name: string; quantity: number; unit: Unit
   };
 }
 
+/**
+ * A linha de baixo de uma sugestão da busca (o produto da casa, o item comum) quando a pessoa digitou a quantidade:
+ * diz quanto vai entrar, como o botão de pôr diz ('Frutas e verduras · 2 kg'), também quando é 1 un. A quantidade
+ * digitada não fica escondida no toque: "30 ovos" no "Ovos (30 un)" do catálogo é uma cartela (chosenItemQuantity,
+ * em listEstimate), e a linha diz antes. Sem quantidade digitada (`amount` null), a linha de sempre, e o leitor de
+ * tela lê os textos como estão. `label`: o que ele diz da linha, sem o ponto do meio.
+ */
+export function suggestionRow(
+  title: string,
+  subtitle: string,
+  amount: { quantity: number; unit: Unit } | null,
+): { subtitle: string; label?: string } {
+  if (!amount) return { subtitle };
+  const shown = formatQuantity(amount.quantity, amount.unit);
+  return { subtitle: `${subtitle} · ${shown}`, label: `${title}, ${subtitle}, ${shown}` };
+}
+
 /** "Acho que acabou" e "Comprados recentemente": para montar a lista, e não enquanto a pessoa digita um item. */
 export function showsSuggestions(mode: ListMode, typing: boolean): boolean {
   return mode === 'montar' && !typing;
 }
 
 /**
- * "Lista vazia": sem item nenhum. Montando, só quando também não há o que sugerir (as faixas já mostram por onde
- * começar); arquivada ou no modo compra, as faixas não aparecem, e a lista vazia diz isso.
+ * "Lista vazia": sem item nenhum. No celular, montando, só quando também não há o que sugerir (as faixas, logo
+ * embaixo do cartão de pôr item, onde a lista vai ficar, já mostram por onde começar); arquivada ou no modo compra,
+ * as faixas não aparecem, e a lista vazia diz isso. No computador (`desktop`) as faixas ficam na coluna do lado, com
+ * o cartão, e a lista vazia vai sempre na coluna dos itens: sem ela, a coluna mais larga da tela ficaria em branco.
  */
-export function showsEmptyList({ mode, items, suggestions }: { mode: ListMode; items: number; suggestions: number }): boolean {
+export function showsEmptyList({
+  mode,
+  items,
+  suggestions,
+  desktop = false,
+}: {
+  mode: ListMode;
+  items: number;
+  suggestions: number;
+  desktop?: boolean;
+}): boolean {
   if (items > 0) return false;
-  return mode !== 'montar' || suggestions === 0;
+  return desktop || mode !== 'montar' || suggestions === 0;
 }
 
 /**
  * O texto da lista vazia em cada momento. `desktop`: no computador (ui/desktop) a lista vazia fica na coluna dos
- * itens, e o campo de pôr item, na coluna ao lado, e não acima dela.
+ * itens, e o campo de pôr item, na coluna ao lado, e não acima dela. `suggestionsBeside`: montando no computador, as
+ * faixas ("Acho que acabou", "Comprados recentemente") estão na tela, embaixo do campo, e o texto aponta para elas.
  */
-export function emptyListMessage(mode: ListMode, desktop = false): string {
+export function emptyListMessage(mode: ListMode, desktop = false, suggestionsBeside = false): string {
   if (mode === 'ver') return 'Esta lista ficou sem itens.';
   if (mode === 'compra') return desktop ? 'Digite no campo ao lado o que faltou.' : 'Digite no campo acima o que faltou.';
+  if (desktop && suggestionsBeside) return 'Digite um item no campo ao lado, escolha do catálogo de itens comuns ou toque numa das sugestões embaixo dele.';
   return 'Digite um item ou escolha do catálogo de itens comuns da casa.';
 }
 

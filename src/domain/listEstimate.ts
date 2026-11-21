@@ -162,6 +162,30 @@ function eggsAsked(item: Pick<EstimateItem, 'name' | 'quantity' | 'unit' | 'cate
 }
 
 /**
+ * A quantidade com que entra o item escolhido nas sugestões depois de a pessoa digitar uma quantidade ("30 ovos",
+ * "1 dz ovos"), quando ele é de ovos: os mesmos ovos que a linha digitada pede, lidos como a conta lê (eggsAsked).
+ * O item cujo nome já diz quantos vêm ("Ovos (30 un)", "Ovos (dúzia)", os itens comuns que a busca por "ovos"
+ * sugere) entra em cartelas, arredondadas para cima porque não se compra meia ("30 ovos" é 1 "Ovos (30 un)", e não
+ * trinta cartelas de trinta; "2 dz ovos" são 2 "Ovos (dúzia)"; "20 ovos", 1 "Ovos (30 un)"); o sem a conta no nome
+ * ("Ovos brancos") entra em ovos, a partir de EGGS_AS_COUNT. Com poucas unidades sem a conta no nome ("2 ovos",
+ * "2 caixas de ovos"), cada uma já é uma cartela, como na conta: ficam como foram digitadas. Fora dos ovos e de "un",
+ * a quantidade digitada, como sempre.
+ */
+export function chosenItemQuantity(
+  typed: { name: string; quantity: number; unit: string },
+  chosen: { name: string; category: string | null | undefined },
+): number {
+  if (chosen.category !== 'ovos' || typed.unit !== 'un') return typed.quantity;
+  // A linha digitada pede os ovos do item escolhido: a categoria é a dele.
+  const asked = eggsAsked({ ...typed, category: 'ovos' });
+  if (!asked) return typed.quantity;
+  const size = packageSize(chosen.name);
+  // Com uma folga mínima: num múltiplo exato, o ponto flutuante não pode pôr uma cartela a mais.
+  if (size?.unit === 'un') return Math.max(1, Math.ceil(asked.count / size.amount - 1e-9));
+  return asked.count >= EGGS_AS_COUNT ? asked.count : typed.quantity;
+}
+
+/**
  * O preço por ovo de uma cotação em "un" que diz quantos vêm (dois ou mais); null nas outras. Arredondado a 8 casas:
  * R$ 5,04 em 6 e R$ 8,40 em 10 são o mesmo R$ 0,84 o ovo, mas em ponto flutuante o segundo sai um pouco acima.
  */

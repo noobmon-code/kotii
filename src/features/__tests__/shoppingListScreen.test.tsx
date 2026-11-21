@@ -1361,17 +1361,70 @@ describe('a quantidade vem do que se digita, lida como no "Colar lista"', () => 
     mockQueries.products = loaded([MILK]);
     await mount();
     await type('2 leite');
-    expect(suggestion('Leite desnatado')?.props.subtitle).toBe('Produto com histórico de preço');
+    // A linha de baixo diz quanto o toque põe, como o botão de pôr.
+    expect(suggestion('Leite desnatado')?.props.subtitle).toBe('Produto com histórico de preço · 2 un');
+    expect(suggestion('Leite desnatado')?.props.accessibilityLabel).toBe('Leite desnatado, Produto com histórico de preço, 2 un');
     await act(async () => suggestion('Leite desnatado')!.props.onPress());
     expect(mockQueue.add).toHaveBeenLastCalledWith({ name: 'Leite desnatado', category: 'laticinios', productId: 'il', quantity: 2, unit: 'un' }, 'u1');
     // O item comum leva a quantidade inteira que foi digitada.
     await type('2 kg banan');
+    expect(suggestion('Banana')?.props.subtitle).toBe('Frutas e verduras · 2 kg');
     await act(async () => suggestion('Banana')!.props.onPress());
     expect(mockQueue.add).toHaveBeenLastCalledWith({ name: 'Banana', category: 'hortifruti', productId: null, quantity: 2, unit: 'kg' }, 'u1');
-    // Sem quantidade, 1 na unidade do catálogo, como antes.
+    // Sem quantidade, 1 na unidade do catálogo, como antes, e a linha de sempre.
     await type('banan');
+    expect(suggestion('Banana')?.props.subtitle).toBe('Frutas e verduras');
+    expect(suggestion('Banana')?.props.accessibilityLabel).toBeUndefined();
     await act(async () => suggestion('Banana')!.props.onPress());
     expect(mockQueue.add).toHaveBeenLastCalledWith({ name: 'Banana', category: 'hortifruti', productId: null, quantity: 1, unit: 'kg' }, 'u1');
+  });
+
+  it('ovos digitados no item que já diz quantos vêm ("Ovos (30 un)") são cartelas, e não cartelas de cartelas; a linha diz antes', async () => {
+    await mount();
+    for (const [text, name, quantity] of [
+      ['30 ovos', 'Ovos (30 un)', 1],
+      ['1 dz ovos', 'Ovos (dúzia)', 1],
+      ['2 dz ovos', 'Ovos (dúzia)', 2],
+      ['60 ovos', 'Ovos (30 un)', 2],
+      ['1 dz ovos', 'Ovos (30 un)', 1],
+    ] as const) {
+      await type(text);
+      expect(suggestion(name)?.props.subtitle).toBe(`Ovos · ${quantity} un`);
+      await act(async () => suggestion(name)!.props.onPress());
+      expect(mockQueue.add).toHaveBeenLastCalledWith({ name, category: 'ovos', productId: null, quantity, unit: 'un' }, 'u1');
+    }
+    // Poucas unidades já são cartelas, como na conta da lista: "2 ovos" no "Ovos (dúzia)" são duas dúzias.
+    await type('2 ovos');
+    await act(async () => suggestion('Ovos (dúzia)')!.props.onPress());
+    expect(mockQueue.add).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'Ovos (dúzia)', quantity: 2, unit: 'un' }), 'u1');
+  });
+
+  it('o produto de ovos sem a conta no nome leva os ovos digitados, e o código lido também', async () => {
+    const EGGS = { ...product('ov', 'Ovos Brancos Mantiqueira'), category: 'ovos' } as Product;
+    mockQueries.products = loaded([EGGS]);
+    await mount();
+    await type('30 ovos');
+    const [row] = renderer!.root.findAllByType(ListRow).filter((entry) => entry.props.subtitle === 'Produto com histórico de preço · 30 un');
+    expect(row).toBeDefined();
+    await act(async () => row.props.onPress());
+    expect(mockQueue.add).toHaveBeenLastCalledWith(expect.objectContaining({ productId: 'ov', quantity: 30, unit: 'un' }), 'u1');
+  });
+
+  it('a observação que diz o que se pode comprar fica no nome: "Leite (sem lactose)" não soma no "Leite" da lista', async () => {
+    mockQueries.items = loaded([{ ...listItem('l', 'Leite', null, 'laticinios') }]);
+    await mount();
+    await type('Leite (sem lactose)');
+    expect(addButtons().map((entry) => entry.props.title)).toEqual(['Adicionar "Leite (sem lactose)"']);
+    await submit();
+    expect(renderer!.root.findAllByType(ActionSheet).some((sheet) => sheet.props.title === 'Já está na lista' && sheet.props.visible)).toBe(false);
+    expect(mockQueue.add).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'Leite (sem lactose)', quantity: 1, unit: 'un' }), 'u1');
+    // A observação que não decide nada sai, como na colagem, e o item repetido pergunta.
+    mockQueue.add.mockClear();
+    await type('Leite (o de caixinha)');
+    expect(addButtons().map((entry) => entry.props.title)).toEqual(['Adicionar "Leite"']);
+    await submit();
+    expect(mockQueue.add).not.toHaveBeenCalled();
+    expect(repeatSheet().props.visible).toBe(true);
   });
 
   it('a unidade digitada também vale: no produto (que não tem unidade) e no item comum (no lugar da do catálogo)', async () => {
@@ -1435,6 +1488,25 @@ describe('o cartão da conta, recolhido numa linha antes da lista', () => {
     await act(async () => estimateMore()!.props.onPress());
     expect(estimateMore()!.props.expanded).toBe(false);
     expect(page()).not.toContain('Pelo último preço');
+  });
+
+  it('com item no carrinho, a conta do carrinho e do que falta fica no "i", e não na linha recolhida', async () => {
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz'), { ...listItem('c', 'Café', 'cafe'), checked_at: new Date().toISOString() }]);
+    const shown = await mount();
+    expect(shown).toContain('~R$ 43,90');
+    expect(shown).not.toContain('No carrinho: ~');
+    expect(shown).not.toContain('Falta comprar: ~');
+    const open = await openEstimate();
+    expect(open).toContain('No carrinho: ~R$ 18,90. Falta comprar: ~R$ 25,00.');
+    await act(async () => estimateMore()!.props.onPress());
+    expect(page()).not.toContain('No carrinho: ~');
+  });
+
+  it('o que está no carrinho sem preço também só aparece no "i"', async () => {
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz'), { ...listItem('f', 'Feijão', null), checked_at: new Date().toISOString() }]);
+    const shown = await mount();
+    expect(shown).not.toContain('ainda não tem preço');
+    expect(await openEstimate()).toContain('Falta comprar: ~R$ 25,00. O que está no carrinho ainda não tem preço.');
   });
 
   it('com o lugar escolhido, a linha recolhida diz qual, para o número não ser lido errado', async () => {
@@ -1538,6 +1610,19 @@ describe('no computador: os itens numa coluna, o cartão de pôr item e a conta 
     expect(side.findAllByType(EmptyState)).toHaveLength(0);
   });
 
+  it('montando com sugestões nas faixas, a lista vazia continua na coluna dos itens, e diz que elas estão ao lado', async () => {
+    await desktop();
+    mockQueries.purchases = loaded(ranOutHistory('Café', null));
+    await mount();
+    const [side, main] = columnParts();
+    expect(mockSeen.restock?.map((i) => i.name)).toEqual(['Café']);
+    expect(side.findAllByType(RestockStrip)).toHaveLength(1);
+    expect(main.findAllByType(EmptyState).map((entry) => [entry.props.title, entry.props.message])).toEqual([
+      ['Lista vazia', 'Digite um item no campo ao lado, escolha do catálogo de itens comuns ou toque numa das sugestões embaixo dele.'],
+    ]);
+    expect(side.findAllByType(EmptyState)).toHaveLength(0);
+  });
+
   it('a lista vazia na própria ida fica na coluna dos itens, e diz que o campo está ao lado, e não acima', async () => {
     await desktop();
     mockTrips.list = [liveTrip()];
@@ -1570,6 +1655,12 @@ describe('no computador: os itens numa coluna, o cartão de pôr item e a conta 
     mockQueries.items = loaded([]);
     await mount();
     expect(parts()).toEqual([Card, RestockStrip, RecentPurchases, EmptyState, MarketTripAction]);
+    await act(async () => renderer!.unmount());
+    // Com o que sugerir nas faixas, logo embaixo do cartão, a lista vazia não aparece, como sempre.
+    mockQueries.purchases = loaded(ranOutHistory('Café', null));
+    await mount();
+    expect(mockSeen.restock?.map((i) => i.name)).toEqual(['Café']);
+    expect(parts()).toEqual([Card, RestockStrip, RecentPurchases, MarketTripAction]);
   });
 });
 

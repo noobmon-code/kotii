@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { brandChoice, genericItem, pendingSameItem, productSuggestions, sameListItem, switchBrand } from '../genericItem';
+import { brandChoice, decidesPurchase, genericItem, pendingSameItem, productSuggestions, sameListItem, switchBrand } from '../genericItem';
 import { LinkIndex, listRemovals, matchListItems, type OpenListItem, type ReceiptLine } from '../listLinks';
 import { sameItemFit } from '../sameItem';
 import { guessCategory } from '../search';
@@ -136,6 +136,24 @@ describe('genericItem: o item da lista sem a marca', () => {
     expect(key('Ovos caipira')).not.toBe(key('Ovos'));
     expect(key('Bolo de cenoura')).not.toBe(key('Bolo de fubá'));
     expect(key('Banana prata')).not.toBe(key('Banana nanica'));
+  });
+});
+
+describe('decidesPurchase: a palavra que decide o que se pode comprar', () => {
+  it('a dieta, a idade e o tipo do leite, com ou sem acento, no plural também', () => {
+    for (const text of ['sem lactose', 'sem glúten', 'zero', 'zero açúcar', 'integral', 'Integrais', 'infantil', 'diet', 'Ninho', 'p/ bebê', 'orgânicos']) {
+      expect(decidesPurchase(text)).toBe(true);
+    }
+  });
+
+  it('o resto da observação não decide: a marca, o tamanho, a cor, o "o de sempre"', () => {
+    for (const text of ['marca X', 'o de sempre', 'caixa azul', 'tamanho G', '1,6 kg', 'caipira', '', '   ']) expect(decidesPurchase(text)).toBe(false);
+  });
+
+  it('o item lido com ela não é o comum: "Leite (sem lactose)" não é o "Leite" que já está na lista', () => {
+    const pending = [{ name: 'Leite', category: 'laticinios', checked_at: null }];
+    expect(pendingSameItem({ name: 'Leite (sem lactose)', category: 'laticinios' }, pending)).toBeUndefined();
+    expect(pendingSameItem({ name: 'Leite (sem lactose)', category: 'laticinios' }, [{ ...pending[0], name: 'Leite sem lactose' }])?.name).toBe('Leite sem lactose');
   });
 });
 
