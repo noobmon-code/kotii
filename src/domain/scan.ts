@@ -33,6 +33,37 @@ export function scanBarcodeTypes(mode: ScanMode): readonly ScanBarcodeType[] {
   return mode === 'nota' ? ['qr'] : SCAN_BARCODE_TYPES;
 }
 
+/**
+ * Os códigos que a foto tirada (ou a primeira imagem da galeria) procura antes de ir para a leitura. No modo da
+ * nota, nenhum: quem tira a foto da nota, ou escolhe a imagem dela, quer a leitura pela foto. É o caminho de quando
+ * a Sefaz não trouxe a nota pelo QR code (fora do ar, ou sem os itens), e o QR que a foto pegou mandaria a nota de
+ * novo à mesma Sefaz. O QR ao vivo segue valendo (scanBarcodeTypes); a tela do QR, quando a Sefaz falha, oferece a
+ * foto (domain/nfce, photoAfterSefazFailure).
+ */
+export function photoCodeTypes(mode: ScanMode): readonly ScanBarcodeType[] {
+  return mode === 'nota' ? [] : SCAN_BARCODE_TYPES;
+}
+
+/**
+ * Se a câmera avisa do código que leu ao vivo e que não serve. Só no modo da nota: ali ela procura só o QR code e a
+ * pessoa foi mandada apontar para o rodapé da nota, então o QR que não é de uma NFC-e (o do cupom CF-e SAT, um de
+ * propaganda) ganha um aviso, uma vez por código, como na tela do QR. Nos outros modos, o QR da embalagem é comum,
+ * e a câmera segue lendo sem dizer nada.
+ */
+export const warnsUnusedCode = (state: ScanState) => state.mode === 'nota';
+
+/**
+ * Se "Tirar foto" abre a câmera do próprio celular em vez de tirar a foto da prévia da tela. No navegador, a foto da
+ * prévia é um quadro do vídeo (o expo-camera não pede um tamanho ao navegador, que costuma dar 640 × 480): pouco para
+ * a letra miúda de uma nota comprida. A câmera do celular (o campo de arquivo com `capture`, como era o "Tirar foto da
+ * nota" de Compras → Notas) tira a foto inteira, que a leitura reduz como sempre. Só no modo da nota: nos outros a
+ * foto é também a de um produto, e a câmera da tela Hoje segue como era. No aparelho, a foto da câmera da tela já é a
+ * foto inteira.
+ */
+export function shutterUsesPhoneCamera(mode: ScanMode, os: string): boolean {
+  return os === 'web' && mode === 'nota';
+}
+
 /** Um código lido que serve para alguma coisa. */
 export type ScanCode = { kind: 'nota'; text: string; accessKey: string } | { kind: 'produto'; gtin: string };
 
@@ -369,6 +400,9 @@ export function scanReceiptLaterMessage(state: ScanState): string {
 
 export const SCAN_QR_NOT_RECEIPT_TITLE = 'QR code não reconhecido';
 export const SCAN_QR_NOT_RECEIPT = 'Esse link não é de uma nota fiscal de consumidor (NFC-e).';
+/** O QR code que a câmera do modo da nota leu e que não é de uma NFC-e (warnsUnusedCode). */
+export const SCAN_LIVE_QR_NOT_RECEIPT =
+  'Esse QR code não é de uma nota fiscal de consumidor (NFC-e). Procure o QR code no rodapé da nota, ou tire uma foto dela.';
 
 /** "3 itens foram para a despensa." */
 export function savedToPantryMessage(count: number): string {

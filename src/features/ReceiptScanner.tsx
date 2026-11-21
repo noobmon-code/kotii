@@ -10,7 +10,8 @@ import { notify } from '@/ui/dialogs';
 
 /**
  * A leitura pela foto de uma nota cuja chave já se conhece (do QR code): os prints da Sefaz da nota pendente
- * (nota/pendente e, quando a pendente não pôde ser guardada, nota/qrcode). `readPhotos(source, chave)` abre a
+ * (nota/pendente e, quando a pendente não pôde ser guardada, nota/qrcode), e a foto da nota que a Sefaz não trouxe
+ * (fora do ar, ou sem os itens: o cartão da tela do QR no lugar da câmera dela). `readPhotos(source, chave)` abre a
  * câmera (uma parte de cada vez) ou a galeria; `element` precisa ser renderizado pela tela. A revisão sempre toma o
  * lugar da tela atual (a pendente ou a do QR), para que quem abriu a nota (a lista do "Finalizar compra", Compras →
  * Notas) fique logo embaixo dela. Adicionar uma nota (Compras → Notas, o Mercado do mês, o "Finalizar compra" da
@@ -21,7 +22,7 @@ export function useReceiptScanner() {
   const scan = useScanReceipt(householdId);
   // Nota comprida pela câmera: partes já fotografadas, esperando a próxima ou a leitura.
   const [parts, setParts] = useState<string[]>([]);
-  // Chave da nota que está sendo fotografada (a do QR code da pendente).
+  // Chave da nota que está sendo fotografada (a do QR code: da pendente, ou da nota que a Sefaz não trouxe).
   const accessKey = useRef<string | null>(null);
 
   const read = useCallback(

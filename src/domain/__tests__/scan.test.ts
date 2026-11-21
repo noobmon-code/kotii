@@ -15,12 +15,14 @@ import {
   partsMessage,
   partsRead,
   partsTitle,
+  photoCodeTypes,
   photoStep,
   readScanCode,
   removeScanItem,
   savedToListMessage,
   savedToPantryMessage,
   SCAN_BARCODE_TYPES,
+  SCAN_LIVE_QR_NOT_RECEIPT,
   scanBarcodeTypes,
   scanCodeStep,
   scanHint,
@@ -35,6 +37,8 @@ import {
   scanReading,
   scanReceiptLaterMessage,
   scanTitle,
+  shutterUsesPhoneCamera,
+  warnsUnusedCode,
   type ScanState,
 } from '../scan';
 
@@ -85,6 +89,13 @@ describe('o que a câmera leu', () => {
     expect(scanBarcodeTypes('tudo')).toEqual(SCAN_BARCODE_TYPES);
     expect(scanBarcodeTypes('despensa')).toEqual(SCAN_BARCODE_TYPES);
   });
+
+  it('só no modo da nota o QR lido ao vivo que não serve ganha um aviso: lá a pessoa foi mandada apontar para ele', () => {
+    expect(warnsUnusedCode(RECEIPT)).toBe(true);
+    for (const state of [EMPTY, WITH_PRODUCTS, PANTRY]) expect(warnsUnusedCode(state)).toBe(false);
+    expect(SCAN_LIVE_QR_NOT_RECEIPT).toContain('QR code não é de uma nota fiscal de consumidor (NFC-e)');
+    expect(SCAN_LIVE_QR_NOT_RECEIPT).not.toMatch(/produto|código de barras/i);
+  });
 });
 
 describe('depois da foto', () => {
@@ -107,6 +118,21 @@ describe('depois da foto', () => {
     expect(photoStep(RECEIPT, MAX_RECEIPT_PHOTOS)).toBe('ler');
     expect(classifyFor(RECEIPT)).toBeNull();
     expect(galleryLimit(RECEIPT)).toBe(MAX_RECEIPT_PHOTOS);
+  });
+
+  it('no modo da nota, a foto e a galeria não procuram código antes da leitura: a foto é a saída quando a Sefaz falha', () => {
+    // O QR que a foto pegou mandaria a nota de novo à mesma Sefaz.
+    expect(photoCodeTypes('nota')).toEqual([]);
+    expect(photoCodeTypes('tudo')).toEqual(SCAN_BARCODE_TYPES);
+    expect(photoCodeTypes('despensa')).toEqual(SCAN_BARCODE_TYPES);
+  });
+
+  it('no navegador, a foto da nota é da câmera do celular, não um quadro da prévia; no aparelho e nos outros modos, não', () => {
+    expect(shutterUsesPhoneCamera('nota', 'web')).toBe(true);
+    for (const os of ['ios', 'android']) expect(shutterUsesPhoneCamera('nota', os)).toBe(false);
+    for (const mode of ['tudo', 'despensa'] as const) {
+      for (const os of ['web', 'ios', 'android']) expect(shutterUsesPhoneCamera(mode, os)).toBe(false);
+    }
   });
 
   it('a galeria deixa escolher as partes de uma nota, ou uma foto só quando são produtos', () => {

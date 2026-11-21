@@ -2,7 +2,7 @@ import { CameraView, scanFromURLAsync, useCameraPermissions } from 'expo-camera'
 import { router, useNavigation } from 'expo-router';
 import { usePreventRemove } from 'expo-router/react-navigation';
 import { useEffect, useRef, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 
 import { useAddToMarketList } from '@/data/market';
 import { pickReceiptImages, useCreateManualReceipt, useScanReceipt } from '@/data/receipts';
@@ -20,12 +20,14 @@ import {
   partsMessage,
   partsRead,
   partsTitle,
+  photoCodeTypes,
   photoStep,
   readScanCode,
   removeScanItem,
   savedToListMessage,
   savedToPantryMessage,
   SCAN_ALLOW_CAMERA,
+  SCAN_LIVE_QR_NOT_RECEIPT,
   SCAN_LEAVE_TITLE,
   SCAN_MORE,
   SCAN_NOTHING_TITLE,
@@ -46,7 +48,9 @@ import {
   scanReadFailedTitle,
   scanReading,
   scanReceiptLaterMessage,
+  shutterUsesPhoneCamera,
   tooManyImagesMessage,
+  warnsUnusedCode,
   type ScanBarcodeType,
   type ScanItem,
   type ScanMode,
@@ -98,8 +102,11 @@ async function codeInPhoto(uri: string, types: readonly ScanBarcodeType[]): Prom
  * uma nota esperando, é só "Ler", "Mais uma foto" ou "Descartar": "Mais opções" fica fechado, porque qualquer outra
  * opção tomaria o lugar das fotos tiradas sem aviso.
  *
- * No modo da nota (`?para=nota`: o "Adicionar nota" e o "Finalizar compra"), só a nota: o QR segue como sempre, o
- * código de barras não é nada, e a foto vai para a leitura de sempre da nota (useScanReceipt, sem `classify`).
+ * No modo da nota (`?para=nota`: o "Adicionar nota" e o "Finalizar compra"), só a nota: o QR ao vivo segue como
+ * sempre (e o QR que não é de uma NFC-e ganha um aviso), o código de barras não é nada, e a foto e a galeria vão para
+ * a leitura de sempre da nota (useScanReceipt, sem `classify`), sem procurar antes o QR nelas: a foto é o caminho de
+ * quando a Sefaz não trouxe a nota pelo QR. No navegador, ali, "Tirar foto" abre a câmera do celular, que tira a foto
+ * inteira (a da prévia da tela é um quadro pequeno do vídeo).
  */
 export function Scanner({ mode }: { mode: ScanMode }) {
   const c = useColors();
@@ -123,6 +130,10 @@ export function Scanner({ mode }: { mode: ScanMode }) {
   const [shooting, setShooting] = useState(false);
   const [listing, setListing] = useState(false);
   const lastCode = useRef<{ text: string; at: number } | null>(null);
+  // Os códigos ao vivo que já ganharam o aviso de que não servem (no modo da nota): um aviso por código.
+  const warned = useRef(new Set<string>());
+  // No navegador, depois da câmera do celular, a prévia volta com um vídeo novo (a do celular pode ter tomado o dela).
+  const [preview, setPreview] = useState(0);
   // Saindo de propósito (guardou os produtos, abriu a nota): o aviso de sair não pergunta.
   const leaving = useRef(false);
 
@@ -135,6 +146,8 @@ export function Scanner({ mode }: { mode: ScanMode }) {
   const reading = scan.isPending || receiptScan.isPending;
   const busy = reading || savePantry.isPending || listing || manual.isPending || shooting;
   const barcodeTypes = scanBarcodeTypes(mode);
+  const photoTypes = photoCodeTypes(mode);
+  const phoneShutter = shutterUsesPhoneCamera(mode, Platform.OS);
   const hasCamera = Boolean(permission?.granted);
 
   useEffect(() => {
@@ -178,14 +191,19 @@ export function Scanner({ mode }: { mode: ScanMode }) {
     return false;
   }
 
-  /** O código que a câmera viu ao vivo: um de cada vez, e nunca no meio de uma foto ou de uma nota em partes. */
+  /**
+   * O código que a câmera viu ao vivo: um de cada vez, e nunca no meio de uma foto ou de uma nota em partes. No modo
+   * da nota, o QR que não serve avisa, uma vez por código (warnsUnusedCode).
+   */
   function onLiveCode(data: string) {
     if (busy || barcode.busy || parts.length) return;
     const now = seenAt();
     const last = lastCode.current;
     if (last && last.text === data && now - last.at < SAME_CODE_MS) return;
     lastCode.current = { text: data, at: now };
-    handleCode(data);
+    if (handleCode(data) || !warnsUnusedCode(state) || warned.current.has(data)) return;
+    warned.current.add(data);
+    notify(SCAN_QR_NOT_RECEIPT_TITLE, SCAN_LIVE_QR_NOT_RECEIPT);
   }
 
   /** A nota lida: a revisão toma o lugar da câmera (quem abriu a câmera fica logo embaixo dela). */
@@ -227,10 +245,15 @@ export function Scanner({ mode }: { mode: ScanMode }) {
     );
   }
 
-  /** As fotos novas: primeiro o código que a própria foto pegou; senão, a próxima parte da nota ou a leitura. */
+  /**
+   * As fotos novas: primeiro o código que a própria foto pegou (fora do modo da nota, em que a foto é a leitura da
+   * nota: photoCodeTypes); senão, a próxima parte da nota ou a leitura. A tela que já saiu enquanto a galeria ou a
+   * câmera do celular estavam abertas (a câmera daqui leu o QR por trás delas) não lê mais nada.
+   */
   async function afterPhotos(uris: string[], source: 'camera' | 'library') {
-    if (!parts.length) {
-      const found = await codeInPhoto(uris[0], barcodeTypes);
+    if (leaving.current) return;
+    if (!parts.length && photoTypes.length) {
+      const found = await codeInPhoto(uris[0], photoTypes);
       if (found && handleCode(found)) return;
     }
     if (source === 'library') return read(uris);
@@ -245,6 +268,10 @@ export function Scanner({ mode }: { mode: ScanMode }) {
 
   async function shoot() {
     if (busy) return;
+    if (phoneShutter) {
+      await shootWithPhone();
+      return;
+    }
     setShooting(true);
     try {
       const picture = await camera.current?.takePictureAsync({ quality: 0.8 });
@@ -254,6 +281,22 @@ export function Scanner({ mode }: { mode: ScanMode }) {
     } finally {
       setShooting(false);
     }
+  }
+
+  /**
+   * A foto pela câmera do celular (no navegador, no modo da nota: shutterUsesPhoneCamera). A tela não fica ocupada
+   * esperando: o navegador antigo não avisa quando a pessoa desiste, e a tela ficaria presa.
+   */
+  async function shootWithPhone() {
+    let uris: string[] = [];
+    try {
+      uris = await pickReceiptImages('camera', 1);
+    } catch (err) {
+      notify('Não deu para tirar a foto', errorMessage(err));
+    } finally {
+      setPreview((count) => count + 1);
+    }
+    if (uris.length) await afterPhotos(uris, 'camera');
   }
 
   async function pickFromGallery() {
@@ -366,6 +409,7 @@ export function Scanner({ mode }: { mode: ScanMode }) {
         <>
           <View style={[styles.camera, { backgroundColor: c.surfaceAlt }]}>
             <CameraView
+              key={preview}
               ref={camera}
               style={StyleSheet.absoluteFill}
               facing="back"

@@ -217,6 +217,28 @@ export function nfceFailureRoute(code: string | null): 'photo' | 'stay' {
   return code === NFCE_CAPTCHA || code === NFCE_CAPTCHA_STATE ? 'photo' : 'stay';
 }
 
+/** Códigos da função `nfce` quando a Sefaz não trouxe a nota: fora do ar, ou a página sem os itens. */
+export const NFCE_SEFAZ_DOWN = 'sefaz_down';
+export const NFCE_NO_ITEMS = 'no_items';
+
+/**
+ * Depois de uma busca que fica na tela do QR (nfceFailureRoute 'stay'): a Sefaz não trouxe a nota (fora do ar, ou a
+ * página sem os itens), e a resposta dela já diz para tirar foto da nota. A leitura pela foto, com a chave do QR, toma
+ * então o lugar da câmera daqui, que leria o mesmo QR e iria de novo à mesma Sefaz: quem chegou pela câmera do
+ * "Escanear" (que deu lugar a esta tela) não tem uma câmera para onde voltar e fotografar. Os outros erros (sem
+ * internet, o limite do mês) ficam só no aviso de sempre: a foto também não iria.
+ */
+export function photoAfterSefazFailure(code: string | null): boolean {
+  return code === NFCE_SEFAZ_DOWN || code === NFCE_NO_ITEMS;
+}
+
+export const SEFAZ_PHOTO_TITLE = 'Leia esta nota pela foto';
+export const SEFAZ_PHOTO_MESSAGE =
+  'A Sefaz não trouxe esta nota agora. Pela foto, a IA lê a nota, e você revisa antes de salvar. Se a nota for comprida, vai em partes.';
+export const SEFAZ_PHOTO_CAMERA = 'Tirar foto da nota';
+export const sefazPhotoLibrary = (limit: number) => `Escolher da galeria (até ${limit} fotos)`;
+export const SEFAZ_PHOTO_AGAIN = 'Ler o QR code de novo';
+
 /**
  * Próximo passo para um QR lido: buscar na Sefaz ou, se esta nota já esbarrou
  * no "não sou robô" (nesta tela, ou antes: é uma nota pendente), ir direto para

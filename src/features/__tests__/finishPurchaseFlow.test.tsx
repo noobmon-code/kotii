@@ -48,6 +48,8 @@ const mockDb = {
 const mockList: { confirmed: ConfirmedReceipt[]; cleared: (string | undefined)[] } = { confirmed: [], cleared: [] };
 /** Os itens das listas abertas que a revisão vê: o detergente está no carrinho. */
 const mockOpenList: Row[] = [];
+/** O que a leitura local acharia na foto tirada (o QR do rodapé da nota, quando ela pega). */
+const mockPhotoCodes: { data: string }[] = [];
 
 jest.mock('expo-linking', () => ({
   ...jest.requireActual<object>('expo-linking'),
@@ -70,7 +72,7 @@ jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
 jest.mock('@/features/finance/PayerChips', () => ({ PayerChips: () => null }));
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));
 jest.mock('@/data/home', () => ({ fetchPantryNear: async () => [] }));
-// A câmera do "Escanear": a permissão já dada, a foto tirada e nenhum código na foto.
+// A câmera do "Escanear": a permissão já dada, a foto tirada e o que a leitura local acharia nela.
 jest.mock('expo-camera', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const React = require('react');
@@ -80,7 +82,7 @@ jest.mock('expo-camera', () => {
       return null;
     }
   }
-  return { CameraView: MockCameraView, useCameraPermissions: () => [{ granted: true }, jest.fn()], scanFromURLAsync: async () => [] };
+  return { CameraView: MockCameraView, useCameraPermissions: () => [{ granted: true }, jest.fn()], scanFromURLAsync: async () => mockPhotoCodes };
 });
 jest.mock('@/lib/barcodeReader', () => ({ prepareBarcodeReader: async () => undefined }));
 // O código de barras de produto, que o modo da nota nem procura: tem os testes dele (productBarcodeFlow.test).
@@ -348,6 +350,7 @@ beforeEach(() => {
   mockDb.rpcs = [];
   mockDb.invoked = [];
   mockOpenList.length = 0;
+  mockPhotoCodes.length = 0;
   mockOpenList.push({ id: 'li1', list_id: 'l1', list_name: 'Mercado', name: 'Detergente', category: 'limpeza', product_id: null, checked_at: '2026-11-10T14:50:00.000Z', brand: false });
   mockList.confirmed = [];
   mockList.cleared = [];
@@ -387,8 +390,11 @@ describe('"Finalizar compra" com a nota, de ponta a ponta', () => {
   });
 
   it('pela foto: a leitura de sempre da nota (sem perguntar se é produto), e a revisão toma o lugar da câmera', async () => {
+    // A foto pegou o QR do rodapé: mesmo assim é lida pela foto (é a saída de quando a Sefaz não trouxe a nota).
+    mockPhotoCodes.push({ data: QR });
     await toCamera();
     await press('Tirar foto');
+    expect(where()).toBe('/escanear');
     // Uma foto só: a nota pode continuar, e a pessoa diz que é para ler.
     expect(mockDb.invoked).toEqual([]);
     await press('Ler');

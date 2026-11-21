@@ -1,15 +1,20 @@
 import { describe, expect, it } from '@jest/globals';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
 import {
   accessKeyCheckDigit,
   localDateTimeToISO,
   NFCE_CAPTCHA,
   NFCE_CAPTCHA_STATE,
+  NFCE_NO_ITEMS,
+  NFCE_SEFAZ_DOWN,
   nfceFailureRoute,
   nfceItemsToDraft,
   nfceStoreCodes,
   normalizeNfceUnit,
   parseNfceQr,
+  photoAfterSefazFailure,
   qrReadStep,
 } from '../nfce';
 import { hasNoValue } from '../receiptItem';
@@ -158,6 +163,20 @@ describe('quando a Sefaz não mostra a nota', () => {
     expect(nfceFailureRoute('no_items')).toBe('stay');
     expect(nfceFailureRoute('sefaz_down')).toBe('stay');
     expect(nfceFailureRoute(null)).toBe('stay');
+  });
+
+  it('a Sefaz fora do ar, ou sem os itens, oferece a foto na tela do QR; o "não sou robô" e os outros erros, não', () => {
+    // A resposta da função já diz "tire foto da nota": a tela do QR põe a foto no lugar da câmera dela.
+    expect(photoAfterSefazFailure(NFCE_SEFAZ_DOWN)).toBe(true);
+    expect(photoAfterSefazFailure(NFCE_NO_ITEMS)).toBe(true);
+    // O "não sou robô" vai para a pendente (nfceFailureRoute); sem internet ou o limite do mês, a foto também não iria.
+    for (const code of [NFCE_CAPTCHA, NFCE_CAPTCHA_STATE, null, 'quota', 'not_found']) expect(photoAfterSefazFailure(code)).toBe(false);
+  });
+
+  it('os códigos da Sefaz que falhou são os que a função nfce responde', () => {
+    const reply = readFileSync(join(__dirname, '../../../supabase/functions/nfce/reply.ts'), 'utf8');
+    expect(reply).toContain(`code: '${NFCE_SEFAZ_DOWN}'`);
+    expect(reply).toContain(`code: '${NFCE_NO_ITEMS}'`);
   });
 
   it('o mesmo QR lido de novo na tela não volta à Sefaz: vai para a foto com o aviso dela', () => {

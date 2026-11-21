@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { CameraView } from 'expo-camera';
 import { router } from 'expo-router';
+import { Platform } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import { accessKeyCheckDigit } from '@/domain/nfce';
 import {
   SCAN_BARCODE_TYPES,
   SCAN_LEAVE_TITLE,
+  SCAN_LIVE_QR_NOT_RECEIPT,
   SCAN_NOTHING_TITLE,
   SCAN_QR_NOT_RECEIPT_TITLE,
   SCAN_RECEIPT_LATER_TITLE,
@@ -394,14 +396,33 @@ describe('o modo da nota (o "Adicionar nota" de Compras → Notas e o "Finalizar
   it('a câmera procura só o QR: o da nota segue para a tela do QR, como sempre; o código de barras não é nada', async () => {
     const root = await mount('nota');
     expect(root.findByType(CameraView).props.barcodeScannerSettings.barcodeTypes).toEqual(['qr']);
+    // Um QR com os números de um código de barras: nada de produto (a câmera daqui só procura o QR da nota).
     await sawCode(root, EAN);
     expect(mockBarcode.read).not.toHaveBeenCalled();
-    expect(notify).not.toHaveBeenCalled();
     expect(router.replace).not.toHaveBeenCalled();
     await sawCode(root, QR);
     expect(router.replace).toHaveBeenCalledWith({ pathname: '/nota/qrcode', params: { qr: QR } });
     expect(mockScan.mutate).not.toHaveBeenCalled();
     expect(mockReceiptScan.mutate).not.toHaveBeenCalled();
+  });
+
+  it('o QR que não é de uma NFC-e (o do cupom SAT, um de propaganda) avisa, uma vez por código, como a tela do QR', async () => {
+    const root = await mount('nota');
+    const SAT = '35261112345678000199590001234560001234567890|20261110150000|12.90||AbCdEf';
+    await sawCode(root, SAT);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenLastCalledWith(SCAN_QR_NOT_RECEIPT_TITLE, SCAN_LIVE_QR_NOT_RECEIPT);
+    // A câmera vê o mesmo QR várias vezes por segundo, e de novo depois: um aviso só.
+    await sawCode(root, SAT);
+    clock += 10_000;
+    await sawCode(root, SAT);
+    expect(notify).toHaveBeenCalledTimes(1);
+    // Outro QR que não serve avisa também; o da nota segue, sem aviso.
+    await sawCode(root, 'https://www.mercado.com.br/clube');
+    expect(notify).toHaveBeenCalledTimes(2);
+    await sawCode(root, QR);
+    expect(notify).toHaveBeenCalledTimes(2);
+    expect(router.replace).toHaveBeenCalledWith({ pathname: '/nota/qrcode', params: { qr: QR } });
   });
 
   it('a foto espera as partes da nota e vai para a leitura de sempre da nota, sem perguntar à IA se é produto', async () => {
@@ -430,18 +451,74 @@ describe('o modo da nota (o "Adicionar nota" de Compras → Notas e o "Finalizar
     expect(router.replace).not.toHaveBeenCalled();
   });
 
-  it('na foto, só o QR conta: o código de barras que ela pegou não é nada, e a foto é a primeira parte da nota', async () => {
-    mockCamera.codes = [{ data: EAN }];
+  it('a foto que mostra o QR é lida pela foto: nenhum código da foto vai à Sefaz (é a saída quando ela falha)', async () => {
+    mockCamera.codes = [{ data: QR }];
     const root = await mount('nota');
     await shoot(root);
-    expect(mockCamera.photoTypes).toEqual([['qr']]);
+    // Nem se procura código na foto: o QR dela iria de novo à mesma Sefaz que não trouxe a nota.
+    expect(mockCamera.photoTypes).toEqual([]);
+    expect(router.replace).not.toHaveBeenCalled();
     expect(mockBarcode.read).not.toHaveBeenCalled();
-    expect(button(root, 'Ler')).toBeDefined();
-    // O QR que a foto pegou segue para a tela do QR, sem gastar leitura.
-    mockCamera.codes = [{ data: QR }];
-    await act(async () => button(root, 'Descartar')!.props.onPress());
+    await act(async () => button(root, 'Ler')!.props.onPress());
+    expect(lastReceiptScan()[0]).toEqual({ uris: ['file://foto.jpg'] });
+    // Da galeria também: a primeira imagem com o QR vai para a leitura com as outras.
+    mockPick.mockResolvedValue(['qr.jpg', 'itens.jpg']);
+    await act(async () => sheetActions(root).find((a) => a.label === 'Escolher da galeria')!.onPress());
+    await flush();
+    expect(mockCamera.photoTypes).toEqual([]);
+    expect(lastReceiptScan()[0]).toEqual({ uris: ['qr.jpg', 'itens.jpg'] });
+    expect(router.replace).not.toHaveBeenCalled();
+    expect(mockScan.mutate).not.toHaveBeenCalled();
+  });
+
+  it('no navegador, "Tirar foto" abre a câmera do celular (a foto inteira), não um quadro da prévia', async () => {
+    jest.replaceProperty(Platform, 'OS', 'web');
+    const root = await mount('nota');
+    // A câmera da tela (a de mentira é uma classe: montada de novo, é outra).
+    const firstPreview = root.findByType(CameraView).instance;
+    mockPick.mockResolvedValue(['blob:topo']);
     await shoot(root);
+    expect(mockPick).toHaveBeenLastCalledWith('camera', 1);
+    expect(mockCamera.take).not.toHaveBeenCalled();
+    // A câmera do celular pode ter tomado a da tela: a prévia volta com uma nova.
+    expect(root.findByType(CameraView).instance).not.toBe(firstPreview);
+    // A foto é a primeira parte da nota, como a da câmera da tela; a próxima parte vem também da câmera do celular.
+    mockPick.mockResolvedValue(['blob:rodape']);
+    await shoot(root, 'Mais uma foto');
+    await act(async () => button(root, 'Ler (2 fotos)')!.props.onPress());
+    expect(lastReceiptScan()[0]).toEqual({ uris: ['blob:topo', 'blob:rodape'] });
+    // Desistir da foto não deixa nada esperando, e a tela não fica ocupada.
+    mockPick.mockResolvedValue([]);
+    await shoot(root);
+    expect(mockReceiptScan.mutate).toHaveBeenCalledTimes(1);
+    expect(button(root, 'Tirar foto')!.props.disabled).toBe(false);
+    expect(button(root, 'Ler')).toBeUndefined();
+  });
+
+  it('a foto do navegador que não deu certo avisa; fora do modo da nota, a foto segue sendo a da câmera da tela', async () => {
+    jest.replaceProperty(Platform, 'OS', 'web');
+    const root = await mount('nota');
+    mockPick.mockRejectedValue(new Error('Sem acesso à câmera.'));
+    await shoot(root);
+    expect(notify).toHaveBeenLastCalledWith('Não deu para tirar a foto', 'Sem acesso à câmera.');
+    expect(mockReceiptScan.mutate).not.toHaveBeenCalled();
+    await act(async () => renderer!.unmount());
+    const tudo = await mount('tudo');
+    mockPick.mockClear();
+    await shoot(tudo);
+    expect(mockCamera.take).toHaveBeenCalledTimes(1);
+    expect(mockPick).not.toHaveBeenCalled();
+  });
+
+  it('a tela que saiu enquanto a galeria estava aberta (a câmera leu o QR por trás dela) não lê as imagens', async () => {
+    const root = await mount('nota');
+    let choose: (uris: string[]) => void = () => undefined;
+    mockPick.mockImplementation(() => new Promise<string[]>((resolve) => (choose = resolve)));
+    await act(async () => sheetActions(root).find((a) => a.label === 'Escolher da galeria')!.onPress());
+    await sawCode(root, QR);
     expect(router.replace).toHaveBeenCalledWith({ pathname: '/nota/qrcode', params: { qr: QR } });
+    await act(async () => choose(['a.jpg']));
+    await flush();
     expect(mockReceiptScan.mutate).not.toHaveBeenCalled();
   });
 
