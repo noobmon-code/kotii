@@ -45,16 +45,21 @@ import {
   PREVIEW_ONLY_ADMINS,
   SIGN_IN_TITLE,
   SIGN_UP_TITLE,
+  SWITCH_TO_SIGN_UP,
   WELCOME_CREATE,
+  WELCOME_SIGN_IN,
   WELCOME_TITLE,
   welcomeLines,
 } from '@/domain/onboarding';
 import { FirstListFlow } from '@/features/onboarding/FirstListFlow';
 import { OnboardingContinuation } from '@/features/onboarding/OnboardingContinuation';
 import { FEATURES } from '@/lib/features';
+import { clearLinkNotice, setLinkNotice } from '@/lib/linkNotice';
 import { OFFLINE_TRY_AGAIN } from '@/lib/networkErrors';
 import { openExternal } from '@/lib/openLink';
 import { clearOnboardingNext, clearPendingInvite, markHadAccount, savePendingInvite, setOnboardingNext } from '@/lib/onboarding';
+import { startRecovery } from '@/lib/passwordRecovery';
+import { LINK_EXPIRED } from '@/lib/recoveryLink';
 import { notify } from '@/ui/dialogs';
 
 // O começo novo (domain/onboarding, features/onboarding), com o banco e o Supabase de mentira: as boas-vindas e a conta
@@ -94,6 +99,8 @@ const mockAuth = {
   })),
   signInWithPassword: jest.fn(async () => ({ data: { user: { id: 'u1' }, session: { user: { id: 'u1' } } }, error: null })),
   resend: jest.fn(async (_args: unknown) => ({ data: {}, error: null })),
+  resetPasswordForEmail: jest.fn(async (_email: string) => ({ data: {}, error: null })),
+  verifyOtp: jest.fn(async (_args: unknown) => ({ data: { user: { id: 'u1' }, session: { user: { id: 'u1' } } }, error: null })),
 };
 jest.mock('@/lib/supabase', () => ({
   supabase: {
@@ -106,7 +113,7 @@ jest.mock('@/lib/supabase', () => ({
 }));
 jest.mock('@/lib/activeHousehold', () => ({ setActiveHousehold: async () => undefined }));
 jest.mock('@/data/terms', () => ({ acceptTermsAtSignIn: jest.fn(async () => undefined) }));
-jest.mock('@/lib/linkNotice', () => ({ clearLinkNotice: jest.fn(), linkNotice: () => null, useLinkNotice: () => null }));
+// O aviso do link do e-mail (lib/linkNotice) é o de verdade: só memória, e a tela de entrar o tira ao desmontar.
 jest.mock('@/lib/passwordRecovery', () => ({ finishRecovery: jest.fn(), startRecovery: jest.fn() }));
 jest.mock('@/lib/session', () => ({ useSessionEnded: () => false }));
 // O que data/household traz e não entra aqui (fila da lista, fotos, Nuke, lembretes).
@@ -217,6 +224,7 @@ beforeEach(() => {
   mockAdmin.isPending = false;
   mockInstall.mode = 'hidden';
   clearPendingInvite();
+  clearLinkNotice();
   for (const id of ['nova', 'dela', 'h1']) clearOnboardingNext(id);
   jest.replaceProperty(FEATURES, 'onboarding', true);
 });
@@ -687,6 +695,75 @@ describe('as boas-vindas e a conta (entrar, com a chave ligada)', () => {
     savePendingInvite('KM2P9Q');
     await mount(<SignInScreen />);
     expect(page()).toContain(INVITED_TITLE);
+  });
+
+  // O link do e-mail que venceu, aberto num aparelho que nunca teve conta (a pessoa criou a conta no computador e abriu
+  // a confirmação ou a recuperação no celular): a tela abre na recuperação, sem as boas-vindas, e voltar dali é entrar.
+  it('o link do e-mail que não deu certo abre em "Recuperar a senha", e "Voltar para entrar" leva a Entrar, não às boas-vindas', async () => {
+    setLinkNotice(LINK_EXPIRED);
+    await mount(<SignInScreen />);
+    expect(page()).toContain(LINK_EXPIRED);
+    expect(page()).toContain('Recuperar a senha');
+    expect(page()).not.toContain(WELCOME_TITLE);
+    expect(button(SIGN_IN_TITLE)).toBeUndefined();
+    await press('Voltar para entrar');
+    // O aviso continua ("é só entrar"), e embaixo dele está o formulário de entrar: nada de "Criar conta" / "Já tenho conta".
+    expect(page()).toContain(LINK_EXPIRED);
+    expect(page()).not.toContain(WELCOME_TITLE);
+    expect(page()).not.toContain('Recuperar a senha');
+    expect(button(WELCOME_SIGN_IN)).toBeUndefined();
+    expect(button(SIGN_IN_TITLE)).toBeDefined();
+    expect(button(SWITCH_TO_SIGN_UP)).toBeDefined();
+    // Pelo "Esqueci minha senha" do formulário, a volta é a mesma.
+    await press('Esqueci minha senha');
+    expect(page()).toContain('Recuperar a senha');
+    await press('Voltar para entrar');
+    expect(page()).not.toContain(WELCOME_TITLE);
+    expect(button(SIGN_IN_TITLE)).toBeDefined();
+  });
+
+  it('"Já tenho conta" e depois "Esqueci minha senha": voltar da recuperação também é entrar', async () => {
+    await mount(<SignInScreen />);
+    await press(WELCOME_SIGN_IN);
+    await press('Esqueci minha senha');
+    expect(page()).toContain('Recuperar a senha');
+    await press('Voltar para entrar');
+    expect(page()).not.toContain(WELCOME_TITLE);
+    expect(button(SIGN_IN_TITLE)).toBeDefined();
+  });
+
+  it('a recuperação da senha no começo novo: o e-mail limpo, o passo do código (o aviso do link sai) e o código', async () => {
+    setLinkNotice(LINK_EXPIRED);
+    await mount(<SignInScreen />);
+    await type('E-mail', ' Ana@Exemplo.com ');
+    await press('Enviar e-mail');
+    expect(mockAuth.resetPasswordForEmail).toHaveBeenCalledWith('ana@exemplo.com');
+    expect(page()).not.toContain(LINK_EXPIRED);
+    expect(page()).toContain('Se ana@exemplo.com tiver conta no Kotii');
+    expect(button('Reenviar o e-mail em 60 s')).toBeDefined();
+    // Voltar para entrar guarda o e-mail; "Já tenho um código" leva de novo ao código.
+    await press('Voltar para entrar');
+    expect(button(SIGN_IN_TITLE)).toBeDefined();
+    expect(field('E-mail').props.value).toBe('ana@exemplo.com');
+    await press('Esqueci minha senha');
+    await press('Já tenho um código');
+    await type('Código do e-mail', '12 34 56');
+    await press('Continuar');
+    expect(mockAuth.verifyOtp).toHaveBeenCalledWith({ email: 'ana@exemplo.com', token: '123456', type: 'recovery' });
+    expect(startRecovery).toHaveBeenCalledWith('u1');
+  });
+
+  it('com a chave desligada, "Voltar para entrar" depois do link volta à tela de antes (Entrar e Criar conta no seletor)', async () => {
+    jest.replaceProperty(FEATURES, 'onboarding', false);
+    setLinkNotice(LINK_EXPIRED);
+    await mount(<SignInScreen />);
+    expect(page()).toContain('Recuperar a senha');
+    await press('Voltar para entrar');
+    expect(page()).toContain(LINK_EXPIRED);
+    const selector = renderer!.root.findAll((node) => Array.isArray(node.props.options) && typeof node.props.onChange === 'function');
+    expect(selector[0]?.props.value).toBe('entrar');
+    expect(button('Entrar')).toBeDefined();
+    expect(button('Esqueci minha senha')).toBeDefined();
   });
 
   // Por último: a marca de que o aparelho já teve conta fica na memória até o fim do arquivo.

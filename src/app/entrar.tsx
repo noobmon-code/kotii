@@ -262,6 +262,12 @@ export default function SignInScreen() {
               onPress={() => {
                 setRecovery(null);
                 setCode('');
+                // O botão promete o formulário de entrar, e é para lá que vai: também no aparelho que nunca teve conta
+                // e abriu aqui pelo link do e-mail que não deu certo (a recuperação abriu sem passar pelas boas-vindas,
+                // e o aviso do link, que continua à vista, diz "é só entrar"). Sem isto, o começo novo voltaria às
+                // boas-vindas, com "Criar conta" para quem já tem conta.
+                setMode('entrar');
+                setWelcomeDone(true);
               }}
             />
           </View>
