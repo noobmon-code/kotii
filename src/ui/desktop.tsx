@@ -1,12 +1,11 @@
 // O arranjo do computador (domain/desktop): saber se a janela é de computador e pôr o conteúdo em duas colunas.
 // No celular (e na janela estreita do navegador) nada daqui muda a tela: uma coluna, na ordem de sempre.
 
-import { HeaderHeightContext } from 'expo-router/react-navigation';
 import { createContext, useContext, type ReactNode } from 'react';
 import { Platform, StyleSheet, useWindowDimensions, View, type ViewStyle } from 'react-native';
 
-import { DESKTOP_SIDE_MAX_SHARE, DESKTOP_SIDE_WIDTH, isDesktop, SIDEBAR_SPACE, stickySideHeight } from '@/domain/desktop';
-import { SCREEN_PADDING, space } from './theme';
+import { DESKTOP_SIDE_MAX_SHARE, DESKTOP_SIDE_WIDTH, isDesktop, SIDEBAR_SPACE } from '@/domain/desktop';
+import { space } from './theme';
 
 /** A janela é de computador: o navegador, numa janela larga. Acompanha a janela quando ela muda de tamanho. */
 export function useDesktop(): boolean {
@@ -34,9 +33,11 @@ export function useAreaWidth(): number {
  * à direita, mas continuam vindo antes na ordem do teclado e do leitor de tela, como no celular). `gap` é o espaço
  * entre as partes dentro de cada coluna (o mesmo que a tela ou o painel põe entre elas no celular).
  *
- * `stickySide`: no computador, a do lado fica parada enquanto a principal rola (a revisão da nota: o "Confirmar nota"
- * continua à vista com os itens rolando, como o rodapé fixo do celular), com no máximo a altura do lugar que a tela
- * tem para rolar; o que não cabe nela rola por dentro. Para uma tela sem rodapé.
+ * No navegador as caixas das colunas existem em qualquer largura, na mesma ordem e com as mesmas chaves: na janela
+ * estreita elas não desenham caixa nenhuma (`display: contents`: o que está dentro fica solto na tela, como no
+ * celular, com os mesmos pixels), e a janela que cruza a largura do computador só troca o estilo delas, sem montar de
+ * novo o que está dentro (o peso digitado num item da nota, o dia escolhido na agenda). No celular e no tablet, sem
+ * caixa nenhuma, como sempre.
  */
 export function Columns({
   children,
@@ -44,20 +45,15 @@ export function Columns({
   sideFirst,
   sideWidth = DESKTOP_SIDE_WIDTH,
   gap = space.xl,
-  stickySide,
 }: {
   children: ReactNode;
   side: ReactNode;
   sideFirst?: boolean;
   sideWidth?: number;
   gap?: number;
-  stickySide?: boolean;
 }) {
   const desktop = useDesktop();
-  const { height } = useWindowDimensions();
-  // A altura do cabeçalho da tela (fora de um navegador, nenhum): o lugar que a tela tem para rolar é o resto da janela.
-  const headerHeight = useContext(HeaderHeightContext) ?? 0;
-  if (!desktop) {
+  if (Platform.OS !== 'web') {
     return (
       <>
         {sideFirst ? side : null}
@@ -67,55 +63,43 @@ export function Columns({
     );
   }
   const main = (
-    <View key="main" style={[styles.main, { gap }]}>
+    <View key="main" style={desktop ? [styles.main, { gap }] : loose}>
       {children}
     </View>
   );
   const aside = (
-    <View
-      key="side"
-      style={[
-        styles.side,
-        { width: sideWidth, gap },
-        stickySide && [
-          sticky,
-          // A folga em volta deixa a sombra dos cartões fora do corte da rolagem; a margem negativa a desconta.
-          { width: sideWidth + 2 * STICKY_ROOM, maxHeight: stickySideHeight(height, headerHeight, SCREEN_PADDING) + 2 * STICKY_ROOM },
-        ],
-      ]}>
+    <View key="side" style={desktop ? [styles.side, { width: sideWidth, gap }] : loose}>
       {side}
     </View>
   );
   // Com a do lado primeiro na ordem, a linha é desenhada ao contrário: ela continua à direita.
-  return <View style={[styles.columns, sideFirst && styles.reverse]}>{sideFirst ? [aside, main] : [main, aside]}</View>;
+  return (
+    <View style={desktop ? [styles.columns, sideFirst && styles.reverse] : loose}>{sideFirst ? [aside, main] : [main, aside]}</View>
+  );
 }
 
 /**
  * As ações do alto de uma parte que fica numa coluna larga (os botões de criar e de abrir outra tela): no
- * computador, lado a lado e do tamanho do rótulo, em vez de cada uma esticada pela coluna. No celular, uma embaixo
- * da outra, da largura da tela, como sempre.
+ * computador, lado a lado e do tamanho do rótulo, em vez de cada uma esticada pela coluna (com `end`, encostadas à
+ * direita: as do rodapé da revisão da nota, embaixo da coluna do lado). No celular, uma embaixo da outra, da largura
+ * da tela, como sempre (no navegador estreito, na mesma caixa, que lá não desenha nada, como as colunas).
  */
-export function Actions({ children }: { children: ReactNode }) {
+export function Actions({ children, end }: { children: ReactNode; end?: boolean }) {
   const desktop = useDesktop();
-  if (!desktop) return <>{children}</>;
-  return <View style={styles.actions}>{children}</View>;
+  if (Platform.OS !== 'web') return <>{children}</>;
+  return <View style={desktop ? [styles.actions, end && styles.actionsEnd] : loose}>{children}</View>;
 }
 
-/** A folga, em volta da coluna do lado parada, para a sombra dos cartões (que a rolagem de dentro cortaria). */
-const STICKY_ROOM = space.md;
-
-// Só do navegador (a coluna parada só existe no computador): `sticky` e a rolagem só na vertical não estão nos tipos do
-// React Native, e o react-native-web os passa para o CSS.
-const sticky = {
-  position: 'sticky',
-  top: SCREEN_PADDING - STICKY_ROOM,
-  overflowY: 'auto',
-  padding: STICKY_ROOM,
-  margin: -STICKY_ROOM,
-} as unknown as ViewStyle;
+/**
+ * Uma caixa que não desenha nada (só no navegador): o que está dentro fica solto no lugar dela, como se ela não
+ * existisse. O que deixa as colunas no lugar, na janela estreita, para a janela que cruza a largura não as montar de
+ * novo.
+ */
+const loose: ViewStyle = { display: 'contents' };
 
 const styles = StyleSheet.create({
   actions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: space.md },
+  actionsEnd: { justifyContent: 'flex-end' },
   columns: { flexDirection: 'row', alignItems: 'flex-start', gap: space.xl },
   reverse: { flexDirection: 'row-reverse' },
   // minWidth 0: sem isto, um texto comprido na coluna principal a alargaria e empurraria a do lado para fora.

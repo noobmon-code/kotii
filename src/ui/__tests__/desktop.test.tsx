@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState, type ReactElement } from 'react';
 import { ActivityIndicator, Dimensions, Modal, Platform, StyleSheet, Text, View } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
@@ -16,8 +17,8 @@ import {
   REFRESH_LABEL,
   SIDEBAR_SPACE,
   sheetHeights,
-  stickySideHeight,
 } from '@/domain/desktop';
+import { PhotoStrip } from '@/features/PhotoStrip';
 import { ActionSheet } from '../ActionSheet';
 import { Backdrop } from '../Backdrop';
 import { Actions, Columns, SidebarContext, useAreaWidth, useDesktop } from '../desktop';
@@ -30,6 +31,7 @@ import { MAX_WIDTH, SCREEN_PADDING } from '../theme';
 
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
+jest.mock('@/data/images', () => ({ signedImageUrl: async (_bucket: string, path: string) => `https://fotos/${path}` }));
 
 const WINDOW = Dimensions.get('window');
 let renderer: ReactTestRenderer | undefined;
@@ -116,11 +118,43 @@ describe('as duas colunas', () => {
     expect(text(root)).toBe('açõeslistaarquivadas');
   });
 
-  it('na janela estreita do navegador, também não', async () => {
+  it('na janela estreita do navegador, também não: as caixas estão lá, mas não desenham nada (o que está dentro fica solto)', async () => {
     await browser(800);
     const root = await mount(page(true));
-    expect(boxes(root)).toHaveLength(0);
+    // As mesmas três caixas do computador, na mesma ordem, todas sem caixa na tela (`display: contents`) e sem
+    // nenhum outro estilo: o que está dentro fica solto na tela, como no celular.
+    const all = boxes(root);
+    expect(all).toHaveLength(3);
+    for (const box of all) expect(flat(box)).toEqual({ display: 'contents' });
+    expect(text(all[1])).toBe('ações');
+    expect(text(all[2])).toBe('listaarquivadas');
     expect(text(root)).toBe('açõeslistaarquivadas');
+    await act(async () => renderer!.update(page()));
+    expect(text(root)).toBe('listaarquivadasações');
+  });
+
+  it('a janela que cruza a largura do computador não monta de novo o que está dentro das colunas (o que foi digitado fica)', async () => {
+    let mounts = 0;
+    function Typed({ name }: { name: string }) {
+      const [mount] = useState(() => (mounts += 1));
+      return <Text>{`${name} ${mount}`}</Text>;
+    }
+    const typed = (
+      <Columns sideFirst side={<Typed name="lado" />}>
+        <Typed name="itens" />
+      </Columns>
+    );
+    await browser(1440);
+    const root = await mount(typed);
+    expect(mounts).toBe(2);
+    expect(flat(boxes(root)[0]).flexDirection).toBe('row-reverse');
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width: 900 } }));
+    expect(flat(boxes(root)[0])).toEqual({ display: 'contents' });
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width: 1440 } }));
+    expect(flat(boxes(root)[0]).flexDirection).toBe('row-reverse');
+    // Nem para a janela estreita, nem de volta: as duas montadas uma vez só.
+    expect(mounts).toBe(2);
+    expect(text(root)).toBe('lado 1itens 2');
   });
 
   it('no computador, a principal fica com a sobra e a do lado, à direita, com a largura dela', async () => {
@@ -155,49 +189,6 @@ describe('as duas colunas', () => {
     expect(flat(main).gap).toBe(16);
     expect(flat(side)).toMatchObject({ width: 400, gap: 16 });
   });
-
-  describe('a do lado parada (stickySide: a revisão da nota)', () => {
-    const sticky = (
-      <Columns stickySide sideFirst sideWidth={400} side={<Text>Confirmar nota</Text>}>
-        <Text>itens</Text>
-      </Columns>
-    );
-
-    it('no celular, nada muda: os dois soltos, na ordem de sempre', async () => {
-      const root = await mount(sticky);
-      expect(boxes(root)).toHaveLength(0);
-      expect(text(root)).toBe('Confirmar notaitens');
-    });
-
-    it('no computador, fica parada enquanto a principal rola, da altura que a janela dá, e rola por dentro', async () => {
-      await browser(1440);
-      await act(async () => Dimensions.set({ window: { ...WINDOW, width: 1440, height: 900 } }));
-      const root = await mount(sticky);
-      const [, side] = boxes(root);
-      expect(text(side)).toBe('Confirmar nota');
-      const style = flat(side) as Record<string, unknown>;
-      expect(style).toMatchObject({ position: 'sticky', overflowY: 'auto' });
-      // A folga em volta (para a sombra dos cartões) é descontada pela margem: o conteúdo fica com a largura pedida.
-      const room = style.padding as number;
-      expect(style.margin).toBe(-room);
-      expect(style.width).toBe(400 + 2 * room);
-      // Fora de uma tela com cabeçalho, o lugar de rolar é a janela inteira, menos as margens do conteúdo.
-      expect(style.maxHeight).toBe(stickySideHeight(900, 0, SCREEN_PADDING) + 2 * room);
-      // O conteúdo fica na margem de cima do conteúdo da tela, como antes de rolar.
-      expect((style.top as number) + room).toBe(SCREEN_PADDING);
-    });
-
-    it('sem stickySide, a do lado rola com a tela, como sempre', async () => {
-      await browser(1440);
-      const root = await mount(
-        <Columns side={<Text>ações</Text>}>
-          <Text>lista</Text>
-        </Columns>,
-      );
-      const [, , side] = boxes(root);
-      expect(flat(side).position).toBeUndefined();
-    });
-  });
 });
 
 describe('as ações do alto de uma parte', () => {
@@ -213,12 +204,34 @@ describe('as ações do alto de uma parte', () => {
     expect(boxes(root)).toHaveLength(0);
   });
 
+  it('na janela estreita do navegador, também: a caixa está lá, mas não desenha nada', async () => {
+    await browser(800);
+    const root = await mount(actions);
+    const [row] = boxes(root);
+    expect(boxes(root)).toHaveLength(1);
+    expect(flat(row)).toEqual({ display: 'contents' });
+  });
+
   it('no computador ficam lado a lado, do tamanho do rótulo', async () => {
     await browser(1440);
     const root = await mount(actions);
     const [row] = boxes(root);
     expect(flat(row)).toMatchObject({ flexDirection: 'row', flexWrap: 'wrap' });
+    expect(flat(row).justifyContent).toBeUndefined();
     expect(text(row)).toBe('Nova tarefaPontos');
+  });
+
+  it('com `end`, no computador, encostadas à direita (o rodapé da revisão da nota)', async () => {
+    await browser(1440);
+    const root = await mount(
+      <Actions end>
+        <Text>Descartar nota</Text>
+        <Text>Confirmar nota</Text>
+      </Actions>,
+    );
+    const [row] = boxes(root);
+    expect(flat(row)).toMatchObject({ flexDirection: 'row', justifyContent: 'flex-end' });
+    expect(text(row)).toBe('Descartar notaConfirmar nota');
   });
 });
 
@@ -277,6 +290,37 @@ describe('a tela', () => {
     expect(box.maxWidth).toBe(DESKTOP_CONTENT_WIDTH);
     // O Nuke está na barra lateral: o fim da tela tem a margem de todos os lados.
     expect(box.paddingBottom).toBeUndefined();
+  });
+
+  describe('o rodapé', () => {
+    /** As caixas em volta do que vai no rodapé, da mais de fora para a mais de dentro. */
+    const around = (root: ReactTestInstance) => {
+      const button = root.findAll((node) => (node.type as unknown) === 'Text' && node.props.children === 'Confirmar')[0];
+      return boxes(root).filter((box) => box.findAll((node) => node === button).length > 0);
+    };
+    /** A caixa de dentro do rodapé (a que tem o que vai nele) e a do rodapé, em volta dela. */
+    const footerInner = (root: ReactTestInstance) => around(root)[around(root).length - 1];
+    const footerBar = (root: ReactTestInstance) => around(root)[around(root).length - 2];
+    const page = (
+      <Screen wide footer={<Text>Confirmar</Text>}>
+        <Text>itens</Text>
+      </Screen>
+    );
+
+    it('no celular, como sempre: da largura da coluna, com a margem do rodapé', async () => {
+      const root = await mount(page);
+      expect(flat(footerInner(root))).toEqual({ width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', gap: 8 });
+      expect(flat(footerBar(root)).paddingHorizontal).toBe(16);
+    });
+
+    it('no computador, com as mesmas beiradas do conteúdo: o botão à direita fica embaixo da coluna do lado', async () => {
+      await browser(1440);
+      const root = await mount(page);
+      const inner = flat(footerInner(root));
+      const box = flat(content(root));
+      expect(inner).toMatchObject({ width: '100%', maxWidth: box.maxWidth, alignSelf: 'center', paddingHorizontal: box.padding });
+      expect(flat(footerBar(root)).paddingHorizontal).toBe(0);
+    });
   });
 
   it('no computador, as outras telas (formulários, leitura) ficam na coluna de sempre', async () => {
@@ -348,6 +392,20 @@ describe('a tela', () => {
       const form = await mount(page());
       expect(flat(holder(form))).toEqual({ alignSelf: 'flex-end' });
       expect(first(form)).toBe(true);
+    });
+
+    it('numa aba com o título só para o leitor de tela, vem depois dele: quem navega pelos títulos o acha a partir do começo da página', async () => {
+      await browser(1440);
+      const root = await mount(
+        <Screen wide heading="Compras" onRefresh={onRefresh}>
+          <Text>Listas</Text>
+        </Screen>,
+      );
+      // A ordem do teclado e do leitor de tela, entre os filhos da caixa do conteúdo: o título, o botão, o conteúdo.
+      const order = content(root).children.map((child) =>
+        typeof child === 'string' ? child : child.findAll((node) => node === refresh(root)[0]).length ? 'Atualizar' : text(child),
+      );
+      expect(order).toEqual(['Compras', 'Atualizar', 'Listas']);
     });
 
     it('a tela que já tem o próprio botão de atualizar (o Consultor) não ganha um segundo', async () => {
@@ -478,6 +536,26 @@ describe('as janelas de formulário', () => {
     const box = flat(frame(root));
     expect(box).toMatchObject({ maxWidth: DESKTOP_PHOTO_WIDTH, height: sheetHeights(900).max });
     expect(box.maxHeight).toBeUndefined();
+  });
+
+  it('as fotos de um documento, aparelho, exame ou plano (PhotoStrip) abrem na caixa das fotos', async () => {
+    await browser(1440);
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width: 1440, height: 900 } }));
+    // Sem prazo para esquecer as consultas: um relógio de limpeza deixaria o Jest esperando no fim.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+    const root = await mount(
+      <QueryClientProvider client={client}>
+        <PhotoStrip bucket="documents" paths={['h1/rg.jpg', 'h1/verso.jpg']} />
+      </QueryClientProvider>,
+    );
+    const viewer = () => root.findByType(SheetModal);
+    expect(viewer().props).toMatchObject({ visible: false, photo: true });
+    const thumbs = root.findAll((node) => node.props.accessibilityLabel === 'Ver foto' && typeof node.props.onPress === 'function');
+    await act(async () => thumbs[1].props.onPress());
+    expect(viewer().props).toMatchObject({ visible: true, photo: true });
+    expect(text(viewer())).toContain('Foto 2 de 2');
+    expect(flat(frame(root))).toMatchObject({ maxWidth: DESKTOP_PHOTO_WIDTH, height: sheetHeights(900).max });
+    client.clear();
   });
 
   it('a janela que cruza a largura do computador não monta o formulário de novo', async () => {

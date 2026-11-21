@@ -93,19 +93,6 @@ export function windowFallback(routeName: string): string {
 }
 
 /**
- * A altura máxima da coluna do lado que fica parada enquanto a principal rola (ui/desktop `Columns` com
- * `stickySide`): o lugar que a tela tem para rolar (a janela menos o cabeçalho da tela) menos a margem de cima e a de
- * baixo do conteúdo. Nunca menos que uma altura de botão, para a coluna não sumir numa janela muito baixa.
- */
-export function stickySideHeight(windowHeight: number, headerHeight: number, padding: number): number {
-  const room = (Number.isFinite(windowHeight) ? windowHeight : 0) - (Number.isFinite(headerHeight) ? headerHeight : 0) - 2 * padding;
-  return Math.max(STICKY_SIDE_MIN_HEIGHT, Math.floor(room));
-}
-
-/** A coluna parada nunca fica mais baixa que isto. */
-export const STICKY_SIDE_MIN_HEIGHT = 240;
-
-/**
  * O nome do botão que, no computador, faz o que puxar a tela para baixo faz no celular (buscar de novo o que ela
  * mostra): no navegador não se puxa a tela.
  */

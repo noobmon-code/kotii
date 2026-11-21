@@ -188,7 +188,7 @@ function AppNavigator() {
                 <Stack.Screen name="prestador/[id]" options={{ title: 'Prestador' }} />
                 <Stack.Screen name="servico/[id]" options={windowOptions(desktop, { title: 'Serviço' })} />
                 <Stack.Screen name="documento/[id]" options={{ title: 'Documento' }} />
-                <Stack.Screen name="nuke" options={windowOptions(desktop, { headerShown: false })} />
+                <Stack.Screen name="nuke" options={windowOptions(desktop, { headerShown: false }, 'Nuke')} />
                 {/* As telas que a aba Configurações abre por uma linha, para ficar curta. */}
                 <Stack.Screen name="avisos" options={{ title: 'Avisos' }} />
                 <Stack.Screen name="perfil" options={{ title: 'Perfil' }} />
@@ -210,7 +210,7 @@ function AppNavigator() {
                 <Stack.Screen name="imposto-de-renda" options={{ title: 'Despesas médicas (IR)' }} />
                 <Stack.Screen name="consultor/index" options={{ title: 'Consultor (beta)' }} />
                 <Stack.Screen name="consultor/lancamentos" options={{ title: 'Lançamentos do banco' }} />
-                <Stack.Screen name="consultor/conversa" options={windowOptions(desktop, { headerShown: false })} />
+                <Stack.Screen name="consultor/conversa" options={windowOptions(desktop, { headerShown: false }, 'Nuke consultor')} />
               </Stack.Protected>
               {/* Sem depender de casa: apagar a conta (da aba Configurações e da tela de boas-vindas, sem casa nenhuma) e o
                   Painel do app (de Configurações ou por /painel; só quem está em app_admins vê os números). */}

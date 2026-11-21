@@ -12,13 +12,15 @@
 
 import { router, type Href } from 'expo-router';
 import { useIsFocused } from 'expo-router/react-navigation';
-import { useEffect, useRef, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { Platform, StyleSheet, useWindowDimensions, View, type ViewStyle } from 'react-native';
 
 import { DESKTOP_WINDOW_WIDTH, windowFallback, windowHeight } from '@/domain/desktop';
 import { useDesktop } from '@/ui/desktop';
 import { IconButton, Row, Text } from '@/ui/primitives';
 import { radius, shadows, space, useColors } from '@/ui/theme';
+
+import { restoreFocus, trapWindowFocus, WINDOW_TEST_ID } from './windowFocus';
 
 /** O que a tela diz de si no Stack (as opções dela) e que a caixa usa. */
 interface WindowScreenOptions {
@@ -38,28 +40,34 @@ interface WindowLayoutArgs {
 /** O nome do botão de fechar a caixa. */
 export const WINDOW_CLOSE_LABEL = 'Fechar';
 
-/** O `testID` da caixa (no navegador, `data-testid`): o que separa uma destas caixas de um menu ou formulário aberto por cima. */
-const WINDOW_TEST_ID = 'route-window';
-
-/** Um menu ou formulário aberto (os do react-native-web dizem `aria-modal`), que não é uma destas caixas. */
-const OTHER_WINDOW = `[aria-modal="true"]:not([data-testid="${WINDOW_TEST_ID}"])`;
-
 /**
  * As opções de uma dessas telas no Stack da raiz. No celular, a janela que sobe de sempre (`modal`). No computador,
  * por cima da tela de antes, que continua desenhada atrás (o Stack do navegador só deixa à vista a tela de baixo de
  * uma `transparentModal`), sem o fundo da tela e com o cabeçalho do Stack vazio: o fundo escurecido e o título são da
  * caixa (RouteWindow). `headerShown: false` (o Nuke, a conversa do consultor, que desenham o próprio alto) continua
- * dizendo que a caixa não leva a barra do título.
+ * dizendo que a caixa não leva a barra do título; essas dizem o nome da janela em `name` (o que o leitor de tela fala
+ * ao abrir a caixa), que no computador vira o título dela, e no celular não muda nada (sem cabeçalho, como sempre).
  */
-export function windowOptions<T extends { title?: string; headerShown?: boolean }>(desktop: boolean, options: T) {
+export function windowOptions<T extends { title: string; headerShown?: boolean }>(desktop: boolean, options: T): T & WindowPresentation;
+export function windowOptions<T extends { headerShown: false }>(desktop: boolean, options: T, name: string): T & WindowPresentation;
+export function windowOptions(desktop: boolean, options: WindowScreenOptions, name?: string) {
   if (!desktop) return { ...options, presentation: 'modal' as const };
   return {
     ...options,
+    title: options.title ?? name,
     presentation: 'transparentModal' as const,
     header: () => null,
     contentStyle: { backgroundColor: 'transparent' },
   };
 }
+
+/** O que `windowOptions` põe nas opções da tela (no celular, só a apresentação). */
+type WindowPresentation = {
+  presentation: 'modal' | 'transparentModal';
+  title?: string;
+  header?: () => null;
+  contentStyle?: { backgroundColor: string };
+};
 
 /** É uma das telas em janela (pela apresentação que as opções dela pedem, a do celular ou a do computador). */
 function isWindow(options: WindowScreenOptions): boolean {
@@ -114,36 +122,30 @@ export function RouteWindow({
     close.current = onClose;
   });
 
+  // Quem tinha o foco quando a janela abriu (lido no primeiro desenho, antes de um campo com foco automático tomá-lo):
+  // ao fechar, ele volta para lá.
+  const [opener] = useState(() => (typeof document === 'undefined' ? null : document.activeElement));
+  const live = useRef({ desktop });
+  useEffect(() => {
+    live.current.desktop = desktop;
+  });
+  useEffect(() => {
+    const state = live.current;
+    return () => {
+      // Só no computador: na janela estreita a tela é uma página, como sempre foi.
+      if (state.desktop && typeof document !== 'undefined') restoreFocus(document, opener);
+    };
+  }, [opener]);
+
   // Como as janelas de formulário: o Esc fecha, e o foco do teclado fica dentro da caixa (não vai para a tela de trás
-  // nem para a barra lateral, escurecidas). Só a caixa da tela aberta (uma em cima da outra, a de baixo não responde),
-  // e nunca com um menu ou um formulário aberto por cima dela (eles têm o próprio Esc e o próprio foco).
+  // nem para a barra lateral, escurecidas; o Tab e o Shift+Tab dão a volta nela). Só a caixa da tela aberta (uma em
+  // cima da outra, a de baixo não responde), e nunca com um menu ou um formulário aberto por cima dela (eles têm o
+  // próprio Esc e o próprio foco). As regras, em windowFocus.
   useEffect(() => {
     if (!desktop || !focused || typeof document === 'undefined') return;
     const node = box.current as unknown as HTMLElement | null;
     if (!node) return;
-    const onKey = (event: KeyboardEvent) => {
-      // Na composição de um texto (acentos, teclados asiáticos), o Esc é do campo.
-      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
-      // O menu e o formulário abertos por cima fecham no soltar da tecla (react-native-web): aqui, no apertar, eles
-      // ainda estão abertos, e o Esc é deles.
-      if (document.querySelector(OTHER_WINDOW)) return;
-      event.preventDefault();
-      close.current();
-    };
-    const onFocus = (event: FocusEvent) => {
-      const target = event.target as Element | null;
-      if (!target || node.contains(target) || target.closest(OTHER_WINDOW)) return;
-      node.focus();
-    };
-    // Na captura: o campo de texto do react-native-web não deixa a tecla subir até o documento.
-    document.addEventListener('keydown', onKey, true);
-    document.addEventListener('focusin', onFocus);
-    // Ao abrir, o foco entra na caixa (um campo com foco automático, já dentro dela, fica com ele).
-    if (!node.contains(document.activeElement)) node.focus();
-    return () => {
-      document.removeEventListener('keydown', onKey, true);
-      document.removeEventListener('focusin', onFocus);
-    };
+    return trapWindowFocus(document, node, () => close.current());
   }, [desktop, focused]);
 
   return (

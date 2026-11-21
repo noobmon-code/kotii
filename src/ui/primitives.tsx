@@ -141,13 +141,14 @@ export function Screen({
   const content = (
     // No computador o Nuke está na barra lateral, e não por cima da tela: não é preciso deixar o lugar dele no fim.
     <View style={[styles.content, width, !scroll && styles.flex, fab && !desktop && styles.contentWithFab]}>
-      {refreshButton}
       {heading ? (
         // Um ponto de 1 por 1, da cor do fundo: fora da vista, mas lido (com opacidade 0, o VoiceOver o pularia).
         <Text accessibilityRole="header" numberOfLines={1} color="background" style={styles.screenReaderOnly}>
           {heading}
         </Text>
       ) : null}
+      {/* Depois do título (o começo da página para quem navega pelos títulos) e antes do conteúdo. */}
+      {refreshButton}
       {children}
     </View>
   );
@@ -168,8 +169,10 @@ export function Screen({
         content
       )}
       {footer ? (
-        <View style={[styles.footer, { borderTopColor: c.glassBorder, backgroundColor: c.glassStrong }]}>
-          <View style={[styles.footerInner, width]}>{footer}</View>
+        // No computador, o que vai no rodapé fica com as mesmas beiradas do conteúdo (a mesma largura e a mesma margem):
+        // o botão encostado à direita fica embaixo da coluna do lado, e não um pouco para fora dela.
+        <View style={[styles.footer, desktop && styles.footerDesktop, { borderTopColor: c.glassBorder, backgroundColor: c.glassStrong }]}>
+          <View style={[styles.footerInner, width, desktop && styles.footerInnerDesktop]}>{footer}</View>
         </View>
       ) : null}
     </SafeAreaView>
@@ -1037,6 +1040,8 @@ const styles = StyleSheet.create({
   screenReaderOnly: { position: 'absolute', top: 0, left: 0, width: 1, height: 1, overflow: 'hidden' },
   footer: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: space.lg, paddingVertical: space.md },
   footerInner: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', gap: space.sm },
+  footerDesktop: { paddingHorizontal: 0 },
+  footerInnerDesktop: { paddingHorizontal: SCREEN_PADDING },
   card: { borderRadius: radius.lg, borderCurve: 'continuous', padding: space.lg + 2 },
   highlight: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, overflow: 'hidden' },
   pressed: { transform: [{ scale: 0.97 }] },

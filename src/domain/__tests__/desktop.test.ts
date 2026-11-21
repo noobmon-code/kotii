@@ -24,8 +24,6 @@ import {
   SIDEBAR_MARGIN,
   SIDEBAR_SPACE,
   SIDEBAR_WIDTH,
-  STICKY_SIDE_MIN_HEIGHT,
-  stickySideHeight,
   tabParams,
   windowFallback,
   windowHeight,
@@ -112,20 +110,6 @@ describe('as telas em janela no computador (as que no celular sobem por cima das
     expect(windowFallback('consultor/conversa')).toBe('/casa');
     expect(windowFallback('nuke')).toBe('/');
     expect(windowFallback('nao-existe')).toBe('/');
-  });
-});
-
-describe('a coluna do lado parada (a revisão da nota)', () => {
-  it('cabe no lugar que a tela tem para rolar: a janela menos o cabeçalho e as margens', () => {
-    expect(stickySideHeight(900, 64, 20)).toBe(796);
-    expect(stickySideHeight(900.6, 64, 20)).toBe(796);
-    expect(stickySideHeight(1080, 0, 20)).toBe(1040);
-  });
-
-  it('nunca some numa janela muito baixa, nem sem medida', () => {
-    expect(stickySideHeight(200, 64, 20)).toBe(STICKY_SIDE_MIN_HEIGHT);
-    expect(stickySideHeight(Number.NaN, 64, 20)).toBe(STICKY_SIDE_MIN_HEIGHT);
-    expect(stickySideHeight(900, Number.NaN, 20)).toBe(860);
   });
 });
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
@@ -10,6 +10,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'rea
 import TabsLayout from '@/app/(tabs)/_layout';
 import { APP_AREAS, DESKTOP_WINDOW_WIDTH, windowHeight } from '@/domain/desktop';
 import { routeWindowLayout, WINDOW_CLOSE_LABEL, windowOptions } from '@/features/desktop/RouteWindow';
+import { restoreFocus, trapWindowFocus } from '@/features/desktop/windowFocus';
 import { NUKE_LABEL, Sidebar } from '@/features/desktop/Sidebar';
 import { NukeButton } from '@/features/nuke/NukeButton';
 import { useDesktop } from '@/ui/desktop';
@@ -40,6 +41,14 @@ jest.mock('expo-router/build/react-navigation/native-stack/views/NativeStackView
 jest.mock('@/ui/NukeLive', () => ({ NukeLive: () => null }));
 // O layout das abas de verdade: os avisos não entram nesta história.
 jest.mock('@/features/useReminderSync', () => ({ useReminderSync: () => undefined }));
+// O teclado das telas em janela (o Esc, o foco dentro da caixa, o foco de volta ao fechar): as regras têm os testes
+// delas (windowFocus.test); aqui se confere que a caixa as liga, só no computador, e com o fechar dela.
+const mockUntrap = jest.fn();
+jest.mock('@/features/desktop/windowFocus', () => ({
+  ...jest.requireActual<object>('@/features/desktop/windowFocus'),
+  trapWindowFocus: jest.fn(() => mockUntrap),
+  restoreFocus: jest.fn(),
+}));
 // A janela é de computador (ui/desktop), ou não.
 let mockDesktop = false;
 jest.mock('@/ui/desktop', () => ({ ...jest.requireActual<object>('@/ui/desktop'), useDesktop: () => mockDesktop }));
@@ -317,7 +326,7 @@ describe('as telas em janela (no celular sobem por cima das outras)', () => {
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="precos" />
           <Stack.Screen name="tarefa/[id]" options={windowOptions(desktop, { title: 'Tarefa' })} />
-          <Stack.Screen name="nuke" options={windowOptions(desktop, { headerShown: false })} />
+          <Stack.Screen name="nuke" options={windowOptions(desktop, { headerShown: false }, 'Nuke')} />
         </Stack>
       );
     },
@@ -356,8 +365,11 @@ describe('as telas em janela (no celular sobem por cima das outras)', () => {
     const desktop = windowOptions(true, { title: 'Tarefa' });
     expect(desktop).toMatchObject({ title: 'Tarefa', presentation: 'transparentModal', contentStyle: { backgroundColor: 'transparent' } });
     // O cabeçalho do Stack fica vazio: o título vai na barra da caixa.
-    expect('header' in desktop && desktop.header()).toBeNull();
-    expect(windowOptions(true, { headerShown: false })).toMatchObject({ headerShown: false, presentation: 'transparentModal' });
+    expect(desktop.header?.()).toBeNull();
+    // A que desenha o próprio alto diz o nome da janela: no computador ele vira o título (o nome da caixa para o leitor
+    // de tela), e no celular nada muda.
+    expect(windowOptions(true, { headerShown: false }, 'Nuke')).toMatchObject({ headerShown: false, title: 'Nuke', presentation: 'transparentModal' });
+    expect(windowOptions(false, { headerShown: false }, 'Nuke')).toEqual({ headerShown: false, presentation: 'modal' });
   });
 
   it('no celular e no tablet, nada em volta da tela', async () => {
@@ -426,13 +438,88 @@ describe('as telas em janela (no celular sobem por cima das outras)', () => {
     expect(where().pathname).toBe('/casa');
   });
 
-  it('a tela que desenha o próprio alto (o Nuke) ganha a caixa, sem a barra do título', async () => {
+  it('a tela que desenha o próprio alto (o Nuke) ganha a caixa, sem a barra do título, e com o nome dela', async () => {
     await web(true);
     await open('/', WINDOWS);
     await act(async () => router.push('/nuke'));
     await settle();
-    expect(box().props.role).toBe('dialog');
+    expect(box().props).toMatchObject({ role: 'dialog', 'aria-modal': true, 'aria-label': 'Nuke' });
     expect(closeButton()).toBeUndefined();
+  });
+
+  describe('no navegador: o Esc, o foco do teclado dentro da caixa e o foco de volta ao fechar', () => {
+    /** O que tinha o foco quando a janela abriu (o botão "Nova tarefa" da tela de trás). */
+    const opener = { name: 'Nova tarefa' };
+    beforeEach(() => {
+      (global as { document?: unknown }).document = { activeElement: opener, body: {} };
+      jest.mocked(trapWindowFocus).mockClear();
+      jest.mocked(restoreFocus).mockClear();
+      mockUntrap.mockClear();
+    });
+    afterEach(async () => {
+      // A tela sai antes da página de mentira.
+      await act(async () => renderer?.unmount());
+      renderer = undefined;
+      delete (global as { document?: unknown }).document;
+    });
+
+    it('no computador, a caixa aberta liga o teclado; o Esc fecha a janela, e o foco volta para quem a abriu', async () => {
+      await web(true);
+      await open('/', WINDOWS);
+      expect(trapWindowFocus).not.toHaveBeenCalled();
+      await openTask();
+      expect(trapWindowFocus).toHaveBeenCalledTimes(1);
+      const [page, node, onEscape] = jest.mocked(trapWindowFocus).mock.calls[0];
+      expect(page).toBe(document);
+      // A caixa de verdade (a que tem o nome e o papel de janela): o View dela, que no navegador é o elemento da página.
+      expect(node).toBeTruthy();
+      expect(node).toBe(box().parent!.instance);
+      await act(async () => onEscape());
+      await settle();
+      expect(where().pathname).toBe('/');
+      expect(stacked()).toEqual(['(tabs)']);
+      expect(mockUntrap).toHaveBeenCalledTimes(1);
+      expect(restoreFocus).toHaveBeenCalledWith(document, opener);
+    });
+
+    it('o "Fechar" também devolve o foco a quem abriu', async () => {
+      await web(true);
+      await open('/', WINDOWS);
+      await openTask();
+      await act(async () => closeButton().props.onPress());
+      await settle();
+      expect(where().pathname).toBe('/');
+      expect(restoreFocus).toHaveBeenCalledWith(document, opener);
+    });
+
+    it('uma janela por cima de outra: só a de cima responde ao teclado', async () => {
+      await web(true);
+      await open('/', WINDOWS);
+      await openTask();
+      await act(async () => router.push('/nuke'));
+      await settle();
+      // A da tarefa desligou o teclado dela quando a do Nuke abriu por cima, e a do Nuke ligou o dela.
+      expect(trapWindowFocus).toHaveBeenCalledTimes(2);
+      expect(mockUntrap).toHaveBeenCalledTimes(1);
+      const onEscape = jest.mocked(trapWindowFocus).mock.calls[1][2];
+      await act(async () => onEscape());
+      await settle();
+      expect(stacked()).toEqual(['(tabs)', 'tarefa/[id]']);
+      // De volta à da tarefa: o teclado é dela de novo, e o foco voltou para quem abriu o Nuke.
+      expect(trapWindowFocus).toHaveBeenCalledTimes(3);
+      expect(restoreFocus).toHaveBeenCalledTimes(1);
+    });
+
+    it('na janela estreita, a página de sempre: nada de teclado a mais, nem foco devolvido', async () => {
+      await web(false);
+      await open('/', WINDOWS);
+      await openTask();
+      await act(async () => router.back());
+      await settle();
+      expect(where().pathname).toBe('/');
+      expect(trapWindowFocus).not.toHaveBeenCalled();
+      expect(restoreFocus).not.toHaveBeenCalled();
+    });
   });
 
   it('as outras telas, no computador, ficam como eram', async () => {
@@ -468,5 +555,10 @@ describe('as telas em janela (no celular sobem por cima das outras)', () => {
       'gasto/[id]',
       'consultor/conversa',
     ]);
+    // E toda janela tem nome (o que o leitor de tela fala ao abrir a caixa): o título, ou, na que desenha o próprio
+    // alto, o nome que vai como terceiro argumento.
+    const calls = [...layout.matchAll(/options=\{windowOptions\(desktop, (\{[^}]*\})(, '[^']+')?\)\} \/>/g)];
+    expect(calls).toHaveLength(windows.length);
+    for (const [, options, name] of calls) expect(/title: '[^']+'/.test(options) || Boolean(name)).toBe(true);
   });
 });

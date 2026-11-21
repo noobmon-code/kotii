@@ -141,7 +141,7 @@ import { handConfirmedReceipt } from '@/lib/finishPurchase';
 import { goBackOr } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import type { ReceiptItem } from '@/lib/types';
-import { Columns, useDesktop } from '@/ui/desktop';
+import { Actions, Columns, useDesktop } from '@/ui/desktop';
 import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
 import { SheetModal } from '@/ui/SheetModal';
@@ -199,7 +199,7 @@ const confirmGone = (error: unknown) =>
 
 export default function ReceiptScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  // No computador (ui/desktop), a revisão em duas colunas: os itens de um lado, o resto e as ações do outro.
+  // No computador (ui/desktop), a revisão em duas colunas: os itens de um lado, o resto do outro, e as ações no rodapé.
   const desktop = useDesktop();
   const receiptQuery = useReceipt(id);
   const receiptReadAt = useReceiptReadAt(id);
@@ -1064,19 +1064,31 @@ export default function ReceiptScreen() {
   );
 
   return (
-    // No celular, "Confirmar nota" fica no rodapé fixo; no computador, ele vai para a coluna do lado, que fica parada
-    // enquanto os itens rolam (ui/desktop).
-    <Screen edges={[]} wide footer={desktop ? undefined : (confirmButton ?? undefined)}>
+    // "Confirmar nota" fica no rodapé fixo, sempre à vista. No computador, o rodapé leva também o "Descartar nota"
+    // (no celular, ele vem no fim, depois dos itens), os dois encostados à direita, embaixo da coluna do lado: a ordem
+    // do teclado e do leitor de tela continua a do celular, os itens antes das duas ações.
+    <Screen
+      edges={[]}
+      wide
+      footer={
+        desktop ? (
+          <Actions end>
+            {removeButton}
+            {confirmButton}
+          </Actions>
+        ) : (
+          (confirmButton ?? undefined)
+        )
+      }>
       <Stack.Screen options={{ title: isDraft ? 'Revisar nota' : 'Nota fiscal' }} />
 
       {receiptQuery.isError ? <StaleNotice onRetry={() => receiptQuery.refetch()} /> : null}
 
       {/* No computador, os itens ficam na coluna principal, e o que vem antes deles no celular (o cabeçalho com o
-          mercado, a data e o total, os avisos, a lista de compras), com as ações da nota no fim, na do lado, que vem
-          antes na ordem do teclado e do leitor de tela, como no celular. */}
+          mercado, a data e o total, os avisos, a lista de compras) na do lado, que vem antes na ordem do teclado e do
+          leitor de tela, como no celular. As duas rolam com a tela: nada fica escondido numa rolagem de dentro. */}
       <Columns
         sideFirst
-        stickySide
         sideWidth={DESKTOP_PANEL_SIDE_WIDTH}
         side={
           <>
@@ -1260,9 +1272,6 @@ export default function ReceiptScreen() {
                 onChoose={(listItemId, choice) => setListChoices((prev) => ({ ...prev, [listItemId]: choice }))}
               />
             ) : null}
-
-            {desktop ? confirmButton : null}
-            {desktop ? removeButton : null}
           </>
         }>
         {isDraft ? (
