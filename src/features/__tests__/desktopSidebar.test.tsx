@@ -8,12 +8,14 @@ import { Dimensions, Platform, StyleSheet, Text, useWindowDimensions, View } fro
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import TabsLayout from '@/app/(tabs)/_layout';
-import { APP_AREAS, DESKTOP_WINDOW_WIDTH, windowHeight } from '@/domain/desktop';
+import { APP_AREAS, DESKTOP_WINDOW_WIDTH, SIDEBAR_SPACE, windowHeight } from '@/domain/desktop';
 import { routeWindowLayout, WINDOW_CLOSE_LABEL, windowOptions } from '@/features/desktop/RouteWindow';
-import { restoreFocus, trapWindowFocus } from '@/features/desktop/windowFocus';
+import { OTHER_WINDOW, restoreFocus, trapWindowFocus } from '@/features/desktop/windowFocus';
 import { NUKE_LABEL, Sidebar } from '@/features/desktop/Sidebar';
 import { NukeButton } from '@/features/nuke/NukeButton';
-import { useDesktop } from '@/ui/desktop';
+import { SidebarContext, useDesktop } from '@/ui/desktop';
+import { handMenuOpener } from '@/ui/focus';
+import { space } from '@/ui/theme';
 import { TabBar } from '@/ui/TabBar';
 
 // A barra lateral do computador num roteador de verdade (o Expo Router, com as rotas montadas na memória), ao lado
@@ -314,6 +316,12 @@ describe('as telas em janela (no celular sobem por cima das outras)', () => {
     return <Text>tarefa</Text>;
   }
 
+  /** A barra lateral está na tela (o layout da raiz diz, pelo SidebarContext). */
+  let sidebarShown = false;
+  afterEach(() => {
+    sidebarShown = false;
+  });
+
   // Como o layout da raiz: as opções das telas em janela vêm de `windowOptions`, e a caixa, do `screenLayout`.
   const WINDOWS = {
     ...ROUTES,
@@ -322,12 +330,14 @@ describe('as telas em janela (no celular sobem por cima das outras)', () => {
       // Redesenha quando a janela muda de tamanho (o useDesktop de verdade a acompanha).
       useWindowDimensions();
       return (
-        <Stack screenLayout={routeWindowLayout}>
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-          <Stack.Screen name="precos" />
-          <Stack.Screen name="tarefa/[id]" options={windowOptions(desktop, { title: 'Tarefa' })} />
-          <Stack.Screen name="nuke" options={windowOptions(desktop, { headerShown: false }, 'Nuke')} />
-        </Stack>
+        <SidebarContext.Provider value={sidebarShown}>
+          <Stack screenLayout={routeWindowLayout}>
+            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+            <Stack.Screen name="precos" />
+            <Stack.Screen name="tarefa/[id]" options={windowOptions(desktop, { title: 'Tarefa' })} />
+            <Stack.Screen name="nuke" options={windowOptions(desktop, { headerShown: false }, 'Nuke')} />
+          </Stack>
+        </SidebarContext.Provider>
       );
     },
     'tarefa/[id]': Task,
@@ -343,11 +353,24 @@ describe('as telas em janela (no celular sobem por cima das outras)', () => {
       (node) => typeof node.type === 'string' && node.props.accessibilityRole === 'header' && node.props.children === 'Tarefa',
     );
 
-  /** A tela de onde a pessoa veio (a Hoje, nas abas) está desenhada: a caixa da pilha dela não está escondida. */
+  /** O texto de uma das telas da pilha ("hoje", "tarefa", "precos"). */
+  const screenText = (label: string) =>
+    renderer!.root.findAll((entry) => (entry.type as unknown) === 'Text' && entry.props.children === label)[0];
+  /**
+   * A tela de onde a pessoa veio (a Hoje, nas abas) está desenhada: a caixa da pilha dela não está escondida (a caixa
+   * que não desenha nada, `display: contents`, em volta de cada tela no navegador, não conta).
+   */
   const behindShown = () => {
-    let node: ReactTestInstance | null = renderer!.root.findAll((entry) => (entry.type as unknown) === 'Text' && entry.props.children === 'hoje')[0];
-    while (node && !((node.type as unknown) === 'View' && flat(node).display !== undefined)) node = node.parent;
+    let node: ReactTestInstance | null = screenText('hoje');
+    while (node && !((node.type as unknown) === 'View' && flat(node).display !== undefined && flat(node).display !== 'contents')) node = node.parent;
     return flat(node!).display !== 'none';
+  };
+  /** A tela com esse texto está fora do teclado e do leitor de tela (`inert`, numa das caixas em volta dela). */
+  const inertAround = (label: string) => {
+    for (let node: ReactTestInstance | null = screenText(label); node; node = node.parent) {
+      if ((node.type as unknown) === 'View' && node.props.inert === true) return true;
+    }
+    return false;
   };
 
   async function web(desktop: boolean, width = desktop ? 1440 : 800) {
@@ -378,6 +401,8 @@ describe('as telas em janela (no celular sobem por cima das outras)', () => {
     await openTask();
     expect(where().pathname).toBe('/tarefa/nova');
     expect(box()).toBeUndefined();
+    // Nem a caixa que tira do teclado a tela coberta (só do navegador).
+    expect(renderer!.root.findAll((node) => 'inert' in node.props)).toHaveLength(0);
   });
 
   it('na janela estreita do navegador, a página de sempre: as caixas só ocupam a tela, sem título a mais nem "Fechar"', async () => {
@@ -429,13 +454,58 @@ describe('as telas em janela (no celular sobem por cima das outras)', () => {
     expect(mounts).toBe(1);
   });
 
-  it('aberta direto pelo endereço (nada embaixo), o "Fechar" leva à aba da área da tela', async () => {
+  it('aberta direto pelo endereço (nada embaixo), o "Fechar" leva à parte da aba onde fica o que ela mostra', async () => {
     await web(true);
     await open('/tarefa/nova', WINDOWS);
     expect(stacked()).toEqual(['tarefa/[id]']);
     await act(async () => closeButton().props.onPress());
     await settle();
-    expect(where().pathname).toBe('/casa');
+    // As tarefas, em Casa → Dia a dia, e não a primeira parte da aba que a abertura escolhesse sozinha.
+    expect(where()).toEqual({ pathname: '/casa', params: { aba: 'dia', dia: 'tarefas' } });
+  });
+
+  it('uma página aberta por cima da janela: as telas de baixo, que continuam desenhadas atrás dela, saem do teclado', async () => {
+    await web(true);
+    await open('/', WINDOWS);
+    await openTask();
+    // Com a janela por cima, a tela de trás fica como está: o teclado é da caixa, que segura o foco dentro dela.
+    expect(inertAround('hoje')).toBe(false);
+    expect(inertAround('tarefa')).toBe(false);
+    await act(async () => router.push('/precos'));
+    await settle();
+    expect(stacked()).toEqual(['(tabs)', 'tarefa/[id]', 'precos']);
+    // O Stack do navegador ainda desenha a Hoje (a de baixo de uma `transparentModal`), escondida atrás da página: o
+    // `aria-hidden` dela não a tira do Tab, o `inert` tira.
+    expect(behindShown()).toBe(true);
+    expect(inertAround('hoje')).toBe(true);
+    expect(inertAround('tarefa')).toBe(true);
+    expect(inertAround('precos')).toBe(false);
+    await act(async () => router.back());
+    await settle();
+    expect(stacked()).toEqual(['(tabs)', 'tarefa/[id]']);
+    expect(inertAround('hoje')).toBe(false);
+    expect(inertAround('tarefa')).toBe(false);
+    await act(async () => router.back());
+    await settle();
+    expect(inertAround('hoje')).toBe(false);
+  });
+
+  it('com a barra lateral na tela, a caixa fica no meio do lugar ao lado dela, sem cobri-la', async () => {
+    await web(true, 1024);
+    await open('/', WINDOWS);
+    await openTask();
+    const alone = flat(box().parent!.parent!);
+    expect(alone.paddingLeft).toBeUndefined();
+    await act(async () => renderer!.unmount());
+    sidebarShown = true;
+    await open('/', WINDOWS);
+    await openTask();
+    const dim = flat(box().parent!.parent!);
+    // O fundo escurecido continua cobrindo a janela inteira (a barra também, escurecida), mas a margem da esquerda pula
+    // a barra: a caixa de 720 começa depois dela, também na janela mais estreita do computador.
+    expect(dim).toMatchObject({ position: 'fixed', left: 0, paddingLeft: SIDEBAR_SPACE + space.xl });
+    const room = 1024 - (SIDEBAR_SPACE + space.xl) - space.xl;
+    expect(SIDEBAR_SPACE + space.xl + (room - Math.min(DESKTOP_WINDOW_WIDTH, room)) / 2).toBeGreaterThanOrEqual(SIDEBAR_SPACE);
   });
 
   it('a tela que desenha o próprio alto (o Nuke) ganha a caixa, sem a barra do título, e com o nome dela', async () => {
@@ -480,6 +550,42 @@ describe('as telas em janela (no celular sobem por cima das outras)', () => {
       expect(stacked()).toEqual(['(tabs)']);
       expect(mockUntrap).toHaveBeenCalledTimes(1);
       expect(restoreFocus).toHaveBeenCalledWith(document, opener);
+    });
+
+    it('aberta pela opção de um menu de ações, o foco volta para quem abriu o menu, e não para a opção, que sai com ele', async () => {
+      // O "Adicionar" abriu o menu; a opção "Tarefa", dentro do menu, tinha o foco quando a janela abriu.
+      const adicionar = { name: 'Adicionar' };
+      const option = { name: 'Tarefa' };
+      // A caixa do menu na página: a opção está dentro dela, e a caixa inteira do menu (a que diz `aria-modal`) é ela.
+      const menuBox = {
+        name: 'menu',
+        contains: (node: unknown) => node === option,
+        closest: (selector: string) => (selector === OTHER_WINDOW ? menuBox : null),
+      };
+      const page = {
+        activeElement: option as { name: string },
+        body: {},
+        contains: (node: unknown) => node === adicionar,
+      };
+      (global as { document?: unknown }).document = page;
+      handMenuOpener({ menu: menuBox, opener: adicionar });
+      try {
+        await web(true);
+        await open('/', WINDOWS);
+        await openTask();
+        await act(async () => closeButton().props.onPress());
+        await settle();
+        expect(restoreFocus).toHaveBeenCalledWith(page, adicionar);
+        // Aberta de outro jeito (o foco fora do menu de antes, que já fechou): quem tinha o foco, como sempre.
+        jest.mocked(restoreFocus).mockClear();
+        page.activeElement = { name: 'Nova tarefa' };
+        await openTask();
+        await act(async () => closeButton().props.onPress());
+        await settle();
+        expect(restoreFocus).toHaveBeenCalledWith(page, page.activeElement);
+      } finally {
+        handMenuOpener(null);
+      }
     });
 
     it('o "Fechar" também devolve o foco a quem abriu', async () => {

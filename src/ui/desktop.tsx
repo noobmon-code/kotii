@@ -27,6 +27,18 @@ export function useAreaWidth(): number {
 }
 
 /**
+ * O que o fundo escurecido das caixas no meio da janela (as janelas de formulário e de foto, as telas em janela, o
+ * menu de ações) acrescenta quando a barra lateral está na tela: a margem da esquerda pula a barra, e a caixa fica no
+ * meio do lugar ao lado dela (o mesmo meio da coluna das telas), sem cobrir a barra, que continua à vista, escurecida.
+ * Fora do computador, ou sem a barra (fora de uma casa), nada: a caixa fica no meio da janela.
+ */
+export function useBoxArea(): ViewStyle | null {
+  const desktop = useDesktop();
+  const sidebar = useContext(SidebarContext);
+  return desktop && sidebar ? { paddingLeft: SIDEBAR_SPACE + space.xl } : null;
+}
+
+/**
  * Duas colunas no computador: a principal (`children`), que fica com a sobra, e a do lado (`side`), de largura
  * fixa, à direita. No celular os dois ficam soltos na tela, um embaixo do outro, como eram antes das colunas: a do
  * lado depois da principal, ou antes dela com `sideFirst` (as ações do alto de uma parte: no computador elas ficam
@@ -36,8 +48,10 @@ export function useAreaWidth(): number {
  * No navegador as caixas das colunas existem em qualquer largura, na mesma ordem e com as mesmas chaves: na janela
  * estreita elas não desenham caixa nenhuma (`display: contents`: o que está dentro fica solto na tela, como no
  * celular, com os mesmos pixels), e a janela que cruza a largura do computador só troca o estilo delas, sem montar de
- * novo o que está dentro (o peso digitado num item da nota, o dia escolhido na agenda). No celular e no tablet, sem
- * caixa nenhuma, como sempre.
+ * novo o que está dentro (o peso digitado num item da nota). Só vale para o que fica nas mesmas colunas nas duas
+ * larguras: a parte que desenha outra coisa em cada uma (Casa → Dia a dia e Finanças, os dois painéis lado a lado no
+ * computador e o seletor com um deles no celular) monta de novo o que mostra ao cruzar, e o dia escolhido na agenda
+ * volta para hoje. No celular e no tablet, sem caixa nenhuma, como sempre.
  */
 export function Columns({
   children,

@@ -1,8 +1,9 @@
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams, type Href } from 'expo-router';
 import { useState } from 'react';
 
 import { usePendingReceipts } from '@/data/pendingReceipts';
 import { captchaStateNote } from '@/domain/captchaStates';
+import { windowFallback } from '@/domain/desktop';
 import { parseNfceQr } from '@/domain/nfce';
 import { pendingReceiptCnpj, pendingReceiptSubtitle } from '@/domain/pendingReceipts';
 import { PendingReceiptCard } from '@/features/PendingReceiptCard';
@@ -29,7 +30,9 @@ export default function PendingReceiptScreen() {
   // Sem o link do QR (a chave digitada), não há o que tentar.
   const retryUrl = direct && entry?.url && parseNfceQr(entry.url) ? entry.url : null;
 
-  const close = () => (router.canGoBack() ? router.back() : router.replace({ pathname: '/compras', params: { aba: 'notas' } }));
+  // Sem tela para onde voltar, Compras → Notas, onde ficam as notas pendentes: o mesmo lugar do "Fechar" da caixa
+  // desta tela no computador (windowFallback).
+  const close = () => (router.canGoBack() ? router.back() : router.replace(windowFallback('nota/pendente') as Href));
 
   return (
     <Screen edges={[]}>

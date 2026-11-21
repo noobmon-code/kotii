@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
-import { OTHER_WINDOW, restoreFocus, tabStops, trapWindowFocus, WINDOW_TEST_ID, wrapFocus } from '@/features/desktop/windowFocus';
+import { OTHER_WINDOW, restoreFocus, tabStops, trapWindowFocus, WINDOW_TEST_ID, windowOpener, wrapFocus } from '@/features/desktop/windowFocus';
 
 // O teclado numa tela em janela do computador (RouteWindow), sobre uma página de mentira: o Esc, a volta do Tab e do
 // Shift+Tab dentro da caixa, o foco que escapa e volta, e o foco de volta para quem abriu. O Jest não tem navegador:
@@ -252,5 +252,42 @@ describe('ao fechar, o foco volta para quem abriu a janela', () => {
     restoreFocus(doc, null);
     restoreFocus(doc, el(new FakeElement('fora da página')));
     expect(focused()).toBe('Salvar');
+  });
+});
+
+describe('quem abriu a janela (para onde o foco volta ao fechar)', () => {
+  /** O menu de ações aberto por cima da tela (o do react-native-web diz `aria-modal`), com as opções dentro. */
+  function menuOver() {
+    const modal = new FakeElement('menu', page.body);
+    modal.modal = true;
+    const sheet = new FakeElement('caixa do menu', modal);
+    const option = new FakeElement('Remédio', sheet);
+    return { modal, sheet, option };
+  }
+
+  it('quem tinha o foco: o botão que abriu a janela', () => {
+    page.activeElement = behind;
+    expect(windowOpener(doc, null)).toBe(behind);
+  });
+
+  it('aberta pela opção de um menu de ações: quem abriu o menu, que a opção deixou dito, e não a opção, que sai com o menu', () => {
+    const { sheet, option } = menuOver();
+    page.activeElement = option;
+    expect(windowOpener(doc, { menu: sheet, opener: behind })).toBe(behind);
+    // O foco em outro lugar do menu (o que o react-native-web escolhe ao abrir) também é dele.
+    const { modal } = menuOver();
+    page.activeElement = modal;
+    expect(windowOpener(doc, { menu: modal.children[0], opener: behind })).toBe(behind);
+  });
+
+  it('o menu de antes não conta: o foco já não está nele, ou quem o abriu saiu da página, ou era o corpo da página', () => {
+    const { sheet, option } = menuOver();
+    page.activeElement = sidebar;
+    expect(windowOpener(doc, { menu: sheet, opener: behind })).toBe(sidebar);
+    page.activeElement = option;
+    const gone = new FakeElement('fora da página');
+    expect(windowOpener(doc, { menu: sheet, opener: gone })).toBe(option);
+    expect(windowOpener(doc, { menu: sheet, opener: page.body })).toBe(option);
+    expect(windowOpener(doc, { menu: null, opener: behind })).toBe(option);
   });
 });

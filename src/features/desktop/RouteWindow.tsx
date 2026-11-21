@@ -9,18 +9,24 @@
 // barra da caixa. A caixa é desenhada em volta da tela pelo `screenLayout` do Stack (`routeWindowLayout`), sempre com
 // as mesmas caixas no navegador, só com outro estilo: a janela que cruza a largura do computador com uma dessas
 // telas aberta não a monta de novo (e não perde o que foi digitado).
+//
+// A tela de baixo de uma `transparentModal` fica desenhada também quando outra tela, de página inteira, é aberta por
+// cima da janela (o "Abrir os avisos" do remédio): escondida atrás dessa página, ela não pode ficar ao alcance do Tab.
+// Por isso, no navegador, toda tela que não é a de cima fica `inert` (fora do teclado e do leitor de tela), menos
+// debaixo de uma janela aberta, que segura o foco dentro dela (windowFocus) e devolve o foco a quem a abriu.
 
 import { router, type Href } from 'expo-router';
 import { useIsFocused } from 'expo-router/react-navigation';
-import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
 import { Platform, StyleSheet, useWindowDimensions, View, type ViewStyle } from 'react-native';
 
 import { DESKTOP_WINDOW_WIDTH, windowFallback, windowHeight } from '@/domain/desktop';
-import { useDesktop } from '@/ui/desktop';
+import { useBoxArea, useDesktop } from '@/ui/desktop';
+import { menuOpener } from '@/ui/focus';
 import { IconButton, Row, Text } from '@/ui/primitives';
 import { radius, shadows, space, useColors } from '@/ui/theme';
 
-import { restoreFocus, trapWindowFocus, WINDOW_TEST_ID } from './windowFocus';
+import { restoreFocus, trapWindowFocus, WINDOW_TEST_ID, windowOpener } from './windowFocus';
 
 /** O que a tela diz de si no Stack (as opções dela) e que a caixa usa. */
 interface WindowScreenOptions {
@@ -31,7 +37,7 @@ interface WindowScreenOptions {
 
 /** O que o `screenLayout` do Stack dá de cada tela, só com o que a caixa lê. */
 interface WindowLayoutArgs {
-  route: { name: string };
+  route: { name: string; params?: object };
   navigation: { canGoBack: () => boolean; goBack: () => void };
   options: WindowScreenOptions;
   children: ReactElement;
@@ -74,20 +80,69 @@ function isWindow(options: WindowScreenOptions): boolean {
   return options.presentation === 'modal' || options.presentation === 'transparentModal';
 }
 
+// Quantas caixas abertas estão por cima de tudo, no computador (uma no máximo: só a de cima conta). Enquanto há uma,
+// as telas de baixo ficam como estão, desenhadas atrás do fundo escurecido, e o teclado é da caixa.
+let windowsOnTop = 0;
+const windowListeners = new Set<() => void>();
+function setWindowOnTop(delta: 1 | -1) {
+  windowsOnTop += delta;
+  windowListeners.forEach((listener) => listener());
+}
+function subscribeWindowOnTop(listener: () => void) {
+  windowListeners.add(listener);
+  return () => windowListeners.delete(listener);
+}
+const readWindowOnTop = () => windowsOnTop > 0;
+
+/** A tela aberta (a de cima da pilha) é uma destas caixas, no computador. */
+function useWindowOnTop(): boolean {
+  return useSyncExternalStore(subscribeWindowOnTop, readWindowOnTop, () => false);
+}
+
 /**
- * O `screenLayout` do Stack da raiz: põe cada tela em janela dentro da caixa (RouteWindow). As outras telas, e todas
- * no celular e no tablet, ficam como eram, sem nada em volta.
+ * Esta tela fica fora do teclado e do leitor de tela (no navegador, `inert`): ela não é a de cima e quem está por cima
+ * é uma página, e não uma caixa. Debaixo de uma página ela pode continuar desenhada (a de baixo de uma janela, com
+ * outra página aberta por cima da janela): só o `aria-hidden` que o Stack põe não a tira do Tab.
+ */
+function useCovered(): boolean {
+  const focused = useIsFocused();
+  const windowOnTop = useWindowOnTop();
+  return !focused && !windowOnTop;
+}
+
+/** O `inert` do navegador (o react-native-web o passa adiante; não está nos tipos do React Native). */
+const inert = (covered: boolean) => ({ inert: covered }) as object;
+
+/**
+ * Uma tela que não é janela, no navegador: uma caixa que não desenha nada (`display: contents`, a tela fica com os
+ * mesmos pixels) e que a deixa `inert` enquanto está coberta (useCovered).
+ */
+function ScreenLayer({ children }: { children: ReactNode }) {
+  const covered = useCovered();
+  return (
+    <View style={loose} {...inert(covered)}>
+      {children}
+    </View>
+  );
+}
+
+/**
+ * O `screenLayout` do Stack da raiz: põe cada tela em janela dentro da caixa (RouteWindow), e as outras, no navegador,
+ * numa caixa que não desenha nada e as tira do teclado quando cobertas (ScreenLayer). No celular e no tablet, todas
+ * ficam como eram, sem nada em volta.
  */
 export function routeWindowLayout({ route, navigation, options, children }: WindowLayoutArgs): ReactElement {
-  if (Platform.OS !== 'web' || !isWindow(options)) return children;
+  if (Platform.OS !== 'web') return children;
+  if (!isWindow(options)) return <ScreenLayer>{children}</ScreenLayer>;
   return (
     <RouteWindow
       title={options.title}
       titleBar={options.headerShown !== false}
       onClose={() => {
-        // Sem tela para onde voltar (a página aberta direto pelo endereço), a aba da área da tela.
+        // Sem tela para onde voltar (a página aberta direto pelo endereço, ou recarregada), a parte da aba onde fica o
+        // que a tela mostra: o mesmo lugar para onde as telas que têm o próprio "Voltar" vão (windowFallback).
         if (navigation.canGoBack()) navigation.goBack();
-        else router.replace(windowFallback(route.name) as Href);
+        else router.replace(windowFallback(route.name, route.params as Record<string, unknown> | undefined) as Href);
       }}>
       {children}
     </RouteWindow>
@@ -114,6 +169,9 @@ export function RouteWindow({
   const c = useColors();
   const desktop = useDesktop();
   const focused = useIsFocused();
+  const covered = useCovered();
+  // Com a barra lateral na tela, a caixa fica no meio do lugar ao lado dela, sem cobri-la (ui/desktop).
+  const area = useBoxArea();
   const { height } = useWindowDimensions();
   const box = useRef<View>(null);
   // O fechar de agora, para a tecla não pegar um de antes.
@@ -123,8 +181,8 @@ export function RouteWindow({
   });
 
   // Quem tinha o foco quando a janela abriu (lido no primeiro desenho, antes de um campo com foco automático tomá-lo):
-  // ao fechar, ele volta para lá.
-  const [opener] = useState(() => (typeof document === 'undefined' ? null : document.activeElement));
+  // ao fechar, ele volta para lá. Aberta pela opção de um menu de ações, é quem abriu o menu (windowFocus).
+  const [opener] = useState(() => (typeof document === 'undefined' ? null : windowOpener(document, menuOpener())));
   const live = useRef({ desktop });
   useEffect(() => {
     live.current.desktop = desktop;
@@ -136,6 +194,15 @@ export function RouteWindow({
       if (state.desktop && typeof document !== 'undefined') restoreFocus(document, opener);
     };
   }, [opener]);
+
+  // Aberta no computador e por cima de tudo: as telas de baixo ficam como estão, atrás do fundo escurecido (sem o
+  // `inert` das telas cobertas). No desenho, antes de a tela aparecer: a de baixo nunca chega a ficar fora do teclado
+  // na volta para a janela.
+  useLayoutEffect(() => {
+    if (!desktop || !focused) return;
+    setWindowOnTop(1);
+    return () => setWindowOnTop(-1);
+  }, [desktop, focused]);
 
   // Como as janelas de formulário: o Esc fecha, e o foco do teclado fica dentro da caixa (não vai para a tela de trás
   // nem para a barra lateral, escurecidas; o Tab e o Shift+Tab dão a volta nela). Só a caixa da tela aberta (uma em
@@ -149,7 +216,7 @@ export function RouteWindow({
   }, [desktop, focused]);
 
   return (
-    <View style={desktop ? [dim, styles.dim] : styles.flex}>
+    <View style={desktop ? [dim, styles.dim, area] : styles.flex} {...inert(covered)}>
       <View
         ref={box}
         testID={WINDOW_TEST_ID}
@@ -183,6 +250,9 @@ export function RouteWindow({
 // árvore) não está nos tipos do React Native, e o react-native-web o passa para o CSS. Acima do cabeçalho da tela de
 // trás (zIndex 1) e abaixo dos menus e formulários do react-native-web (zIndex 9999), que abrem por cima da caixa.
 const dim = { position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, zIndex: 100 } as unknown as ViewStyle;
+
+/** Uma caixa que não desenha nada (só do navegador): a tela fica solta no lugar dela, com os mesmos pixels. */
+const loose: ViewStyle = { display: 'contents' };
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },

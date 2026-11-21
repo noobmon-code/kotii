@@ -82,14 +82,59 @@ export function windowHeight(windowHeight: number): number {
   return Math.min(DESKTOP_WINDOW_HEIGHT, sheetHeights(windowHeight).max);
 }
 
+/** Um endereço do app, como o roteador o recebe: o caminho e os parâmetros (a parte da aba). */
+export interface AppAddress {
+  pathname: string;
+  params?: Record<string, string>;
+}
+
 /**
- * Para onde vai o "Fechar" de uma dessas caixas quando não há tela para onde voltar (a página aberta direto pelo
- * endereço, ou recarregada): a aba da área da tela (a tarefa é da Casa), ou a Hoje para a que não é de nenhuma (o
- * Nuke). `routeName` é o nome da rota no Stack ("tarefa/[id]").
+ * Para onde vai cada tela em janela quando é fechada sem ter para onde voltar (a página aberta direto pelo endereço,
+ * ou recarregada): a parte da aba onde fica o que ela mostra, e não só a aba (que abriria na primeira parte). As duas
+ * da nota fecham assim também pelo próprio "Voltar" (nota/qrcode, nota/pendente: as notas pendentes ficam em Compras →
+ * Notas). Uma tela que não está aqui vai para a aba da área dela (SCREEN_AREAS).
  */
-export function windowFallback(routeName: string): string {
+const WINDOW_FALLBACKS: Record<string, AppAddress> = {
+  'nota/qrcode': { pathname: '/compras', params: { aba: 'notas' } },
+  'nota/pendente': { pathname: '/compras', params: { aba: 'notas' } },
+  'despensa/[id]': { pathname: '/compras', params: { aba: 'despensa' } },
+  'reposicao/[id]': { pathname: '/compras', params: { aba: 'despensa' } },
+  'tarefa/[id]': { pathname: '/casa', params: { aba: 'dia', dia: 'tarefas' } },
+  'compromisso/[id]': { pathname: '/casa', params: { aba: 'dia', dia: 'agenda' } },
+  // O serviço vai para a lista dos prestadores (para o prestador ou o aparelho de onde veio, quando o endereço diz).
+  'servico/[id]': { pathname: '/prestadores' },
+  'remedio/[id]': { pathname: '/saude', params: { aba: 'remedios' } },
+  'consulta/[id]': { pathname: '/saude', params: { aba: 'cuidados' } },
+  'vacina/[id]': { pathname: '/saude', params: { aba: 'cuidados' } },
+  // A ficha da pessoa ou do pet fica em Saúde → Cuidados.
+  'pessoa/[id]': { pathname: '/saude', params: { aba: 'cuidados' } },
+  orcamento: { pathname: '/casa', params: { aba: 'financas', financas: 'resumo' } },
+  'conta/[id]': { pathname: '/casa', params: { aba: 'financas', financas: 'contas' } },
+  'gasto/[id]': { pathname: '/casa', params: { aba: 'financas', financas: 'resumo' } },
+  'consultor/conversa': { pathname: '/consultor' },
+};
+
+/**
+ * Para onde vai o "Fechar" (e o Esc) de uma dessas caixas quando não há tela para onde voltar: o lugar da tela em
+ * WINDOW_FALLBACKS, a aba da área dela, ou a Hoje para a que não é de nenhuma (o Nuke). `routeName` é o nome da rota
+ * no Stack ("tarefa/[id]"); `params`, os do endereço dela (o serviço novo aberto de um prestador, ou de um aparelho,
+ * diz de qual).
+ */
+export function windowFallback(routeName: string, params?: Readonly<Record<string, unknown>>): AppAddress {
+  if (routeName === 'servico/[id]') {
+    const from = (key: string) => {
+      const value = params?.[key];
+      return typeof value === 'string' && value && value !== 'novo' ? value : null;
+    };
+    const provider = from('prestador');
+    if (provider) return { pathname: '/prestador/[id]', params: { id: provider } };
+    const equipment = from('aparelho');
+    if (equipment) return { pathname: '/aparelho/[id]', params: { id: equipment } };
+  }
+  const own = WINDOW_FALLBACKS[routeName];
+  if (own) return { pathname: own.pathname, ...(own.params ? { params: { ...own.params } } : {}) };
   const area = SCREEN_AREAS[routeName.split('/')[0]];
-  return APP_AREAS.find((entry) => entry.key === area)?.href ?? '/';
+  return { pathname: APP_AREAS.find((entry) => entry.key === area)?.href ?? '/' };
 }
 
 /**

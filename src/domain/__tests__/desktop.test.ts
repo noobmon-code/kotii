@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { readdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 import {
@@ -29,6 +29,7 @@ import {
   windowHeight,
   type NavRoute,
 } from '../desktop';
+import { CASA_TABS, COMPRAS_TABS, DIA_A_DIA, FINANCAS, SAUDE_TABS } from '../tabs';
 
 const APP_DIR = join(__dirname, '..', '..', 'app');
 
@@ -102,14 +103,55 @@ describe('as telas em janela no computador (as que no celular sobem por cima das
     expect(windowHeight(Number.NaN)).toBe(DESKTOP_SHEET_TALL_HEIGHT);
   });
 
-  it('sem tela para onde voltar, o "Fechar" leva à aba da área da tela (ou à Hoje)', () => {
-    expect(windowFallback('tarefa/[id]')).toBe('/casa');
-    expect(windowFallback('nota/qrcode')).toBe('/compras');
-    expect(windowFallback('despensa/[id]')).toBe('/compras');
-    expect(windowFallback('remedio/[id]')).toBe('/saude');
-    expect(windowFallback('consultor/conversa')).toBe('/casa');
-    expect(windowFallback('nuke')).toBe('/');
-    expect(windowFallback('nao-existe')).toBe('/');
+  it('sem tela para onde voltar, o "Fechar" leva à parte da aba onde fica o que a tela mostra (ou à Hoje)', () => {
+    // As notas pendentes ficam em Compras → Notas: o mesmo lugar do "Voltar" das duas telas da nota.
+    expect(windowFallback('nota/qrcode')).toEqual({ pathname: '/compras', params: { aba: 'notas' } });
+    expect(windowFallback('nota/pendente')).toEqual({ pathname: '/compras', params: { aba: 'notas' } });
+    expect(windowFallback('despensa/[id]')).toEqual({ pathname: '/compras', params: { aba: 'despensa' } });
+    expect(windowFallback('reposicao/[id]')).toEqual({ pathname: '/compras', params: { aba: 'despensa' } });
+    expect(windowFallback('tarefa/[id]')).toEqual({ pathname: '/casa', params: { aba: 'dia', dia: 'tarefas' } });
+    expect(windowFallback('compromisso/[id]')).toEqual({ pathname: '/casa', params: { aba: 'dia', dia: 'agenda' } });
+    expect(windowFallback('remedio/[id]')).toEqual({ pathname: '/saude', params: { aba: 'remedios' } });
+    expect(windowFallback('consulta/[id]')).toEqual({ pathname: '/saude', params: { aba: 'cuidados' } });
+    expect(windowFallback('vacina/[id]')).toEqual({ pathname: '/saude', params: { aba: 'cuidados' } });
+    expect(windowFallback('pessoa/[id]')).toEqual({ pathname: '/saude', params: { aba: 'cuidados' } });
+    expect(windowFallback('orcamento')).toEqual({ pathname: '/casa', params: { aba: 'financas', financas: 'resumo' } });
+    expect(windowFallback('conta/[id]')).toEqual({ pathname: '/casa', params: { aba: 'financas', financas: 'contas' } });
+    expect(windowFallback('gasto/[id]')).toEqual({ pathname: '/casa', params: { aba: 'financas', financas: 'resumo' } });
+    expect(windowFallback('consultor/conversa')).toEqual({ pathname: '/consultor' });
+    // O serviço: o prestador ou o aparelho de onde ele foi aberto, quando o endereço diz; senão, a lista dos prestadores.
+    expect(windowFallback('servico/[id]', { id: 'novo', prestador: 'p1' })).toEqual({ pathname: '/prestador/[id]', params: { id: 'p1' } });
+    expect(windowFallback('servico/[id]', { id: 'novo', aparelho: 'a1' })).toEqual({ pathname: '/aparelho/[id]', params: { id: 'a1' } });
+    expect(windowFallback('servico/[id]', { id: 'j1' })).toEqual({ pathname: '/prestadores' });
+    expect(windowFallback('nuke')).toEqual({ pathname: '/' });
+    // Uma tela sem lugar próprio: a aba da área dela; de nenhuma área, a Hoje.
+    expect(windowFallback('lista/[id]/index')).toEqual({ pathname: '/compras' });
+    expect(windowFallback('nao-existe')).toEqual({ pathname: '/' });
+  });
+
+  it('o lugar de cada janela existe: a tela, e a parte da aba', () => {
+    const parts: Record<string, readonly { value: string }[]> = { '/compras': COMPRAS_TABS, '/casa': CASA_TABS, '/saude': SAUDE_TABS };
+    // O arquivo da tela do endereço: uma aba, uma tela, ou a de entrada de uma pasta.
+    const routeFile = (pathname: string) => {
+      const path = pathname.slice(1);
+      const files = [join(APP_DIR, '(tabs)', `${path || 'index'}.tsx`), join(APP_DIR, `${path}.tsx`), join(APP_DIR, path, 'index.tsx')];
+      return files.some((file) => existsSync(file));
+    };
+    const layout = readFileSync(join(APP_DIR, '_layout.tsx'), 'utf8');
+    const windows = [...layout.matchAll(/<Stack\.Screen name="([^"]+)" options=\{windowOptions\(/g)].map((match) => match[1]);
+    expect(windows.length).toBeGreaterThan(10);
+    const addresses = [
+      ...windows.map((name) => windowFallback(name)),
+      windowFallback('servico/[id]', { prestador: 'p1' }),
+      windowFallback('servico/[id]', { aparelho: 'a1' }),
+    ];
+    for (const { pathname } of addresses) expect([pathname, routeFile(pathname)]).toEqual([pathname, true]);
+    for (const name of windows) {
+      const { pathname, params } = windowFallback(name);
+      if (params?.aba) expect(parts[pathname].map((tab) => tab.value)).toContain(params.aba);
+      if (params?.dia) expect(DIA_A_DIA.map((tab) => tab.value)).toContain(params.dia);
+      if (params?.financas) expect(FINANCAS.map((tab) => tab.value)).toContain(params.financas);
+    }
   });
 });
 

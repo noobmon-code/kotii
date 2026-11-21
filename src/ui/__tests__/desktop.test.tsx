@@ -14,6 +14,7 @@ import {
   DESKTOP_SIDE_MAX_SHARE,
   DESKTOP_SIDE_WIDTH,
   DESKTOP_TABS_WIDTH,
+  DESKTOP_WINDOW_WIDTH,
   REFRESH_LABEL,
   SIDEBAR_SPACE,
   sheetHeights,
@@ -21,10 +22,11 @@ import {
 import { PhotoStrip } from '@/features/PhotoStrip';
 import { ActionSheet } from '../ActionSheet';
 import { Backdrop } from '../Backdrop';
-import { Actions, Columns, SidebarContext, useAreaWidth, useDesktop } from '../desktop';
+import { Actions, Columns, SidebarContext, useAreaWidth, useBoxArea, useDesktop } from '../desktop';
+import { handMenuOpener, menuOpener } from '../focus';
 import { Screen, Segmented } from '../primitives';
 import { SheetModal } from '../SheetModal';
-import { MAX_WIDTH, SCREEN_PADDING } from '../theme';
+import { MAX_WIDTH, SCREEN_PADDING, space } from '../theme';
 
 // O arranjo do computador (ui/desktop): só no navegador e na janela larga. No celular, e na janela estreita do
 // navegador, as mesmas peças deixam a tela exatamente como era: uma coluna, na ordem de sempre, sem caixa a mais.
@@ -462,6 +464,85 @@ describe('o menu de ações', () => {
     expect(flat(backdrop(root)).justifyContent).toBe('center');
     const anchored = root.findAll((node) => typeof node.type !== 'string' && flat(node).maxWidth === DESKTOP_DIALOG_WIDTH);
     expect(anchored.length).toBeGreaterThan(0);
+    expect(flat(backdrop(root)).paddingLeft).toBeUndefined();
+  });
+
+  it('com a barra lateral na tela, a caixa fica no meio do lugar ao lado dela', async () => {
+    await browser(1440);
+    const root = await mount(<SidebarContext.Provider value>{sheet}</SidebarContext.Provider>);
+    expect(flat(backdrop(root))).toMatchObject({ justifyContent: 'center', paddingLeft: SIDEBAR_SPACE + space.xl });
+  });
+
+  describe('a opção escolhida diz quem abriu o menu (a tela em janela que ela abre devolve o foco a ele)', () => {
+    const adicionar = { name: 'Adicionar' };
+    const onPress = jest.fn();
+    const menu = (visible: boolean) => <ActionSheet visible={visible} actions={[{ label: 'Remédio', onPress }]} onClose={() => undefined} />;
+    /** O menu, que estava fechado, abre (o toque no "Adicionar"). */
+    const show = () => renderer!.update(menu(true));
+    const option = (root: ReactTestInstance) =>
+      root.findAll((node) => node.props.accessibilityRole === 'button' && typeof node.props.onPress === 'function' && text(node) === 'Remédio')[0];
+    afterEach(() => {
+      delete (global as { document?: unknown }).document;
+      handMenuOpener(null);
+      onPress.mockClear();
+    });
+
+    it('no navegador: quem tinha o foco quando o menu abriu, e não a opção, que tem o foco quando ela roda', async () => {
+      await browser(1440);
+      const page = { activeElement: adicionar as unknown };
+      (global as { document?: unknown }).document = page;
+      const root = await mount(menu(false));
+      await act(async () => show());
+      // Aberto o menu, o foco entra nele (na opção tocada).
+      page.activeElement = { name: 'Remédio' };
+      await act(async () => option(root).props.onPress());
+      expect(onPress).toHaveBeenCalledTimes(1);
+      expect(menuOpener()).toMatchObject({ opener: adicionar });
+      // A caixa do menu vai junto: a janela só usa quem abriu o menu enquanto o foco ainda estiver dentro dela.
+      expect(menuOpener()?.menu).toBeTruthy();
+    });
+
+    it('no celular, nada disso', async () => {
+      const root = await mount(menu(false));
+      await act(async () => show());
+      await act(async () => option(root).props.onPress());
+      expect(menuOpener()).toBeNull();
+    });
+  });
+});
+
+describe('as caixas no meio da janela, com a barra lateral na tela', () => {
+  function Probe() {
+    return <View testID="area" style={useBoxArea()} />;
+  }
+  const area = (root: ReactTestInstance) => root.findAll((node) => node.props.testID === 'area' && (node.type as unknown) === 'View')[0];
+
+  it('no celular, na janela estreita e fora de uma casa (sem a barra), nada a mais', async () => {
+    expect(area(await mount(<SidebarContext.Provider value><Probe /></SidebarContext.Provider>)).props.style).toBeNull();
+    await act(async () => renderer!.unmount());
+    await browser(800);
+    expect(area(await mount(<SidebarContext.Provider value><Probe /></SidebarContext.Provider>)).props.style).toBeNull();
+    await act(async () => renderer!.unmount());
+    await browser(1440);
+    expect(area(await mount(<Probe />)).props.style).toBeNull();
+  });
+
+  it('a margem da esquerda pula a barra: nenhuma caixa a cobre, nem a das fotos na janela mais estreita do computador', async () => {
+    await browser(1440);
+    const inset = (area(await mount(<SidebarContext.Provider value><Probe /></SidebarContext.Provider>)).props.style as { paddingLeft: number })
+      .paddingLeft;
+    expect(inset).toBe(SIDEBAR_SPACE + space.xl);
+    // A caixa fica no meio do que sobra entre a margem da esquerda e a da direita (space.xl), com a largura dela até
+    // onde cabe: o começo dela nunca entra na barra (de SIDEBAR_MARGIN a SIDEBAR_SPACE).
+    for (const width of [1024, 1280, 1366, 1440, 1920]) {
+      for (const box of [DESKTOP_PHOTO_WIDTH, DESKTOP_WINDOW_WIDTH, DESKTOP_SHEET_WIDTH, DESKTOP_DIALOG_WIDTH]) {
+        const room = width - inset - space.xl;
+        const left = inset + (room - Math.min(box, room)) / 2;
+        expect(left).toBeGreaterThanOrEqual(SIDEBAR_SPACE);
+        // E no meio do lugar das telas, ao lado da barra: o mesmo meio da coluna de uma tela.
+        expect(left + Math.min(box, room) / 2).toBeCloseTo(SIDEBAR_SPACE + (width - SIDEBAR_SPACE) / 2);
+      }
+    }
   });
 });
 
@@ -510,6 +591,17 @@ describe('as janelas de formulário', () => {
     expect(box.height).toBeUndefined();
     const dim = root.findAll((node) => flat(node).justifyContent === 'center' && flat(node).alignItems === 'center')[0];
     expect(flat(dim).backgroundColor).toBe('rgba(0,0,0,0.4)');
+    expect(flat(dim).paddingLeft).toBeUndefined();
+  });
+
+  it('com a barra lateral na tela, a caixa (a das fotos também) fica no meio do lugar ao lado dela, sem cobri-la', async () => {
+    await browser(1024);
+    for (const props of [{}, { photo: true }]) {
+      const root = await mount(<SidebarContext.Provider value>{sheet(props)}</SidebarContext.Provider>);
+      const dim = root.findAll((node) => flat(node).justifyContent === 'center' && flat(node).alignItems === 'center')[0];
+      expect(flat(dim)).toMatchObject({ padding: space.xl, paddingLeft: SIDEBAR_SPACE + space.xl });
+      await act(async () => renderer!.unmount());
+    }
   });
 
   it('a que leva uma lista para escolher tem altura fixa: não muda de tamanho a cada letra da busca', async () => {

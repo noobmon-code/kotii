@@ -93,6 +93,23 @@ export function trapWindowFocus(doc: Document, box: HTMLElement, onEscape: () =>
 }
 
 /**
+ * Quem tinha o foco quando a janela abriu (lido no primeiro desenho dela, antes de um campo com foco automático
+ * tomá-lo): ao fechar, o foco volta para ele (restoreFocus). Aberta pela opção de um menu de ações (o "Remédio" do
+ * "Adicionar"), o foco ainda está dentro do menu, que some em seguida com a opção: é quem abriu o menu, que ele
+ * deixou dito ao rodar a opção (`handed`, de ui/focus), que recebe o foco de volta. Um menu de antes, que já fechou,
+ * não conta: o foco não está mais dentro dele.
+ */
+export function windowOpener(doc: Document, handed: { menu: unknown; opener: unknown } | null): Element | null {
+  const active = doc.activeElement;
+  const menu = handed?.menu as Element | null | undefined;
+  const opener = handed?.opener as Element | null | undefined;
+  // A caixa inteira do menu na página (a do react-native-web, que diz `aria-modal`), e não só a parte de dentro.
+  const area = menu?.closest?.(OTHER_WINDOW) ?? menu;
+  if (active && area?.contains?.(active) && opener && opener !== doc.body && doc.contains(opener)) return opener;
+  return active;
+}
+
+/**
  * Ao fechar a caixa, o foco volta para quem a abriu (o "Nova tarefa", a linha do Nuke na barra lateral), como nas
  * janelas de formulário: sem isto, ele cairia no começo da página. Não quando quem abriu já não está na página, ou
  * quando a página foi aberta direto na janela (o foco estava no corpo da página).

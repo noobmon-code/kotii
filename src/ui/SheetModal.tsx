@@ -9,7 +9,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { DESKTOP_PHOTO_WIDTH, DESKTOP_SHEET_WIDTH, sheetHeights } from '@/domain/desktop';
 import { Backdrop } from './Backdrop';
-import { useDesktop } from './desktop';
+import { useBoxArea, useDesktop } from './desktop';
 import { radius, shadows, space, useColors } from './theme';
 
 export function SheetModal({
@@ -40,6 +40,8 @@ export function SheetModal({
 }) {
   const c = useColors();
   const desktop = useDesktop();
+  // Com a barra lateral na tela, a caixa fica no meio do lugar ao lado dela, sem cobri-la (ui/desktop).
+  const area = useBoxArea();
   const { height } = useWindowDimensions();
   const heights = sheetHeights(height);
   // As mesmas caixas nos dois arranjos, só com outro estilo: a janela que cruza a largura do computador com um
@@ -52,7 +54,7 @@ export function SheetModal({
       onRequestClose={onClose}
       onShow={onShow}
       onDismiss={onDismiss}>
-      <SafeAreaView style={desktop ? styles.dim : [styles.flex, { backgroundColor: c.background }]}>
+      <SafeAreaView style={desktop ? [styles.dim, area] : [styles.flex, { backgroundColor: c.background }]}>
         {desktop ? null : <Backdrop />}
         <View
           testID="sheet-frame"

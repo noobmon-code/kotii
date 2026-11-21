@@ -1,5 +1,5 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams, type Href } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 
@@ -7,6 +7,7 @@ import { FunctionError } from '@/data/images';
 import { usePendingReceipts } from '@/data/pendingReceipts';
 import { useImportNfce } from '@/data/receipts';
 import { captchaStateNote, captchaStateStep } from '@/domain/captchaStates';
+import { windowFallback } from '@/domain/desktop';
 import { NFCE_CAPTCHA, NFCE_CAPTCHA_STATE, nfceFailureRoute, parseNfceQr, qrReadStep } from '@/domain/nfce';
 import { PendingReceiptCard } from '@/features/PendingReceiptCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
@@ -141,7 +142,9 @@ export default function NfceQrScreen() {
     else setPhotoOnly({ ...qr, direct });
   }
 
-  const close = () => (router.canGoBack() ? router.back() : router.replace({ pathname: '/compras', params: { aba: 'notas' } }));
+  // Sem tela para onde voltar, Compras → Notas, onde ficam as notas pendentes: o mesmo lugar do "Fechar" da caixa
+  // desta tela no computador (windowFallback).
+  const close = () => (router.canGoBack() ? router.back() : router.replace(windowFallback('nota/qrcode') as Href));
 
   return (
     <Screen edges={[]}>
