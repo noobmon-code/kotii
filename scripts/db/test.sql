@@ -11352,7 +11352,7 @@ begin
     from public.app_daily_stats
   ), 'the migration wrote the 30 days before it (backfilled, AI unknown) and its own day';
   -- A foto do dia da migração, num banco ainda sem uso de IA: os cinco tipos de então, com zero (um zero sabido, não
-  -- '{}'). A foto de produto entrou depois (20261120120000_app_dashboard_product_kind).
+  -- '{}'). A foto de produto entrou depois (20261121013508_app_dashboard_product_kind).
   assert (
     select bool_and(ai_month = '{"chat": 0, "photo": 0, "menu": 0, "nfce": 0, "finance": 0}'::jsonb) filter (where not backfilled)
     from public.app_daily_stats
