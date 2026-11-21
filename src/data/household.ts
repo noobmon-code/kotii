@@ -51,12 +51,15 @@ export function householdErrorMessage(error: unknown): string {
   return message;
 }
 
+/** Sem internet para trocar de casa (também para criar ou entrar em outra, em "Suas casas"). */
+export const SWITCH_OFFLINE = 'Sem internet agora. Troque de casa quando a conexão voltar.';
+
 /**
  * Trocar de casa busca tudo de novo, da outra casa: precisa de internet, e
  * as marcações da lista que esperam internet (feitas nesta casa) precisam
  * subir antes, senão iriam para a outra. `offline`: a frase sem internet.
  */
-function assertCanSwitch(queryClient: QueryClient, offline = 'Sem internet agora. Troque de casa quando a conexão voltar.') {
+function assertCanSwitch(queryClient: QueryClient, offline = SWITCH_OFFLINE) {
   if (!onlineManager.isOnline()) throw new Error(offline);
   if (listQueueBusy(queryClient) || photoQueueBusy(queryClient)) {
     throw new Error('Ainda há marcações ou fotos da lista esperando internet nesta casa. Troque quando elas subirem.');
@@ -134,15 +137,15 @@ export interface AddedHousehold {
 /**
  * Cria outra casa, ou entra numa pelo código, e já abre nela. Ao criar com o lugar (o bairro do clima, opcional), ele
  * é salvo na casa nova antes de abri-la, com o id dela no pedido; se não der, a casa fica criada e o motivo volta em
- * `placeNotSaved`.
+ * `placeNotSaved`. `firstHouse`: o começo (bem-vindo, e a prévia dele), onde esta pode ser a primeira casa da pessoa:
+ * sem internet, a frase não fala em trocar de casa. Em "Suas casas" (quem já tem casa), a de trocar, como sempre.
  */
-export function useAddHousehold(userId: string | undefined) {
+export function useAddHousehold(userId: string | undefined, { firstHouse = false }: { firstHouse?: boolean } = {}) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: AddHousehold): Promise<AddedHousehold> => {
       if (!userId) throw new Error('Entre na conta de novo.');
-      // Sem internet, a frase não fala em trocar de casa: no começo (bem-vindo), esta é a primeira casa da pessoa.
-      assertCanSwitch(queryClient, OFFLINE_TRY_AGAIN);
+      assertCanSwitch(queryClient, firstHouse ? OFFLINE_TRY_AGAIN : undefined);
       const { data, error } =
         input.mode === 'criar'
           ? await supabase.rpc('create_household', { p_name: input.name, p_display_name: input.displayName })

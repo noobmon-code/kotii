@@ -1,10 +1,14 @@
 import { describe, expect, it } from '@jest/globals';
 
+import * as onboarding from '../onboarding';
 import {
+  CODE_HINT,
+  INVITE_COPY_FAILED,
   inviteCodeFrom,
   inviteLink,
   inviteMessage,
   isInviteCode,
+  JOINED_WRONG,
   PENDING_INVITE_DAYS,
   pendingInviteValid,
   readDisplayName,
@@ -16,6 +20,13 @@ import {
 } from '../onboarding';
 import { PROFILE_NAME_MAX } from '../profile';
 
+/** Todos os textos fixos do começo (as constantes e os campos dos objetos de texto). */
+function fixedTexts(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  if (value && typeof value === 'object') return Object.values(value).flatMap(fixedTexts);
+  return [];
+}
+
 describe('as boas-vindas', () => {
   it('três linhas, com as artes dos atalhos da Hoje', () => {
     expect(welcomeLines(true).map((line) => line.art)).toEqual(['carrinho', 'camera', 'tarefa']);
@@ -25,6 +36,16 @@ describe('as boas-vindas', () => {
     expect(welcomeLines(true)[2].text).toContain('contas');
     expect(welcomeLines(false)[2].text).not.toContain('contas');
     expect(welcomeLines(false)[2].text).toContain('agenda');
+  });
+});
+
+describe('onde as coisas ficam', () => {
+  it('a área chama "Configurações", como no resto do app e na barra lateral do computador ("Ajustes" é só a pílula do celular)', () => {
+    const texts = Object.values(onboarding).flatMap(fixedTexts);
+    expect(texts.filter((text) => text.includes('Ajustes'))).toEqual([]);
+    expect(CODE_HINT).toContain('Configurações → Convidar');
+    expect(INVITE_COPY_FAILED).toContain('Configurações → Convidar');
+    expect(JOINED_WRONG).toContain('Configurações → Conta');
   });
 });
 

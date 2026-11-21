@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { AccessibilityInfo } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import WelcomeScreen from '@/app/bem-vindo';
 import HouseholdsScreen from '@/app/casas';
+import { SWITCH_OFFLINE } from '@/data/household';
 import type { HouseholdLocation } from '@/data/weather';
 import {
   CEP_INCOMPLETE_TITLE,
@@ -190,6 +191,16 @@ describe('bem-vindo (o começo novo): criar a casa com o lugar', () => {
     await type('Nome da casa', 'Casa da Ana');
   }
 
+  /** Do passo da casa para o do código: "Voltar" e "Sim, tenho um convite". */
+  async function toCode() {
+    await press('Voltar');
+    const card = renderer!.root.findAll(
+      (node) => node.props.accessibilityLabel === `${CHOICE_INVITE.title}. ${CHOICE_INVITE.subtitle}` && typeof node.props.onPress === 'function',
+    )[0];
+    await act(async () => card.props.onPress());
+    await settle();
+  }
+
   it('o lugar fica fechado numa linha; aberto, diz que é opcional e o que fica guardado; sem ele, cria e abre a casa', async () => {
     await fill();
     expect(page()).toContain(HOUSE_PLACE_ROW.title);
@@ -292,6 +303,99 @@ describe('bem-vindo (o começo novo): criar a casa com o lugar', () => {
     expect(creates()).toHaveLength(0);
     expect(mockWeather.saveHouseholdLocationFor).not.toHaveBeenCalled();
     expect(mockOpened).toEqual(['dela']);
+  });
+
+  it('a busca do CEP no toque de criar: o andamento fica no botão tocado, e o passo trava (também o "Voltar")', async () => {
+    await fill();
+    await press(HOUSE_PLACE_ROW.title);
+    await type('CEP', '05422030');
+    const answer = pendingCep();
+    await act(async () => {
+      button('Criar casa').props.onPress();
+    });
+    expect(button('Criar casa').props.loading).toBe(true);
+    expect(button('Buscar pelo CEP').props.loading).toBe(false);
+    expect(field('Nome da casa').props.editable).toBe(false);
+    expect(field('CEP').props.editable).toBe(false);
+    expect(button('Voltar').props.disabled).toBe(true);
+    await act(async () => answer(PINHEIROS));
+    await settle();
+    expect(creates()).toHaveLength(1);
+    expect(mockWeather.saveHouseholdLocationFor).toHaveBeenCalledWith('nova', PINHEIROS);
+    expect(AccessibilityInfo.announceForAccessibility).toHaveBeenCalledWith(placeFoundAnnouncement('Pinheiros, São Paulo'));
+  });
+
+  it('uma busca do bairro em andamento segura o criar: o botão espera, e um toque nele não cria nada', async () => {
+    await fill();
+    await press(HOUSE_PLACE_ROW.title);
+    const answer = pendingGps();
+    await act(async () => {
+      button('Usar a localização do celular').props.onPress();
+    });
+    expect(button('Criar casa').props.disabled).toBe(true);
+    await act(async () => {
+      button('Criar casa').props.onPress();
+    });
+    await settle();
+    expect(creates()).toHaveLength(0);
+    await act(async () => answer(PERTO));
+    await settle();
+    expect(button('Criar casa').props.disabled).toBe(false);
+    await press('Criar casa');
+    expect(creates()).toHaveLength(1);
+    expect(mockWeather.saveHouseholdLocationFor).toHaveBeenCalledWith('nova', PERTO);
+  });
+
+  it('uma busca do bairro em andamento não segura entrar com um código, e o lugar achado depois não é anunciado', async () => {
+    await fill();
+    await press(HOUSE_PLACE_ROW.title);
+    const answer = pendingGps();
+    await act(async () => {
+      button('Usar a localização do celular').props.onPress();
+    });
+    // Só o envio trava o passo: a busca não segura o "Voltar".
+    expect(button('Voltar').props.disabled).toBe(false);
+    await toCode();
+    await type('Código de convite', 'abc234');
+    await press('Entrar na casa');
+    expect(mockRpc).toHaveBeenCalledWith('join_household', { p_invite_code: 'ABC234', p_display_name: 'Ana' });
+    await act(async () => answer(PERTO));
+    await settle();
+    expect(creates()).toHaveLength(0);
+    expect(mockWeather.saveHouseholdLocationFor).not.toHaveBeenCalled();
+    // O lugar achado não é de casa nenhuma: o leitor de tela não o anuncia.
+    expect(AccessibilityInfo.announceForAccessibility).not.toHaveBeenCalled();
+  });
+
+  it('uma busca do bairro que falha depois de sair do passo da casa (para entrar com um código) não avisa nada', async () => {
+    await fill();
+    await press(HOUSE_PLACE_ROW.title);
+    const fail = failingGps();
+    await act(async () => {
+      button('Usar a localização do celular').props.onPress();
+    });
+    await toCode();
+    await type('Código de convite', 'abc234');
+    await press('Entrar na casa');
+    expect(mockRpc).toHaveBeenCalledWith('join_household', { p_invite_code: 'ABC234', p_display_name: 'Ana' });
+    await act(async () => fail(new Error('Não deu para usar a localização.')));
+    await settle();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('uma busca do bairro que termina com a tela já fechada não avisa nem anuncia nada', async () => {
+    await fill();
+    await press(HOUSE_PLACE_ROW.title);
+    const answer = pendingGps();
+    await act(async () => {
+      button('Usar a localização do celular').props.onPress();
+    });
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    await act(async () => answer(PERTO));
+    await settle();
+    expect(notify).not.toHaveBeenCalled();
+    expect(AccessibilityInfo.announceForAccessibility).not.toHaveBeenCalled();
   });
 });
 
@@ -762,6 +866,26 @@ describe('Suas casas: criar outra casa', () => {
     await act(async () => fail(new Error('Não deu para usar a localização.')));
     await settle();
     expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('sem internet, nada chega ao banco, e o aviso é o de trocar de casa (aqui a pessoa já tem casa)', async () => {
+    // Como no app (lib/queryClient): sem internet, a ação falha na hora e avisa, em vez de esperar a conexão.
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false, networkMode: 'always' } } });
+    onlineManager.setOnline(false);
+    try {
+      await fill();
+      await press('Criar e abrir');
+      expect(creates()).toHaveLength(0);
+      expect(notify).toHaveBeenLastCalledWith('Não foi possível continuar', SWITCH_OFFLINE);
+      await act(async () => segmented().props.onChange('entrar'));
+      await type('Código de convite', 'abc234');
+      await press('Entrar e abrir');
+      expect(mockRpc).not.toHaveBeenCalledWith('join_household', expect.anything());
+      expect(notify).toHaveBeenLastCalledWith('Não foi possível continuar', SWITCH_OFFLINE);
+      expect(mockOpened).toEqual([]);
+    } finally {
+      onlineManager.setOnline(true);
+    }
   });
 
   it('entrar com um código não pergunta onde fica a casa', async () => {

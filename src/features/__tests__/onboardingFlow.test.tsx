@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
-import type { ReactElement } from 'react';
+import { useState, type ReactElement } from 'react';
+import { Modal, Platform, Share } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import InviteLinkScreen from '@/app/convite/[codigo]';
@@ -23,8 +25,14 @@ import {
   FIRST_LIST_TEXT,
   HOUSE_PLACE_ROW,
   HOUSE_TITLE,
+  INSTALL_IOS_OK,
   INSTALL_IOS_SIGN_IN,
   INSTALL_TITLE,
+  INVITE_COPIED,
+  INVITE_COPIED_TITLE,
+  INVITE_COPY,
+  INVITE_OTHER,
+  INVITE_SKIP,
   INVITE_TITLE,
   INVITE_WHATSAPP,
   INVITED_TITLE,
@@ -45,6 +53,7 @@ import { FirstListFlow } from '@/features/onboarding/FirstListFlow';
 import { OnboardingContinuation } from '@/features/onboarding/OnboardingContinuation';
 import { FEATURES } from '@/lib/features';
 import { OFFLINE_TRY_AGAIN } from '@/lib/networkErrors';
+import { openExternal } from '@/lib/openLink';
 import { clearOnboardingNext, clearPendingInvite, markHadAccount, savePendingInvite, setOnboardingNext } from '@/lib/onboarding';
 import { notify } from '@/ui/dialogs';
 
@@ -310,6 +319,36 @@ describe('o começo depois da conta (bem-vindo, com a chave ligada)', () => {
     expect(await AsyncStorage.getItem('kotii:pending-invite')).toBeNull();
   });
 
+  it('quem veio pelo link do convite e escolheu começar a própria casa: o código sai do aparelho', async () => {
+    savePendingInvite('KM2P9Q');
+    await mount(<WelcomeScreen />);
+    await type('Seu nome', 'Ana');
+    await press('Continuar');
+    expect(page()).toContain(CODE_TITLE);
+    await press('Voltar');
+    await choose(CHOICE_NEW);
+    await type('Nome da casa', 'Casa da Ana');
+    await press('Criar casa');
+    expect(calls('create_household')).toHaveLength(1);
+    expect(calls('join_household')).toHaveLength(0);
+    expect(await AsyncStorage.getItem('kotii:onboarding-next:nova')).toBe('lista');
+    // Guardado, a Hoje da casa nova o levaria para "Suas casas" (OnboardingContinuation).
+    expect(await AsyncStorage.getItem('kotii:pending-invite')).toBeNull();
+  });
+
+  it('com a chave desligada, criar a casa em vez de entrar com o código do link também tira o código do aparelho', async () => {
+    jest.replaceProperty(FEATURES, 'onboarding', false);
+    savePendingInvite('KM2P9Q');
+    await mount(<WelcomeScreen />);
+    const segmented = renderer!.root.findAll((node) => Array.isArray(node.props.options) && typeof node.props.onChange === 'function')[0];
+    await act(async () => segmented.props.onChange('criar'));
+    await type('Seu nome', 'Ana');
+    await type('Nome da casa', 'Casa da Ana');
+    await press('Criar casa');
+    expect(calls('create_household')).toHaveLength(1);
+    expect(await AsyncStorage.getItem('kotii:pending-invite')).toBeNull();
+  });
+
   it('com a chave desligada, a tela de antes, já em "Tenho um código" quando há um link de convite', async () => {
     jest.replaceProperty(FEATURES, 'onboarding', false);
     savePendingInvite('KM2P9Q');
@@ -356,29 +395,131 @@ describe('o passo seguinte, na tela Hoje', () => {
 });
 
 describe('a faixa da primeira lista', () => {
-  it('"Pronto" chama a casa (o código à vista) e, sem a tela de início para oferecer, termina', async () => {
+  let platform: { restore: () => void } | undefined;
+  let share: jest.SpiedFunction<typeof Share.share> | undefined;
+  const onPlatform = (os: typeof Platform.OS) => {
+    platform = jest.replaceProperty(Platform, 'OS', os);
+  };
+
+  beforeEach(() => {
+    share = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
+  });
+
+  afterEach(() => {
+    platform?.restore();
+    platform = undefined;
+    share?.mockRestore();
+    share = undefined;
+  });
+
+  /**
+   * Como a lista (app/lista/[id]): `onFinish` tira o `primeira` do endereço, e a faixa sai da tela com o que tiver
+   * dentro, o menu aberto também.
+   */
+  function FirstList({ onFinish }: { onFinish: () => void }) {
+    const [first, setFirst] = useState(true);
+    if (!first) return null;
+    return (
+      <FirstListFlow
+        onCatalog={jest.fn()}
+        onFinish={() => {
+          onFinish();
+          setFirst(false);
+        }}
+      />
+    );
+  }
+
+  /** Um toque no menu que está à vista, pelo caminho de verdade (ui/ActionSheet: no iOS, a escolha espera ele descer). */
+  const pressInSheet = async (label: string) => {
+    const shown = renderer!.root.findAllByType(Modal).find((modal) => modal.props.visible)!;
+    const node = shown.findAll((n) => typeof n.props.onPress === 'function' && rawText(n).replace(ICON_GLYPHS, '') === label)[0];
+    await act(async () => node.props.onPress());
+    await settle();
+  };
+  /**
+   * No iOS, o menu acaba de descer: o onDismiss do Modal, que só chega com o menu ainda montado (desmontado antes, o
+   * iOS não o entrega, e o findByType falha aqui).
+   */
+  const dismissed = async () => {
+    const modal = renderer!.root.findByType(Modal);
+    expect(modal.props.visible).toBe(false);
+    await act(async () => modal.props.onDismiss());
+    await settle();
+  };
+  const sent = () => ({
+    whatsapp: jest.mocked(openExternal).mock.calls.length,
+    share: share!.mock.calls.length,
+    copied: jest.mocked(Clipboard.setStringAsync).mock.calls.length,
+  });
+
+  it('"Pronto" chama a casa (o código à vista) e, sem a tela de início para oferecer, "Agora não" do menu termina', async () => {
+    onPlatform('ios');
     const onFinish = jest.fn();
-    await mount(<FirstListFlow onCatalog={jest.fn()} onFinish={onFinish} />);
+    await mount(<FirstList onFinish={onFinish} />);
     expect(page()).toContain(FIRST_LIST_TEXT);
     expect(sheet(INVITE_TITLE).props.visible).toBe(false);
     await press(FIRST_LIST_DONE);
     expect(sheet(INVITE_TITLE).props.visible).toBe(true);
     expect(page()).toContain('KM2P9Q');
     expect(page()).toContain(INVITE_WHATSAPP);
-    await act(async () => sheet(INVITE_TITLE).props.onClose());
+    await pressInSheet(INVITE_SKIP);
+    // A faixa sai já; o fim espera o menu descer (no iOS).
+    expect(page()).not.toContain(FIRST_LIST_TEXT);
+    expect(onFinish).not.toHaveBeenCalled();
+    await dismissed();
     expect(onFinish).toHaveBeenCalledTimes(1);
+    expect(sent()).toEqual({ whatsapp: 0, share: 0, copied: 0 });
+  });
+
+  it.each([
+    [INVITE_WHATSAPP, { whatsapp: 1, share: 0, copied: 0 }],
+    [INVITE_OTHER, { whatsapp: 0, share: 1, copied: 0 }],
+    [INVITE_COPY, { whatsapp: 0, share: 0, copied: 1 }],
+  ])('no iPhone (o app), "%s" roda quando o menu acaba de descer, e só então a faixa termina', async (label, expected) => {
+    onPlatform('ios');
+    const onFinish = jest.fn();
+    await mount(<FirstList onFinish={onFinish} />);
+    await press(FIRST_LIST_DONE);
+    await pressInSheet(label);
+    expect(page()).not.toContain(FIRST_LIST_TEXT);
+    expect(sent()).toEqual({ whatsapp: 0, share: 0, copied: 0 });
+    expect(onFinish).not.toHaveBeenCalled();
+    await dismissed();
+    expect(sent()).toEqual(expected);
+    expect(onFinish).toHaveBeenCalledTimes(1);
+    if (label === INVITE_WHATSAPP) expect(openExternal).toHaveBeenCalledWith(expect.stringContaining('KM2P9Q'));
+    if (label === INVITE_OTHER) expect(share).toHaveBeenCalledWith({ message: expect.stringContaining('KM2P9Q') });
+    if (label === INVITE_COPY) {
+      expect(Clipboard.setStringAsync).toHaveBeenCalledWith(expect.stringContaining('KM2P9Q'));
+      expect(notify).toHaveBeenCalledWith(INVITE_COPIED_TITLE, INVITE_COPIED);
+    }
+    expect(renderer!.root.findAllByType(Modal)).toHaveLength(0);
+  });
+
+  it('no Android, a escolha roda na hora, e a faixa termina junto', async () => {
+    onPlatform('android');
+    const onFinish = jest.fn();
+    await mount(<FirstList onFinish={onFinish} />);
+    await press(FIRST_LIST_DONE);
+    await pressInSheet(INVITE_COPY);
+    expect(sent()).toEqual({ whatsapp: 0, share: 0, copied: 1 });
+    expect(notify).toHaveBeenCalledWith(INVITE_COPIED_TITLE, INVITE_COPIED);
+    expect(onFinish).toHaveBeenCalledTimes(1);
+    expect(page()).not.toContain(FIRST_LIST_TEXT);
   });
 
   it('no iPhone pelo navegador, depois do convite vem a tela de início, com o aviso de entrar de novo pelo ícone', async () => {
+    onPlatform('web');
     mockInstall.mode = 'ios';
     const onFinish = jest.fn();
-    await mount(<FirstListFlow onCatalog={jest.fn()} onFinish={onFinish} />);
+    await mount(<FirstList onFinish={onFinish} />);
     await press(FIRST_LIST_DONE);
-    await act(async () => sheet(INVITE_TITLE).props.onClose());
+    await pressInSheet(INVITE_SKIP);
     expect(onFinish).not.toHaveBeenCalled();
     expect(sheet(INSTALL_TITLE).props.visible).toBe(true);
     expect(page()).toContain(INSTALL_IOS_SIGN_IN);
-    await act(async () => sheet(INSTALL_TITLE).props.onClose());
+    await pressInSheet(INSTALL_IOS_OK);
     expect(onFinish).toHaveBeenCalledTimes(1);
   });
 
@@ -405,10 +546,54 @@ describe('o link do convite', () => {
     mockAccount.household = null;
     await mount(<InviteLinkScreen />);
     expect(mockRedirect.href).toBe('/bem-vindo');
+    expect(JSON.parse((await AsyncStorage.getItem('kotii:pending-invite'))!)).toMatchObject({ code: 'KM2P9Q' });
     await act(async () => renderer?.unmount());
     mockAccount.household = { household: { id: 'h1', name: 'Casa da Ana', invite_code: 'ABC234', created_by: 'ana' } };
     await mount(<InviteLinkScreen />);
     expect(mockRedirect.href).toEqual({ pathname: '/casas', params: { codigo: 'KM2P9Q' } });
+    // O código vai no endereço, e não fica guardado (nem o de antes): guardado, a Hoje levaria para lá de novo.
+    expect(await AsyncStorage.getItem('kotii:pending-invite')).toBeNull();
+  });
+
+  it('sem conta, por quem já tem casa: depois de entrar, a Hoje leva o código para "Suas casas", uma vez', async () => {
+    mockAccount.session = null;
+    mockParams.codigo = 'TR7K2M';
+    await mount(<InviteLinkScreen />);
+    expect(mockRedirect.href).toBe('/entrar');
+    await act(async () => renderer?.unmount());
+    // Entrou com a conta dela, que já tem casa: o layout abre a Hoje dessa casa.
+    mockAccount.session = { user: { id: 'ana' } };
+    await mount(<OnboardingContinuation />);
+    expect(router.push).toHaveBeenCalledTimes(1);
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/casas', params: { codigo: 'TR7K2M' } });
+    expect(await AsyncStorage.getItem('kotii:pending-invite')).toBeNull();
+    expect(page()).toBe('');
+    // Voltar de "Suas casas" sem entrar não leva de novo.
+    await act(async () => renderer?.unmount());
+    await mount(<OnboardingContinuation />);
+    expect(router.push).toHaveBeenCalledTimes(1);
+  });
+
+  it('com a Hoje fora de vista, o código espera; o convite da própria casa aberta só sai do aparelho', async () => {
+    mockFocus.focused = false;
+    savePendingInvite('TR7K2M');
+    await mount(<OnboardingContinuation />);
+    expect(router.push).not.toHaveBeenCalled();
+    expect(JSON.parse((await AsyncStorage.getItem('kotii:pending-invite'))!)).toMatchObject({ code: 'TR7K2M' });
+    await act(async () => renderer?.unmount());
+    mockFocus.focused = true;
+    savePendingInvite('KM2P9Q');
+    await mount(<OnboardingContinuation />);
+    expect(router.push).not.toHaveBeenCalled();
+    expect(await AsyncStorage.getItem('kotii:pending-invite')).toBeNull();
+  });
+
+  it('o passo da casa que acabou de nascer vem antes do código guardado', async () => {
+    savePendingInvite('TR7K2M');
+    setOnboardingNext('h1', 'entrou');
+    await mount(<OnboardingContinuation />);
+    expect(page()).toContain(JOINED_TITLE);
+    expect(router.push).not.toHaveBeenCalled();
   });
 
   it('um link estragado não guarda nada', async () => {
