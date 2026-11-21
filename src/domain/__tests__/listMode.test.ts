@@ -11,6 +11,7 @@ import {
   LIST_MENU_LABELS,
   listMenuActions,
   listMode,
+  showsAddOptionsButton,
   showsEmptyList,
   showsSuggestions,
 } from '../listMode';
@@ -113,6 +114,29 @@ describe('showsEmptyList e emptyListMessage: a lista sem itens', () => {
     expect(emptyListMessage('montar')).toBe('Digite um item ou escolha do catálogo de itens comuns da casa.');
     expect(emptyListMessage('compra')).toBe('Digite no campo acima o que faltou.');
     expect(emptyListMessage('ver')).toBe('Esta lista ficou sem itens.');
+  });
+
+  it('no computador o campo fica na coluna ao lado da lista vazia, e não acima: o texto diz onde ele está', () => {
+    expect(emptyListMessage('compra', true)).toBe('Digite no campo ao lado o que faltou.');
+    // Os outros não dizem onde está o campo: os mesmos do celular.
+    expect(emptyListMessage('montar', true)).toBe(emptyListMessage('montar'));
+    expect(emptyListMessage('ver', true)).toBe(emptyListMessage('ver'));
+    for (const mode of ['montar', 'compra', 'ver'] as const) expect(emptyListMessage(mode, true)).not.toMatch(/acima/);
+  });
+});
+
+describe('showsAddOptionsButton: o botão "Mais opções" ao lado do campo', () => {
+  it('no modo compra, com o campo vazio', () => {
+    expect(showsAddOptionsButton('compra', false)).toBe(true);
+  });
+
+  it('com texto no campo, sai: o que ele abre só aparece com o campo vazio, e aberto não mostraria nada', () => {
+    expect(showsAddOptionsButton('compra', true)).toBe(false);
+  });
+
+  it('montando o cartão já está inteiro, e a arquivada não tem cartão', () => {
+    expect(showsAddOptionsButton('montar', false)).toBe(false);
+    expect(showsAddOptionsButton('ver', false)).toBe(false);
   });
 });
 

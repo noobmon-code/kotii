@@ -899,21 +899,61 @@ describe('a lista sem marca', () => {
     expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Café', quantity: 3 }), 'u1');
   });
 
-  it('sem quantidade na linha, o item já na lista em outra unidade só ganha o aviso, como antes', async () => {
+  it('sem quantidade na linha, o 1 un de sempre conta como pedido: o item em outra unidade pergunta, como quando o campo começava em 1', async () => {
     mockQueries.items = loaded([{ ...listItem('a', 'Leite', null, 'laticinios'), quantity: 2, unit: 'l' }]);
     await mount();
+    for (const text of ['Leite', '1 leite']) {
+      type(text);
+      await addTyped('Adicionar "Leite"');
+      expect(notify).not.toHaveBeenCalled();
+      expect(repeatSheet().props.message).toBe('Leite já está na lista com 2 l, e 1 un é outra unidade. Pôr como outro item ou deixar como está?');
+      expect(repeatChoices()).toEqual(['Pôr 1 un como outro item']);
+      expect(mockQueue.add).not.toHaveBeenCalled();
+      // Deixar como está: nada entra, e o campo fica livre, como antes.
+      act(() => repeatSheet().props.onClose());
+      expect(fieldValue()).toBe('');
+    }
+    // A caixa de 1 un entra como outro item, sem a pessoa precisar saber de digitar a quantidade.
     type('Leite');
     await addTyped('Adicionar "Leite"');
-    expect(notify).toHaveBeenCalledWith('Já estava na lista', 'Leite já está na lista para comprar.');
-    expect(repeatSheet().props.visible).toBe(false);
-    expect(mockQueue.add).not.toHaveBeenCalled();
+    choose('Pôr 1 un como outro item');
+    expect(mockQueue.add).toHaveBeenCalledWith({ name: 'Leite', category: 'laticinios', productId: null, quantity: 1, unit: 'un' }, 'u1');
     expect(fieldValue()).toBe('');
-    // Com a quantidade dita, também a de sempre ("1 leite"), a outra unidade é um pedido: a pergunta volta.
-    jest.mocked(notify).mockClear();
-    type('1 leite');
-    await addTyped('Adicionar "Leite"');
+  });
+
+  it('a sugestão da busca e o item comum sem quantidade também perguntam, com a unidade deles, quando o item está em outra', async () => {
+    mockQueries.items = loaded([
+      { ...listItem('a', 'Leite IL Desnatado', 'il', 'laticinios'), quantity: 2, unit: 'l' },
+      { ...listItem('b', 'Banana', null, 'hortifruti'), quantity: 3, unit: 'un' },
+    ]);
+    mockQueries.products = loaded([MILK]);
+    await mount();
+    type('leite');
+    const row = renderer!.root.findAllByType(ListRow).find((r) => r.props.subtitle === 'Produto com histórico de preço')!;
+    act(() => row.props.onPress());
     expect(notify).not.toHaveBeenCalled();
+    expect(repeatSheet().props.message).toBe(
+      'Leite IL Desnatado já está na lista com 2 l, e 1 un é outra unidade. Pôr como outro item ou deixar como está?',
+    );
     expect(repeatChoices()).toEqual(['Pôr 1 un como outro item']);
+    act(() => repeatSheet().props.onClose());
+
+    // O item comum vai na unidade do catálogo (a banana, em kg), que também é um pedido.
+    type('banan');
+    const banana = renderer!.root.findAllByType(ListRow).find((r) => r.props.title === 'Banana')!;
+    act(() => banana.props.onPress());
+    expect(notify).not.toHaveBeenCalled();
+    expect(repeatSheet().props.message).toBe('Banana já está na lista com 3 un, e 1 kg é outra unidade. Pôr como outro item ou deixar como está?');
+    choose('Pôr 1 kg como outro item');
+    expect(mockQueue.add).toHaveBeenCalledWith({ name: 'Banana', category: 'hortifruti', productId: null, quantity: 1, unit: 'kg' }, 'u1');
+
+    // Com a quantidade digitada na unidade do pendente, soma: a unidade digitada vale também no item comum.
+    mockQueue.add.mockClear();
+    type('2 banan');
+    act(() => renderer!.root.findAllByType(ListRow).find((r) => r.props.title === 'Banana')!.props.onPress());
+    expect(repeatSheet().props.message).toBe('Banana já está na lista (3 un). Somar mais 2 un?');
+    expect(repeatChoices()).toEqual(['Somar: fica 5 un']);
+    expect(mockQueue.add).not.toHaveBeenCalled();
   });
 
   it('uma pergunta nova com a anterior ainda aberta (um menu que não apareceu) monta um menu novo, com o item novo', async () => {
@@ -1065,6 +1105,17 @@ describe('ler o código de barras no cartão de pôr item', () => {
     await act(async () => mockBarcode.onProduct!(MILK));
     expect(mockQueue.add).not.toHaveBeenCalled();
     expect(repeatSheet().props.message).toBe('Leite desnatado já está na lista (1 un). Somar mais 1 un?');
+  });
+
+  it('o mesmo item em outra unidade: pergunta se a embalagem lida entra como outro item, e não só avisa', async () => {
+    mockBarcode.available = true;
+    mockQueries.items = loaded([{ ...listItem('a', 'Leite desnatado', null, 'laticinios'), quantity: 2, unit: 'l' }]);
+    await mount();
+    await act(async () => mockBarcode.onProduct!(MILK));
+    expect(notify).not.toHaveBeenCalled();
+    expect(repeatChoices()).toEqual(['Pôr 1 un como outro item']);
+    choose('Pôr 1 un como outro item');
+    expect(mockQueue.add).toHaveBeenCalledWith({ name: 'Leite desnatado', category: 'laticinios', productId: 'il', quantity: 1, unit: 'un' }, 'u1');
   });
 
   it('enquanto o código anterior ainda está sendo visto, o botão fica carregando', async () => {
@@ -1323,6 +1374,22 @@ describe('a quantidade vem do que se digita, lida como no "Colar lista"', () => 
     expect(mockQueue.add).toHaveBeenLastCalledWith({ name: 'Banana', category: 'hortifruti', productId: null, quantity: 1, unit: 'kg' }, 'u1');
   });
 
+  it('a unidade digitada também vale: no produto (que não tem unidade) e no item comum (no lugar da do catálogo)', async () => {
+    mockQueries.products = loaded([MILK]);
+    await mount();
+    await type('2 l leite');
+    await act(async () => suggestion('Leite desnatado')!.props.onPress());
+    expect(mockQueue.add).toHaveBeenLastCalledWith({ name: 'Leite desnatado', category: 'laticinios', productId: 'il', quantity: 2, unit: 'l' }, 'u1');
+    // A banana do catálogo é em kg; "500 g" fica em gramas, e não vira 500 kg.
+    await type('500 g banan');
+    await act(async () => suggestion('Banana')!.props.onPress());
+    expect(mockQueue.add).toHaveBeenLastCalledWith({ name: 'Banana', category: 'hortifruti', productId: null, quantity: 500, unit: 'g' }, 'u1');
+    // E a unidade de sempre dita ("3 un") também, no lugar do kg do catálogo.
+    await type('3 un banan');
+    await act(async () => suggestion('Banana')!.props.onPress());
+    expect(mockQueue.add).toHaveBeenLastCalledWith({ name: 'Banana', category: 'hortifruti', productId: null, quantity: 3, unit: 'un' }, 'u1');
+  });
+
   it('"Colar lista" e o código de barras dividem uma linha, embaixo dos itens comuns; sem o código, colar sozinho', async () => {
     mockBarcode.available = true;
     await mount();
@@ -1469,6 +1536,15 @@ describe('no computador: os itens numa coluna, o cartão de pôr item e a conta 
     expect(side.findAllByType(RecentPurchases)).toHaveLength(1);
     expect(main.findAllByType(EmptyState).map((entry) => entry.props.title)).toEqual(['Lista vazia']);
     expect(side.findAllByType(EmptyState)).toHaveLength(0);
+  });
+
+  it('a lista vazia na própria ida fica na coluna dos itens, e diz que o campo está ao lado, e não acima', async () => {
+    await desktop();
+    mockTrips.list = [liveTrip()];
+    await mount();
+    const [side, main] = columnParts();
+    expect(side.findAll((node) => node.props.placeholder === ADD_FIELD_PLACEHOLDER).length).toBeGreaterThan(0);
+    expect(main.findAllByType(EmptyState).map((entry) => entry.props.message)).toEqual(['Digite no campo ao lado o que faltou.']);
   });
 
   it('a lista arquivada: o aviso de reabrir e a conta na do lado, os itens na principal', async () => {
@@ -1736,14 +1812,43 @@ describe('o modo compra: com item no carrinho ou com a própria ida, a lista sob
     // As faixas são para montar a lista: continuam fora.
     expect(strips()).toBe(0);
 
-    // Com o texto, o botão de pôr toma o lugar das opções; recolher deixa o texto e a quantidade dele.
+    // Com o texto, o botão de pôr toma o lugar das opções, e "Mais opções" sai junto: aberto, não mostraria nada (o
+    // leitor de tela diria "expandido" sem nada novo). O campo continua o mesmo, com o texto.
     await typeName('3 kg banana');
     expect(button('Colar lista')).toBeUndefined();
+    expect(button('Adicionar "Banana" · 3 kg')).toBeDefined();
+    expect(moreOptions()).toHaveLength(0);
+    expect(fields(ADD_FIELD_PLACEHOLDER)[0].props.value).toBe('3 kg banana');
+    // Apagado o texto, ele volta como estava, aberto, com as opções.
+    await typeName('');
+    expect(moreOptions()[0].props.expanded).toBe(true);
+    expect(button('Colar lista')).toBeDefined();
+    // Recolher não muda o que se digita depois.
     await act(async () => moreOptions()[0].props.onPress());
     expect(moreOptions()[0].props.expanded).toBe(false);
-    expect(fields(ADD_FIELD_PLACEHOLDER)[0].props.value).toBe('3 kg banana');
+    expect(button('Colar lista')).toBeUndefined();
+    await typeName('3 kg banana');
     await submit();
     expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Banana', quantity: 3, unit: 'kg' }), 'u1');
+  });
+
+  it('"Mais opções" só aparece com o campo vazio: com qualquer texto, aberto ele não teria o que mostrar', async () => {
+    mockBarcode.available = true;
+    mockQueries.items = loaded([pending, inCart]);
+    await mount();
+    for (const text of ['leit', '2 kg', '   ']) {
+      await typeName(text);
+      const typing = Boolean(text.trim());
+      expect(moreOptions()).toHaveLength(typing ? 0 : 1);
+      // Nada do que ele abre fica na tela com o texto: só o botão de pôr (quando a linha diz o que comprar).
+      expect(button('Escolher dos itens comuns')).toBeUndefined();
+    }
+    // O campo é sempre o primeiro filho da primeira linha, com o botão ou sem ele: o teclado e o texto ficam.
+    const firstRow = () => renderer!.root.findAllByType(Card).find((card) => card.findAllByType(TextField).length > 0)!.findAllByType(Row)[0];
+    await typeName('leit');
+    const withText = firstRow().findAllByType(TextField)[0];
+    await typeName('');
+    expect(firstRow().findAllByType(TextField)[0]).toBe(withText);
   });
 
   it('com a própria ida nesta lista, modo compra também com o carrinho vazio; a ida de outra pessoa não muda nada', async () => {
@@ -1779,10 +1884,12 @@ describe('o modo compra: com item no carrinho ou com a própria ida, a lista sob
     await act(async () => renderer!.update(<ShoppingListScreen />));
     expect(fields(ADD_FIELD_PLACEHOLDER)[0].props.value).toBe('6 pão');
     // A quantidade está no texto, à vista: recolher não esconde nada que vá junto.
-    expect(moreOptions()[0].props.expanded).toBe(false);
+    expect(button('Escolher dos itens comuns')).toBeUndefined();
     expect(button('Adicionar "Pão" · 6 un')).toBeDefined();
     await submit();
     expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Pão', quantity: 6, unit: 'un' }), 'u1');
+    // Com o campo livre, "Mais opções" aparece, recolhido.
+    expect(moreOptions()[0].props.expanded).toBe(false);
   });
 
   it('recolhe sem perder o texto; o carrinho limpo volta a montar, e a próxima compra recolhe de novo', async () => {
@@ -1792,13 +1899,18 @@ describe('o modo compra: com item no carrinho ou com a própria ida, a lista sob
     mockQueries.items = loaded([pending, inCart]);
     await act(async () => renderer!.update(<ShoppingListScreen />));
     expect(fields(ADD_FIELD_PLACEHOLDER)[0].props.value).toBe('Pão');
+    // Com o texto, sem "Mais opções"; apagado, ele aparece recolhido.
+    expect(moreOptions()).toHaveLength(0);
+    await typeName('');
     expect(moreOptions()[0].props.expanded).toBe(false);
     await act(async () => moreOptions()[0].props.onPress());
     expect(moreOptions()[0].props.expanded).toBe(true);
+    await typeName('Pão');
 
     mockQueries.items = loaded([pending]);
     await act(async () => renderer!.update(<ShoppingListScreen />));
     expect(moreOptions()).toHaveLength(0);
+    expect(fields(ADD_FIELD_PLACEHOLDER)[0].props.value).toBe('Pão');
     await typeName('');
     expect(button('Escolher dos itens comuns')).toBeDefined();
 

@@ -66,6 +66,7 @@ import {
   BARCODE_BUTTON,
   emptyListMessage,
   listMode,
+  showsAddOptionsButton,
   showsEmptyList,
   showsSuggestions,
   type ListMenuAction,
@@ -142,8 +143,6 @@ interface Repeated {
   listed: ShoppingListItem;
   item: NewListItem;
   otherName: boolean;
-  /** A pessoa disse a quantidade (a linha digitada a trazia: "2 kg arroz"). */
-  given: boolean;
 }
 
 export default function ShoppingListScreen() {
@@ -304,11 +303,12 @@ export default function ShoppingListScreen() {
   }
 
   /**
-   * A quantidade que a linha digitada disse ("2 kg arroz"); sem ela, 1 un, a de sempre, e não conta como dita (o
-   * item que já está em outra unidade só ganha o aviso).
+   * A quantidade que a linha digitada disse ("2 kg arroz"); sem ela, 1 un, a de sempre. As duas contam como pedidas,
+   * como quando o campo da quantidade começava em 1: o item que já está em outra unidade pergunta se entra como
+   * outro item. `counted`: a linha disse a quantidade (o item comum sem ela fica na unidade do catálogo).
    */
-  const typedAmount = (): { quantity: number; unit: Unit; given: boolean } =>
-    line?.counted ? { quantity: line.quantity, unit: line.unit, given: true } : { quantity: 1, unit: 'un', given: false };
+  const typedAmount = (): { quantity: number; unit: Unit; counted: boolean } =>
+    line?.counted ? { quantity: line.quantity, unit: line.unit, counted: true } : { quantity: 1, unit: 'un', counted: false };
 
   // Pôr item vai pela fila da lista: aparece na hora, também sem internet, e o campo já fica livre para o próximo.
   // Se a fila desistir, o aviso sai dela (lib/queryClient), também com a tela já fechada. O produto escolhido na
@@ -329,7 +329,6 @@ export default function ShoppingListScreen() {
         unit: amount.unit,
       },
       typed,
-      amount.given,
     );
   }
 
@@ -348,10 +347,9 @@ export default function ShoppingListScreen() {
         productId: product?.id ?? null,
         quantity: amount.quantity,
         // A quantidade digitada vale inteira ("2 kg banana"); sem ela, 1 na unidade do catálogo (a banana, em kg).
-        unit: amount.given ? amount.unit : item.unit,
+        unit: amount.counted ? amount.unit : item.unit,
       },
       false,
-      amount.given,
     );
   }
 
@@ -360,19 +358,15 @@ export default function ShoppingListScreen() {
    * item já para comprar nesta lista, com este nome ou outro ("Leite IL Desnatado" e "Leite desnatado"), não entra
    * de novo sem a pessoa dizer: ela escolhe entre somar a quantidade, pôr como outro item ou deixar como está.
    * `typed`: o nome digitado, que, diferente do pendente ("Leite" com "Leite IL Desnatado"), pode ser outro pedido.
-   * `given`: a pessoa disse a quantidade; sem ela, o item que já está em outra unidade só ganha o aviso, como antes.
+   * Sem quantidade na linha, o item vai com 1 un, que conta como pedida (o cartão sempre pôs 1 un assim): em outra
+   * unidade, a pessoa escolhe entre pôr como outro item ou deixar como está.
    */
-  function put(item: NewListItem, typed: boolean, given: boolean) {
+  function put(item: NewListItem, typed: boolean) {
     const listed = pendingSameItem(item, items.data ?? []);
     if (listed) {
       const otherName = typed && listNameKey(listed.name) !== listNameKey(item.name);
-      if (!otherName && repeatedQuantity(listed, { ...item, given }).kind === 'listed') {
-        notify('Já estava na lista', `${listed.name} já está na lista para comprar.`);
-        resetForm();
-        return;
-      }
       if (repeated) setRepeatedKey((key) => key + 1);
-      setRepeated({ listed, item, otherName, given });
+      setRepeated({ listed, item, otherName });
       return;
     }
     addItem.add(item, session!.user.id);
@@ -399,8 +393,8 @@ export default function ShoppingListScreen() {
   }
 
   /** "Já está na lista": na mesma unidade, somar; em outra unidade (ou com outro nome digitado), pôr como outro item. */
-  function repeatedActions({ listed, item, otherName, given }: Repeated): SheetAction[] {
-    const choice = repeatedQuantity(currentListed(listed) ?? listed, { ...item, given });
+  function repeatedActions({ listed, item, otherName }: Repeated): SheetAction[] {
+    const choice = repeatedQuantity(currentListed(listed) ?? listed, item);
     const actions: SheetAction[] = [];
     if (choice.kind === 'sum') {
       actions.push({
@@ -425,11 +419,10 @@ export default function ShoppingListScreen() {
     return actions;
   }
 
-  function repeatedMessage({ listed: asked, item, given }: Repeated): string {
+  function repeatedMessage({ listed: asked, item }: Repeated): string {
     const listed = currentListed(asked) ?? asked;
     const now = formatQuantity(Number(listed.quantity), listed.unit);
     const more = formatQuantity(item.quantity, item.unit);
-    if (repeatedQuantity(listed, { ...item, given }).kind === 'listed') return `${listed.name} já está na lista (${now}).`;
     return repeatedQuantity(listed, item).kind === 'sum'
       ? `${listed.name} já está na lista (${now}). Somar mais ${more}?`
       : `${listed.name} já está na lista com ${now}, e ${more} é outra unidade. Pôr como outro item ou deixar como está?`;
@@ -914,9 +907,10 @@ export default function ShoppingListScreen() {
     }
   }
 
-  // "Lista vazia": no celular, onde sempre esteve (depois das faixas); no computador, na coluna dos itens.
+  // "Lista vazia": no celular, onde sempre esteve (depois das faixas); no computador, na coluna dos itens, e então o
+  // texto diz que o campo está ao lado, e não acima.
   const emptyList = showsEmptyList({ mode, items: pending.length + checked.length, suggestions: recentItems.length + restockItems.length }) ? (
-    <EmptyState icon="cart-outline" title="Lista vazia" message={emptyListMessage(mode)} />
+    <EmptyState icon="cart-outline" title="Lista vazia" message={emptyListMessage(mode, desktop)} />
   ) : null;
   const addButton = line ? addLineButton(line) : null;
 
@@ -988,7 +982,9 @@ export default function ShoppingListScreen() {
                 <Card style={styles.addCard}>
                   {/* O campo é o mesmo nos dois jeitos do cartão (o primeiro filho da primeira linha): o modo compra que
                       começa no meio da digitação (alguém pôs no carrinho) não tira o teclado nem o texto. A quantidade
-                      vem do que se digita ("2 kg arroz"), e o botão de pôr mostra como ficou. */}
+                      vem do que se digita ("2 kg arroz"), e o botão de pôr mostra como ficou. "Mais opções" só abre o
+                      que fica embaixo do campo vazio: com o texto, o botão de pôr toma esse lugar, e ele sai junto
+                      (aberto, não mostraria nada). */}
                   <Row>
                     <View style={styles.flex}>
                       <TextField
@@ -999,7 +995,7 @@ export default function ShoppingListScreen() {
                         onSubmitEditing={() => add()}
                       />
                     </View>
-                    {mode === 'compra' ? (
+                    {showsAddOptionsButton(mode, Boolean(name.trim())) ? (
                       <IconButton
                         icon={moreOptions ? 'chevron-up' : 'tune-variant'}
                         label={addOptionsLabel(barcode.available)}

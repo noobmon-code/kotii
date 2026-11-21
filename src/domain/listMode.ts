@@ -80,11 +80,24 @@ export function showsEmptyList({ mode, items, suggestions }: { mode: ListMode; i
   return mode !== 'montar' || suggestions === 0;
 }
 
-/** O texto da lista vazia em cada momento. */
-export function emptyListMessage(mode: ListMode): string {
+/**
+ * O texto da lista vazia em cada momento. `desktop`: no computador (ui/desktop) a lista vazia fica na coluna dos
+ * itens, e o campo de pôr item, na coluna ao lado, e não acima dela.
+ */
+export function emptyListMessage(mode: ListMode, desktop = false): string {
   if (mode === 'ver') return 'Esta lista ficou sem itens.';
-  if (mode === 'compra') return 'Digite no campo acima o que faltou.';
+  if (mode === 'compra') return desktop ? 'Digite no campo ao lado o que faltou.' : 'Digite no campo acima o que faltou.';
   return 'Digite um item ou escolha do catálogo de itens comuns da casa.';
+}
+
+/**
+ * "Mais opções", o botão ao lado do campo: só no modo compra e com o campo vazio. O que ele abre (os itens comuns,
+ * colar a lista e o código de barras) fica embaixo do campo vazio; com o texto, o botão de pôr toma esse lugar, e o
+ * botão aberto não mostraria nada (o leitor de tela diria "expandido" sem nada novo na tela). Ele sai sem mexer no
+ * campo, o primeiro filho da linha, então o teclado e o texto ficam.
+ */
+export function showsAddOptionsButton(mode: ListMode, typing: boolean): boolean {
+  return mode === 'compra' && !typing;
 }
 
 /**
