@@ -11351,7 +11351,8 @@ begin
       and bool_and(ai_month = '{}'::jsonb) filter (where backfilled)
     from public.app_daily_stats
   ), 'the migration wrote the 30 days before it (backfilled, AI unknown) and its own day';
-  -- A foto do dia da migração, num banco ainda sem uso de IA: os cinco tipos, com zero (um zero sabido, não '{}').
+  -- A foto do dia da migração, num banco ainda sem uso de IA: os cinco tipos de então, com zero (um zero sabido, não
+  -- '{}'). A foto de produto entrou depois (20261121013508_app_dashboard_product_kind).
   assert (
     select bool_and(ai_month = '{"chat": 0, "photo": 0, "menu": 0, "nfce": 0, "finance": 0}'::jsonb) filter (where not backfilled)
     from public.app_daily_stats
@@ -11479,8 +11480,8 @@ begin
     'from 29 days ago to today';
   assert j -> 'daily' = '[]', 'no daily row';
   assert j -> 'ai' -> 'months' = '[]', 'no AI use';
-  assert j -> 'ai' -> 'limits' = '{"chat": 300, "photo": 100, "menu": 20, "nfce": 200, "finance": 100}', 'the limits';
-  assert j -> 'ai' -> 'near_limit' = '[{"kind": "chat", "households": 0}, {"kind": "photo", "households": 0}, {"kind": "menu", "households": 0}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}]',
+  assert j -> 'ai' -> 'limits' = '{"chat": 300, "photo": 100, "menu": 20, "nfce": 200, "finance": 100, "product": 50}', 'the limits';
+  assert j -> 'ai' -> 'near_limit' = '[{"kind": "chat", "households": 0}, {"kind": "photo", "households": 0}, {"kind": "menu", "households": 0}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}, {"kind": "product", "households": 0}]',
     'every kind near the limit, with zero';
   assert j -> 'ai' -> 'at_limit' = j -> 'ai' -> 'near_limit', 'and at the limit';
   assert jsonb_array_length(j -> 'features') = 19
@@ -11657,7 +11658,7 @@ begin
   select * into s from public.app_daily_stats where day = today;
   assert s.accounts = 5 and s.households = 2, 'today: five accounts, two households';
   assert s.active_users = 2 + beto_today, 'today: Ana and Dani (and Beto when his refresh was today): ' || s.active_users;
-  assert s.ai_month = '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0}',
+  assert s.ai_month = '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0, "product": 0}',
     'the month''s AI use, summed, and every kind without use at zero: ' || s.ai_month::text;
   assert not s.backfilled, 'a real snapshot';
 end $$;
@@ -11700,7 +11701,7 @@ begin
   assert j -> 'daily' = jsonb_build_array(
     jsonb_build_object('day', to_char(today - 30, 'YYYY-MM-DD'), 'accounts', 1, 'active_users', 1, 'households', 1, 'ai', '{}'::jsonb, 'backfilled', true),
     jsonb_build_object('day', to_char(today, 'YYYY-MM-DD'), 'accounts', 5, 'active_users', 2 + beto_today, 'households', 2,
-      'ai', '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0}'::jsonb, 'backfilled', false)
+      'ai', '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0, "product": 0}'::jsonb, 'backfilled', false)
   ), 'the 30 days plus the day before, oldest first: ' || (j -> 'daily')::text;
   assert j -> 'ai' ->> 'month' = this_month, 'the AI month';
   assert j -> 'ai' -> 'months' = jsonb_build_array(
@@ -11710,9 +11711,9 @@ begin
     jsonb_build_object('month', this_month, 'kind', 'nfce', 'uses', 0, 'households', 0),
     jsonb_build_object('month', this_month, 'kind', 'photo', 'uses', 164, 'households', 2)
   ), 'six months by month and kind, without the older one: ' || (j -> 'ai' -> 'months')::text;
-  assert j -> 'ai' -> 'near_limit' = '[{"kind": "chat", "households": 1}, {"kind": "photo", "households": 1}, {"kind": "menu", "households": 1}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}]',
+  assert j -> 'ai' -> 'near_limit' = '[{"kind": "chat", "households": 1}, {"kind": "photo", "households": 1}, {"kind": "menu", "households": 1}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}, {"kind": "product", "households": 0}]',
     'near the limit from 80%: ' || (j -> 'ai' -> 'near_limit')::text;
-  assert j -> 'ai' -> 'at_limit' = '[{"kind": "chat", "households": 0}, {"kind": "photo", "households": 0}, {"kind": "menu", "households": 1}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}]',
+  assert j -> 'ai' -> 'at_limit' = '[{"kind": "chat", "households": 0}, {"kind": "photo", "households": 0}, {"kind": "menu", "households": 1}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}, {"kind": "product", "households": 0}]',
     'at the limit: ' || (j -> 'ai' -> 'at_limit')::text;
   assert j -> 'features' = (
     select jsonb_agg(jsonb_build_object(
