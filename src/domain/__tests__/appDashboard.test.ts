@@ -1,6 +1,10 @@
 import { describe, expect, it } from '@jest/globals';
+import { readdirSync, readFileSync } from 'fs';
+import path from 'path';
 
+import { AI_KIND_LABELS } from '../aiUsage';
 import {
+  APP_AI_KINDS,
   APP_DASHBOARD_ACTIVITY_NOTE,
   APP_DASHBOARD_INVALID,
   APP_DASHBOARD_PRIVACY,
@@ -40,13 +44,17 @@ function rawDashboard(): Raw {
       { day: '2026-10-22', accounts: 5, active_users: 3, households: 4, ai: { chat: 4, photo: 8 }, backfilled: false },
       { day: '2026-10-23', accounts: 5, active_users: 2, households: 4, ai: { chat: 7, photo: 8 }, backfilled: false },
     ],
+    // Os seis tipos de IA, como app_dashboard manda desde 20261121013508_app_dashboard_product_kind: o limite de
+    // cada um e uma linha de cada nas casas perto do limite e no limite, também com zero. Uma casa chegou às 50
+    // fotos de produto do mês.
     ai: {
       month: '2026-10',
-      limits: { chat: 300, photo: 100, menu: 20, nfce: 200, finance: 100 },
+      limits: { chat: 300, photo: 100, menu: 20, nfce: 200, finance: 100, product: 50 },
       months: [
         { month: '2026-09', kind: 'chat', uses: 10, households: 2 },
         { month: '2026-10', kind: 'chat', uses: 7, households: 1 },
         { month: '2026-10', kind: 'photo', uses: 8, households: 2 },
+        { month: '2026-10', kind: 'product', uses: 50, households: 1 },
       ],
       near_limit: [
         { kind: 'chat', households: 0 },
@@ -54,6 +62,7 @@ function rawDashboard(): Raw {
         { kind: 'menu', households: 0 },
         { kind: 'nfce', households: 0 },
         { kind: 'finance', households: 0 },
+        { kind: 'product', households: 0 },
       ],
       at_limit: [
         { kind: 'chat', households: 0 },
@@ -61,6 +70,7 @@ function rawDashboard(): Raw {
         { kind: 'menu', households: 2 },
         { kind: 'nfce', households: 0 },
         { kind: 'finance', households: 0 },
+        { kind: 'product', households: 1 },
       ],
     },
     features: APP_FEATURES.map((feature) => {
@@ -103,10 +113,24 @@ function emptyDashboard(): Raw {
     daily: [],
     ai: {
       month: '2026-10',
-      limits: { chat: 300, photo: 100, menu: 20, nfce: 200, finance: 100 },
+      limits: { chat: 300, photo: 100, menu: 20, nfce: 200, finance: 100, product: 50 },
       months: [],
-      near_limit: [],
-      at_limit: [],
+      near_limit: [
+        { kind: 'chat', households: 0 },
+        { kind: 'photo', households: 0 },
+        { kind: 'menu', households: 0 },
+        { kind: 'nfce', households: 0 },
+        { kind: 'finance', households: 0 },
+        { kind: 'product', households: 0 },
+      ],
+      at_limit: [
+        { kind: 'chat', households: 0 },
+        { kind: 'photo', households: 0 },
+        { kind: 'menu', households: 0 },
+        { kind: 'nfce', households: 0 },
+        { kind: 'finance', households: 0 },
+        { kind: 'product', households: 0 },
+      ],
     },
     features: APP_FEATURES.map((feature) => ({ key: feature.key, households: 0, households_30d: 0, events_30d: 0 })),
     receipt_sources: [
@@ -157,10 +181,14 @@ describe('parseAppDashboard', () => {
     expect(d.signups).toHaveLength(30);
     expect(d.daily[2]).toEqual({ day: '2026-10-22', accounts: 5, activeUsers: 3, households: 4, ai: { chat: 4, photo: 8 }, backfilled: false });
     expect(d.ai.month).toBe('2026-10');
-    expect(d.ai.limits).toEqual({ chat: 300, photo: 100, menu: 20, nfce: 200, finance: 100 });
+    expect(d.ai.limits).toEqual({ chat: 300, photo: 100, menu: 20, nfce: 200, finance: 100, product: 50 });
     expect(d.ai.months[0]).toEqual({ month: '2026-09', kind: 'chat', uses: 10, households: 2 });
+    expect(d.ai.months.find((row) => row.kind === 'product')).toEqual({ month: '2026-10', kind: 'product', uses: 50, households: 1 });
+    expect(d.ai.nearLimit.map((row) => row.kind)).toEqual([...APP_AI_KINDS]);
+    expect(d.ai.atLimit.map((row) => row.kind)).toEqual([...APP_AI_KINDS]);
     expect(d.ai.nearLimit.find((row) => row.kind === 'photo')).toEqual({ kind: 'photo', households: 1 });
     expect(d.ai.atLimit.find((row) => row.kind === 'menu')).toEqual({ kind: 'menu', households: 2 });
+    expect(d.ai.atLimit.find((row) => row.kind === 'product')).toEqual({ kind: 'product', households: 1 });
     expect(d.features).toHaveLength(APP_FEATURES.length);
     expect(d.features[0]).toEqual({ key: 'lista', households: 3, households30d: 2, events30d: 7 });
     expect(d.receiptSources).toEqual([
@@ -558,21 +586,37 @@ describe('dashboardView', () => {
         ['menu', 'Cardápios montados pelo Nuke', '0', '0 de 4 casas · limite de 20 por casa', 0],
         ['nfce', 'Notas lidas pelo QR code', '0', '0 de 4 casas · limite de 200 por casa', 0],
         ['finance', 'Mensagens com o consultor financeiro', '0', '0 de 4 casas · limite de 100 por casa', 0],
-        // A foto de produto (o "Escanear"): o uso vem por mês como os outros; o limite dela ainda não vem do painel
-        // no servidor, e a linha não fala dele.
-        ['product', 'Fotos de produto (Escanear)', '0', '0 de 4 casas', 0],
+        // A foto de produto (o "Escanear"): o uso vem por mês como os outros, e o limite dela vem do painel no
+        // servidor desde 20261121013508_app_dashboard_product_kind.
+        ['product', 'Fotos de produto (Escanear)', '50', '1 de 4 casas · limite de 50 por casa', 0.25],
       ]);
       expect(ai.rows[0].accessibilityLabel).toBe('Mensagens com o Nuke: 7 neste mês. 1 de 4 casas. Limite de 300 por casa.');
-      expect(ai.limitNote).toBe('No limite: 2 casas em cardápios do Nuke. Perto do limite: 1 casa em leituras de foto.');
+      expect(ai.rows[5].accessibilityLabel).toBe('Fotos de produto (Escanear): 50 neste mês. 1 de 4 casas. Limite de 50 por casa.');
+      expect(ai.limitNote).toBe(
+        'No limite: 2 casas em cardápios do Nuke e 1 casa em fotos de produto. Perto do limite: 1 casa em leituras de foto.',
+      );
     });
 
-    it('sem casa perto do limite, sem aviso; sem o limite na resposta, a linha não fala dele', () => {
+    it('a foto de produto perto do limite também entra no aviso', () => {
+      let raw = withValue(rawDashboard(), 'ai.at_limit', APP_AI_KINDS.map((kind) => ({ kind, households: 0 })));
+      raw = withValue(raw, 'ai.near_limit', [
+        ...APP_AI_KINDS.filter((kind) => kind !== 'product').map((kind) => ({ kind, households: 0 })),
+        { kind: 'product', households: 2 },
+      ]);
+      expect(view(raw).ai.limitNote).toBe('Perto do limite: 2 casas em fotos de produto.');
+    });
+
+    it('sem casa perto do limite, sem aviso; sem o limite na resposta (um servidor de antes), a linha não fala dele', () => {
       let raw = withValue(rawDashboard(), 'ai.near_limit', []);
       raw = withValue(raw, 'ai.at_limit', [{ kind: 'chat', households: 0 }]);
       raw = withValue(raw, 'ai.limits', { photo: 100 });
       const ai = view(raw).ai;
       expect(ai.limitNote).toBeNull();
       expect(ai.rows[0].detail).toBe('1 de 4 casas');
+      // Antes de 20261121013508_app_dashboard_product_kind, o painel no servidor não mandava o limite da foto de
+      // produto: a linha mostra só o uso.
+      raw = withValue(rawDashboard(), 'ai.limits', { chat: 300, photo: 100, menu: 20, nfce: 200, finance: 100 });
+      expect(view(raw).ai.rows.find((row) => row.key === 'product')?.detail).toBe('1 de 4 casas');
     });
 
     it('junta os usos no mesmo aviso', () => {
@@ -582,8 +626,8 @@ describe('dashboardView', () => {
         { kind: 'finance', households: 1 },
       ]);
       expect(view(raw).ai.limitNote).toBe(
-        'No limite: 2 casas em cardápios do Nuke. Perto do limite: 1 casa em mensagens com o Nuke, 3 casas em leituras de foto ' +
-          'e 1 casa em mensagens com o consultor financeiro.',
+        'No limite: 2 casas em cardápios do Nuke e 1 casa em fotos de produto. Perto do limite: 1 casa em mensagens com o ' +
+          'Nuke, 3 casas em leituras de foto e 1 casa em mensagens com o consultor financeiro.',
       );
     });
   });
@@ -782,5 +826,67 @@ describe('dashboardView', () => {
         expect(text).not.toMatch(/\b1 (pessoas|casas|contas|mensagens|registros|dias)\b/);
       }
     }
+  });
+});
+
+describe('os tipos de IA do painel são os que o banco conhece', () => {
+  // As migrações em ordem. De cada função, vale a definição da última migração que a (re)cria; do check de
+  // ai_usage, o último que alguma migração escreve. Os tipos estão escritos à mão nas duas funções do painel (a
+  // lista ai_kinds de app_dashboard e o objeto de zeros de snapshot_app_stats): um tipo novo que entre no check,
+  // em ai_limit e no app sem uma migração que recrie as duas faria o painel ficar sem o limite dele e o total do
+  // dia sem o zero dele, como aconteceu com a foto de produto até 20261121013508_app_dashboard_product_kind.
+  const dir = path.resolve(__dirname, '../../../supabase/migrations');
+  const sources = readdirSync(dir)
+    .filter((name) => name.endsWith('.sql'))
+    .sort()
+    .map((name) => readFileSync(path.join(dir, name), 'utf8'));
+  const quoted = (text: string) => [...text.matchAll(/'([a-z_]+)'/g)].map((match) => match[1]);
+  const sorted = (kinds: readonly string[]) => [...kinds].sort();
+
+  /** O corpo da definição em vigor de public.<nome>(…): da última migração que a cria até o fim do $$. */
+  function newestBody(name: string): string {
+    const created = new RegExp(`create\\s+(or\\s+replace\\s+)?function\\s+public\\.${name}\\s*\\(`, 'gi');
+    const sql = sources.filter((text) => new RegExp(created.source, 'i').test(text)).at(-1) ?? '';
+    const start = [...sql.matchAll(created)].at(-1)?.index ?? -1;
+    if (start < 0) throw new Error(`nenhuma migração cria public.${name}`);
+    return sql.slice(start, sql.indexOf('$$;', start));
+  }
+
+  const checks = sources.flatMap((text) =>
+    [...text.matchAll(/constraint\s+ai_usage_kind_check\s+check\s*\(\s*kind\s+in\s*\(([^)]*)\)\s*\)/gi)].map((match) =>
+      quoted(match[1]),
+    ),
+  );
+  const limits = [...newestBody('ai_limit').matchAll(/when\s+'([a-z_]+)'\s+then\s+(\d+)/gi)].map(
+    (match) => [match[1], Number(match[2])] as const,
+  );
+
+  it('o check de ai_usage, ai_limit e os nomes do app têm os mesmos tipos', () => {
+    expect(checks.length).toBeGreaterThan(0);
+    expect(sorted(checks.at(-1)!)).toEqual(sorted(APP_AI_KINDS));
+    expect(sorted(Object.keys(AI_KIND_LABELS))).toEqual(sorted(APP_AI_KINDS));
+    expect(sorted(limits.map(([kind]) => kind))).toEqual(sorted(APP_AI_KINDS));
+    for (const [, limit] of limits) expect(limit).toBeGreaterThan(0);
+    // O uso do mês em Configurações (ai_usage_summary) também lista cada tipo.
+    const summary = /\(\s*values\s*((?:\(\s*'[a-z_]+'\s*\)\s*,?\s*)+)\)\s*as\s+k\s*\(\s*kind\s*\)/i.exec(newestBody('ai_usage_summary'));
+    expect(sorted(quoted(summary?.[1] ?? ''))).toEqual(sorted(APP_AI_KINDS));
+  });
+
+  it('app_dashboard dá o limite e as casas perto e no limite de cada tipo, na ordem da tela', () => {
+    const kinds = /unnest\(\s*array\[([^\]]*)\]\s*\)\s*with\s+ordinality\s+as\s+k\s*\(\s*kind\s*,\s*pos\s*\)/i.exec(
+      newestBody('app_dashboard'),
+    );
+    expect(quoted(kinds?.[1] ?? '')).toEqual([...APP_AI_KINDS]);
+    // As respostas de exemplo destes testes são as do servidor: o limite de cada tipo é o de ai_limit.
+    expect((rawDashboard().ai as Raw).limits).toEqual(Object.fromEntries(limits));
+    expect((emptyDashboard().ai as Raw).limits).toEqual(Object.fromEntries(limits));
+  });
+
+  it('snapshot_app_stats escreve cada tipo com zero no total do dia, mesmo sem uso no mês', () => {
+    const zeros = /'(\{[^']*\})'::jsonb\s*\|\|/.exec(newestBody('snapshot_app_stats'));
+    expect(zeros).not.toBeNull();
+    const written = JSON.parse(zeros![1]) as Record<string, unknown>;
+    expect(sorted(Object.keys(written))).toEqual(sorted(APP_AI_KINDS));
+    expect(new Set(Object.values(written))).toEqual(new Set([0]));
   });
 });
