@@ -37,8 +37,8 @@ function useTripActionShown(): boolean {
 /**
  * "Estou indo ao mercado", na lista: o botão, que abre a confirmação (`MarketTripConfirm`) pelo `onPress`. As duas
  * são separadas porque a tela desenha a confirmação fora das colunas do computador (ui/desktop), e o aberto dela fica
- * com a tela: o botão pode remontar (a coluna do lado é outra em cada largura) sem fechar a pergunta aberta. Sem mais
- * ninguém na casa, não aparece.
+ * com a tela: a pergunta aberta não depende de onde o botão está nem de ele ser montado de novo. Sem mais ninguém na
+ * casa, não aparece.
  */
 export function MarketTripAction({ list, onPress }: { list: TripList; onPress: () => void }) {
   const shown = useTripActionShown();
