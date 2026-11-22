@@ -45,7 +45,7 @@ import { useRefills } from '@/features/health/MedicationSections';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
 import { MarketTripBanner } from '@/features/MarketTrip';
-import { InviteSheet } from '@/features/onboarding/InviteSheet';
+import { InviteSheet, inviteOrigin } from '@/features/onboarding/InviteSheet';
 import { OnboardingContinuation } from '@/features/onboarding/OnboardingContinuation';
 import { useJustListed } from '@/features/RecentPurchases';
 import { SkyHeader } from '@/features/SkyHeader';
@@ -133,8 +133,8 @@ export default function TodayScreen() {
   // Itens de todas as listas abertas; os postos agora há pouco somem já no toque.
   const onLists = useMemo(() => (lists.data ?? []).flatMap((l) => l.items), [lists.data]);
   const restocked = useJustListed(lists.data ? onLists : undefined);
-  // O começo novo (lib/onboarding): nos primeiros passos, "Convidar" abre o convite com o link ali mesmo e "Pessoas e
-  // pets" abre o cadastro, em vez de mandar para Configurações.
+  // O começo novo (lib/onboarding): nos primeiros passos, "Convidar" abre o convite ali mesmo (com o link no navegador;
+  // no aparelho, só com o código) e "Pessoas e pets" abre o cadastro, em vez de mandar para Configurações.
   const newOnboarding = useNewOnboarding();
   const [inviting, setInviting] = useState(false);
   const firstSteps = useFirstSteps({
@@ -144,7 +144,7 @@ export default function TodayScreen() {
     drafts: receipts.data,
     pantry: pantry.data,
     people: people.data,
-    inviteByLink: newOnboarding,
+    invite: newOnboarding ? (inviteOrigin() ? 'link' : 'codigo') : 'configuracoes',
   });
 
   const queries = [

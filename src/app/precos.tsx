@@ -93,7 +93,9 @@ export default function PricesScreen() {
   const searching = Boolean(normalizeSearch(query));
 
   return (
-    <Screen edges={[]} scroll={false}>
+    // A lista rola sozinha e tem o próprio puxar para atualizar (no celular). A tela recebe o mesmo pedido só para o
+    // botão "Atualizar" do computador, onde não se puxa a tela: sem a rolagem da tela, no celular ele não muda nada.
+    <Screen edges={[]} scroll={false} refreshing={prices.isRefetching} onRefresh={() => prices.refetch()}>
       <FlatList
         style={styles.flex}
         data={rows}

@@ -31,6 +31,7 @@ import { SHARING_ABOUT, SHARING_SUMMARY, SHARING_TITLE } from '@/domain/sharedPr
 import { PREVIEW_SUBTITLE, PREVIEW_TITLE } from '@/domain/onboarding';
 import { MODERATION_TITLE } from '@/domain/storeModeration';
 import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
+import { FEATURES } from '@/lib/features';
 import { OFFLINE_TRY_AGAIN } from '@/lib/networkErrors';
 import { THEME_CHOICE_KEY } from '@/lib/themeChoice';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -317,6 +318,35 @@ describe('Configurações: a aba', () => {
     expect(page()).toContain('Compartilhar convite');
     expect(page()).not.toContain('Trocar código');
     share.mockRestore();
+  });
+
+  it('no navegador, "Compartilhar convite" leva o link do convite (o começo novo, como o app sai); com a chave desligada, só o código', async () => {
+    const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+    onWeb();
+    const hadLocation = Object.getOwnPropertyDescriptor(window, 'location');
+    Object.defineProperty(window, 'location', { value: { origin: 'https://kotii.app' }, configurable: true });
+    const invite = () => renderer!.root.findAll((node) => node.props.title === 'Convidar' && typeof node.props.onPress === 'function')[0];
+    try {
+      jest.replaceProperty(FEATURES, 'onboarding', true);
+      await mount();
+      await act(async () => invite().props.onPress());
+      await press('Compartilhar convite');
+      expect(share).toHaveBeenLastCalledWith({
+        message: 'Entre na nossa casa "Casa da Ana" no Kotii: https://kotii.app/convite/ABC234 (ou use o código ABC234).',
+      });
+      await act(async () => renderer?.unmount());
+
+      jest.replaceProperty(FEATURES, 'onboarding', false);
+      await mount();
+      await act(async () => invite().props.onPress());
+      await press('Compartilhar convite');
+      expect(share).toHaveBeenLastCalledWith({ message: 'Entre na nossa casa "Casa da Ana" no Kotii com o código ABC234.' });
+    } finally {
+      if (hadLocation) Object.defineProperty(window, 'location', hadLocation);
+      else delete (window as { location?: unknown }).location;
+      jest.replaceProperty(FEATURES, 'onboarding', true);
+      share.mockRestore();
+    }
   });
 
   it('pessoas e pets sem celular: as fichas e o cadastro (Saúde → Cuidados não cadastra mais)', async () => {

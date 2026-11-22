@@ -1,10 +1,14 @@
 import { describe, expect, it } from '@jest/globals';
 
+import * as onboarding from '../onboarding';
 import {
+  CODE_HINT,
+  INVITE_COPY_FAILED,
   inviteCodeFrom,
   inviteLink,
   inviteMessage,
   isInviteCode,
+  JOINED_WRONG,
   PENDING_INVITE_DAYS,
   pendingInviteValid,
   readDisplayName,
@@ -16,6 +20,13 @@ import {
 } from '../onboarding';
 import { PROFILE_NAME_MAX } from '../profile';
 
+/** Todos os textos fixos do começo (as constantes e os campos dos objetos de texto). */
+function fixedTexts(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  if (value && typeof value === 'object') return Object.values(value).flatMap(fixedTexts);
+  return [];
+}
+
 describe('as boas-vindas', () => {
   it('três linhas, com as artes dos atalhos da Hoje', () => {
     expect(welcomeLines(true).map((line) => line.art)).toEqual(['carrinho', 'camera', 'tarefa']);
@@ -25,6 +36,16 @@ describe('as boas-vindas', () => {
     expect(welcomeLines(true)[2].text).toContain('contas');
     expect(welcomeLines(false)[2].text).not.toContain('contas');
     expect(welcomeLines(false)[2].text).toContain('agenda');
+  });
+});
+
+describe('onde as coisas ficam', () => {
+  it('a área chama "Configurações", como no resto do app e na barra lateral do computador ("Ajustes" é só a pílula do celular)', () => {
+    const texts = Object.values(onboarding).flatMap(fixedTexts);
+    expect(texts.filter((text) => text.includes('Ajustes'))).toEqual([]);
+    expect(CODE_HINT).toContain('Configurações → Convidar');
+    expect(INVITE_COPY_FAILED).toContain('Configurações → Convidar');
+    expect(JOINED_WRONG).toContain('Configurações → Conta');
   });
 });
 
@@ -48,7 +69,7 @@ describe('o código do convite', () => {
   });
 
   it('acha o código no link, na mensagem ou sozinho', () => {
-    expect(inviteCodeFrom('Entra na nossa casa: https://kotii.app/convite/abc234 (ou use o código ABC234).')).toBe('ABC234');
+    expect(inviteCodeFrom('Entre na nossa casa: https://kotii.app/convite/abc234 (ou use o código ABC234).')).toBe('ABC234');
     expect(inviteCodeFrom('Entre na nossa casa "Casa" no Kotii com o código XYZ789.')).toBe('XYZ789');
     expect(inviteCodeFrom('  xyz 789 ')).toBe('XYZ789');
     expect(inviteCodeFrom('Código: KM2P9Q')).toBe('KM2P9Q');
@@ -70,6 +91,8 @@ describe('a mensagem do convite', () => {
     expect(message).toContain('https://kotii.app/convite/ABC234');
     expect(message).toContain('código ABC234');
     expect(message).toContain('"Casa da Ana"');
+    // Você, como o resto do app (e como a mensagem sem o link): "Entre … use", nunca "Entra … use".
+    expect(message).toBe('Entre na nossa casa "Casa da Ana" no Kotii: https://kotii.app/convite/ABC234 (ou use o código ABC234).');
   });
 
   it('sem o endereço do site, só o código (como antes)', () => {

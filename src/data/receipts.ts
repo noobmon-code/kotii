@@ -4,7 +4,7 @@ import { FunctionsHttpError, type SupabaseClient } from '@supabase/supabase-js';
 import { type QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ReceiptFingerprint } from '@/domain/duplicateReceipt';
-import { NFCE_CAPTCHA_STATE, nfceItemsToDraft, nfceReceiptRow, nfceStoreCodes, type NfceItem, type NfceQr } from '@/domain/nfce';
+import { NFCE_CAPTCHA_STATE, nfceFailureCode, nfceItemsToDraft, nfceReceiptRow, nfceStoreCodes, type NfceItem, type NfceQr } from '@/domain/nfce';
 import { RECEIPTS_PAGE } from '@/domain/receiptList';
 import { MAX_RECEIPT_PHOTOS, tooManyPhotosMessage } from '@/domain/receiptPhotos';
 import type { ConfirmItem } from '@/domain/receiptReview';
@@ -380,13 +380,16 @@ async function findOrCreateStore(store: { name: string | null; cnpj: string | nu
 
 /**
  * Busca a nota na Sefaz (função `nfce`). Se falhar, o erro (FunctionError)
- * traz o código da função: com 'captcha', a tela leva para a foto da nota.
+ * traz o código da função: com 'captcha', a tela leva para a foto da nota. O
+ * limite do mês vem sem código (um 429): o app o chama de NFCE_QUOTA
+ * (nfceFailureCode), e a tela do QR oferece a foto, que tem o limite dela.
  */
 export async function fetchNfcePage(url: string): Promise<NfcePageResult> {
   const { data, error } = await supabase.functions.invoke<NfcePageResult>('nfce', { body: { url } });
   if (error || !data) {
     const { message, code } = await functionErrorDetails(error, 'Não deu para buscar a nota na Sefaz agora.');
-    throw new FunctionError(message, code);
+    const status = error instanceof FunctionsHttpError ? ((error.context as Response | undefined)?.status ?? null) : null;
+    throw new FunctionError(message, nfceFailureCode(code, status));
   }
   return data;
 }

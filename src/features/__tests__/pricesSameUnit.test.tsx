@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { FlatList, StyleSheet, View } from 'react-native';
+import { Dimensions, FlatList, Platform, StyleSheet, View } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import PricesScreen from '@/app/precos';
 import ProductScreen from '@/app/produto/[id]';
 import { formatShortDate, toISODate } from '@/domain/dates';
+import { REFRESH_LABEL } from '@/domain/desktop';
 import type { PurchaseLine } from '@/domain/priceHistory';
 import { productNameTakenHint } from '@/domain/productMerge';
 import { storePricesFromPurchases } from '@/domain/storePrices';
@@ -323,6 +324,24 @@ describe('Preços', () => {
     let holder = list.parent;
     while (holder && holder.type !== View) holder = holder.parent;
     expect(StyleSheet.flatten(holder?.props.style)).toMatchObject({ flex: 1 });
+  });
+
+  it('no computador (no navegador não se puxa a lista), o "Atualizar" da tela busca os preços de novo', async () => {
+    const window = Dimensions.get('window');
+    jest.replaceProperty(Platform, 'OS', 'web');
+    await act(async () => Dimensions.set({ window: { ...window, width: 1440 } }));
+    try {
+      await mount(<PricesScreen />);
+      const refresh = renderer!.root.findAll((node) => node.props.accessibilityLabel === REFRESH_LABEL && typeof node.props.onPress === 'function');
+      expect(refresh.length).toBeGreaterThan(0);
+      await act(async () => refresh[0].props.onPress());
+      expect(mockQueries.prices.refetch).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => renderer?.unmount());
+      renderer = undefined;
+      await act(async () => Dimensions.set({ window }));
+      jest.restoreAllMocks();
+    }
   });
 
   it('ml e litro também', async () => {

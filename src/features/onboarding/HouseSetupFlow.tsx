@@ -62,7 +62,8 @@ export function HouseSetupFlow({
   footer?: ReactNode;
 }) {
   const userId = useAuth().session?.user.id;
-  const add = useAddHousehold(userId);
+  // Sem internet, o aviso não fala em trocar de casa: aqui, esta é a primeira casa da pessoa.
+  const add = useAddHousehold(userId, { firstHouse: true });
   const [step, setStep] = useState<Step>('nome');
   const [displayName, setDisplayName] = useState('');
   const [houseName, setHouseName] = useState('');
@@ -100,6 +101,9 @@ export function HouseSetupFlow({
       const where = await newPlace.resolve();
       if (!where.ok) return;
       const added = await add.mutateAsync({ mode: 'criar', name: house.value, displayName: name.value, place: where.place });
+      // Quem veio por um link de convite e escolheu começar a própria casa: o código sai do aparelho, senão a Hoje o
+      // levaria para "Suas casas" (OnboardingContinuation). Na prévia, o código é o da casa aberta, e não o guardado.
+      if (!preview) clearPendingInvite();
       setOnboardingNext(added.house.id, 'lista');
       if (preview) router.dismissTo('/');
       if (added.placeNotSaved) notify(PLACE_NOT_SAVED_TITLE, placeNotSavedMessage(added.placeNotSaved));

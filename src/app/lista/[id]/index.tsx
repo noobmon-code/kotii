@@ -114,7 +114,7 @@ import { chooseStore, restoreStoreChoice, useStoreChoice } from '@/lib/storeChoi
 import { errorMessage } from '@/lib/supabase';
 import type { Product, ShoppingListItem, Unit } from '@/lib/types';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
-import { Columns, useDesktop } from '@/ui/desktop';
+import { Actions, Columns, useDesktop } from '@/ui/desktop';
 import { afterPaint, askYesNo, confirmAction, notify } from '@/ui/dialogs';
 import {
   Button,
@@ -847,6 +847,16 @@ export default function ShoppingListScreen() {
   // Arquivada (aberta pelas "Listas arquivadas"): só para ver; mexer nela é depois de "Reabrir".
   const archived = Boolean(list.data.archived_at);
   const footerAction = listFooter({ pending: pending.length, inCart: checked.length, kind: list.data.kind, archived });
+  const footerButton =
+    footerAction === 'finish' ? (
+      <Button title={FINISH_LABEL} icon="receipt-text-check-outline" loading={finish.busy} onPress={finish.start} />
+    ) : footerAction === 'whereToBuy' ? (
+      <Button
+        title="Onde comprar mais barato?"
+        icon="store-search-outline"
+        onPress={() => router.push({ pathname: '/lista/[id]/onde-comprar', params: { id } })}
+      />
+    ) : null;
 
   const toggleItem = (item: ShoppingListItem) =>
     toggle.mutate(
@@ -998,17 +1008,8 @@ export default function ShoppingListScreen() {
         refreshTrips();
       }}
       // Rodapé por contexto: com item no carrinho, "Finalizar compra"; com o carrinho vazio, "Onde comprar mais barato?".
-      footer={
-        footerAction === 'finish' ? (
-          <Button title={FINISH_LABEL} icon="receipt-text-check-outline" loading={finish.busy} onPress={finish.start} />
-        ) : footerAction === 'whereToBuy' ? (
-          <Button
-            title="Onde comprar mais barato?"
-            icon="store-search-outline"
-            onPress={() => router.push({ pathname: '/lista/[id]/onde-comprar', params: { id } })}
-          />
-        ) : undefined
-      }>
+      // No computador, encostado à direita, embaixo da coluna do lado, como as ações da revisão da nota.
+      footer={footerButton && desktop ? <Actions end>{footerButton}</Actions> : (footerButton ?? undefined)}>
       <Stack.Screen options={{ title: list.data.name, headerRight: headerButtons }} />
       <OfflineNotice />
       {staleError ? (

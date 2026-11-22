@@ -11,6 +11,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { StyleSheet, View } from 'react-native';
 
+import { routeWindowLayout, windowOptions } from '@/features/desktop/RouteWindow';
 import { Sidebar } from '@/features/desktop/Sidebar';
 import { AuthProvider, openedByRecoveryLink, useAuth, useHousehold } from '@/lib/auth';
 import { FEATURES } from '@/lib/features';
@@ -131,7 +132,10 @@ function AppNavigator() {
         <View style={styles.stack}>
           {/* As telas que se arrumam pela largura (o Painel do app) descontam a barra (ui/desktop). */}
           <SidebarContext.Provider value={sidebar}>
+            {/* As telas em janela (as de `windowOptions`: no celular sobem por cima das outras) ficam, no computador,
+                numa caixa no meio da janela, com o app escurecido atrás (features/desktop/RouteWindow). */}
             <Stack
+              screenLayout={routeWindowLayout}
               screenOptions={{
                 headerBackButtonDisplayMode: 'minimal',
                 // No computador a coluna da tela fica no meio do lugar ao lado da barra lateral: o título, em cima dela.
@@ -157,8 +161,8 @@ function AppNavigator() {
                 <Stack.Screen name="lista/[id]/onde-comprar" options={{ title: 'Onde comprar' }} />
                 <Stack.Screen name="nota/[id]" options={{ title: 'Nota fiscal' }} />
                 <Stack.Screen name="escanear" options={{ title: 'Escanear' }} />
-                <Stack.Screen name="nota/qrcode" options={{ title: 'QR code da nota', presentation: 'modal' }} />
-                <Stack.Screen name="nota/pendente" options={{ title: 'Nota pendente', presentation: 'modal' }} />
+                <Stack.Screen name="nota/qrcode" options={windowOptions(desktop, { title: 'QR code da nota' })} />
+                <Stack.Screen name="nota/pendente" options={windowOptions(desktop, { title: 'Nota pendente' })} />
                 <Stack.Screen name="precos" options={{ title: 'Preços' }} />
                 <Stack.Screen name="mercado" options={{ title: 'Mercado do mês' }} />
                 <Stack.Screen name="agenda" options={{ title: 'Agenda' }} />
@@ -167,14 +171,14 @@ function AppNavigator() {
                 <Stack.Screen name="casas" options={{ title: 'Suas casas' }} />
                 <Stack.Screen name="pontos" options={{ title: 'Pontos das crianças' }} />
                 <Stack.Screen name="produto/[id]" options={{ title: 'Produto' }} />
-                <Stack.Screen name="despensa/[id]" options={{ title: 'Item da despensa', presentation: 'modal' }} />
-                <Stack.Screen name="reposicao/[id]" options={{ title: 'Gás, água e ração', presentation: 'modal' }} />
-                <Stack.Screen name="tarefa/[id]" options={{ title: 'Tarefa', presentation: 'modal' }} />
-                <Stack.Screen name="remedio/[id]" options={{ title: 'Remédio', presentation: 'modal' }} />
-                <Stack.Screen name="pessoa/[id]" options={{ title: 'Pessoa', presentation: 'modal' }} />
-                <Stack.Screen name="consulta/[id]" options={{ title: 'Consulta', presentation: 'modal' }} />
-                <Stack.Screen name="compromisso/[id]" options={{ title: 'Compromisso', presentation: 'modal' }} />
-                <Stack.Screen name="vacina/[id]" options={{ title: 'Vacina', presentation: 'modal' }} />
+                <Stack.Screen name="despensa/[id]" options={windowOptions(desktop, { title: 'Item da despensa' })} />
+                <Stack.Screen name="reposicao/[id]" options={windowOptions(desktop, { title: 'Gás, água e ração' })} />
+                <Stack.Screen name="tarefa/[id]" options={windowOptions(desktop, { title: 'Tarefa' })} />
+                <Stack.Screen name="remedio/[id]" options={windowOptions(desktop, { title: 'Remédio' })} />
+                <Stack.Screen name="pessoa/[id]" options={windowOptions(desktop, { title: 'Pessoa' })} />
+                <Stack.Screen name="consulta/[id]" options={windowOptions(desktop, { title: 'Consulta' })} />
+                <Stack.Screen name="compromisso/[id]" options={windowOptions(desktop, { title: 'Compromisso' })} />
+                <Stack.Screen name="vacina/[id]" options={windowOptions(desktop, { title: 'Vacina' })} />
                 <Stack.Screen name="exame/[id]" options={{ title: 'Exame' }} />
                 <Stack.Screen name="exames/[pessoa]" options={{ title: 'Evolução dos exames' }} />
                 <Stack.Screen name="treino/[id]" options={{ title: 'Ficha de treino' }} />
@@ -182,9 +186,9 @@ function AppNavigator() {
                 <Stack.Screen name="aparelho/[id]" options={{ title: 'Aparelho' }} />
                 <Stack.Screen name="prestadores" options={{ title: 'Prestadores e consertos' }} />
                 <Stack.Screen name="prestador/[id]" options={{ title: 'Prestador' }} />
-                <Stack.Screen name="servico/[id]" options={{ title: 'Serviço', presentation: 'modal' }} />
+                <Stack.Screen name="servico/[id]" options={windowOptions(desktop, { title: 'Serviço' })} />
                 <Stack.Screen name="documento/[id]" options={{ title: 'Documento' }} />
-                <Stack.Screen name="nuke" options={{ headerShown: false, presentation: 'modal' }} />
+                <Stack.Screen name="nuke" options={windowOptions(desktop, { headerShown: false }, 'Nuke')} />
                 {/* As telas que a aba Configurações abre por uma linha, para ficar curta. */}
                 <Stack.Screen name="avisos" options={{ title: 'Avisos' }} />
                 <Stack.Screen name="perfil" options={{ title: 'Perfil' }} />
@@ -200,13 +204,13 @@ function AppNavigator() {
               <Stack.Protected guard={inHousehold && FEATURES.finance}>
                 {/* O endereço da antiga aba Finanças (favoritos, o app instalado): troca para Casa → Finanças. */}
                 <Stack.Screen name="financas" options={{ headerShown: false }} />
-                <Stack.Screen name="orcamento" options={{ title: 'Orçamento do mês', presentation: 'modal' }} />
-                <Stack.Screen name="conta/[id]" options={{ title: 'Conta', presentation: 'modal' }} />
-                <Stack.Screen name="gasto/[id]" options={{ title: 'Gasto', presentation: 'modal' }} />
+                <Stack.Screen name="orcamento" options={windowOptions(desktop, { title: 'Orçamento do mês' })} />
+                <Stack.Screen name="conta/[id]" options={windowOptions(desktop, { title: 'Conta' })} />
+                <Stack.Screen name="gasto/[id]" options={windowOptions(desktop, { title: 'Gasto' })} />
                 <Stack.Screen name="imposto-de-renda" options={{ title: 'Despesas médicas (IR)' }} />
                 <Stack.Screen name="consultor/index" options={{ title: 'Consultor (beta)' }} />
                 <Stack.Screen name="consultor/lancamentos" options={{ title: 'Lançamentos do banco' }} />
-                <Stack.Screen name="consultor/conversa" options={{ headerShown: false, presentation: 'modal' }} />
+                <Stack.Screen name="consultor/conversa" options={windowOptions(desktop, { headerShown: false }, 'Nuke consultor')} />
               </Stack.Protected>
               {/* Sem depender de casa: apagar a conta (da aba Configurações e da tela de boas-vindas, sem casa nenhuma) e o
                   Painel do app (de Configurações ou por /painel; só quem está em app_admins vê os números). */}

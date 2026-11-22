@@ -2,17 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { Profiler } from 'react';
+import { Dimensions, Platform, StyleSheet } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import ReceiptScreen from '@/app/nota/[id]';
 import { fetchPantryNear } from '@/data/home';
+import { signedImageUrl } from '@/data/images';
 import { PayerChips } from '@/features/finance/PayerChips';
 import { FEATURES } from '@/lib/features';
 import { stopWaitingForReceipt, takeConfirmedReceipt, waitForReceipt } from '@/lib/finishPurchase';
 import { formatBRL } from '@/domain/money';
 import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
-import { Button, Card, CheckCircle, Chip, IconButton, TextField } from '@/ui/primitives';
+import { DESKTOP_PANEL_SIDE_WIDTH } from '@/domain/desktop';
+import { Actions } from '@/ui/desktop';
+import { Button, Card, CheckCircle, Chip, IconButton, Screen, TextField } from '@/ui/primitives';
+import { SheetModal } from '@/ui/SheetModal';
 
 // A tela da nota de verdade, com as consultas e gravações de verdade de
 // src/data/receipts.ts e um "banco" em memória atrás do cliente do Supabase.
@@ -2649,5 +2654,137 @@ describe('quantos ovos vêm na embalagem', () => {
     expect(page()).not.toContain('R$ 0,00 o ovo');
     // A resposta guardada continua podendo ser mudada, como no ovo com valor.
     expect(chip('Mudar')).toBeDefined();
+  });
+});
+
+describe('no computador (ui/desktop): a revisão em duas colunas', () => {
+  const WINDOW = Dimensions.get('window');
+  /** O navegador, numa janela de computador (ou estreita). */
+  async function browser(width: number) {
+    jest.replaceProperty(Platform, 'OS', 'web');
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width, height: 900 } }));
+  }
+  afterEach(async () => {
+    await act(async () => Dimensions.set({ window: WINDOW }));
+  });
+  const flat = (node: ReactTestInstance) => (StyleSheet.flatten(node.props.style) ?? {}) as Record<string, unknown>;
+  const boxes = () => renderer!.root.findAll((node) => (node.type as unknown) === 'View');
+  /** A coluna do lado e a principal (no computador); fora dele, nenhuma das duas desenha caixa. */
+  const side = () => boxes().find((node) => flat(node).width === DESKTOP_PANEL_SIDE_WIDTH);
+  const main = () => boxes().find((node) => flat(node).flex === 1 && flat(node).minWidth === 0);
+  const footer = () => renderer!.root.findByType(Screen).props.footer;
+  /** Os botões que estão no rodapé, na ordem. */
+  const footerButtons = () => {
+    const bar = footer();
+    if (!bar) return [];
+    return bar.type === Button ? [bar.props.title] : renderer!.root.findByType(Actions).findAllByType(Button).map((entry) => entry.props.title);
+  };
+  /** Tudo o que a tela escreve, no celular (para comparar com a ordem do computador). */
+  async function phoneLines() {
+    await open();
+    const all = lines();
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    return all;
+  }
+
+  beforeEach(() => seed(receipt(), item('a', 'DETERGENTE YPE', 50), item('b', 'ARROZ 5KG', 12.9)));
+
+  it('no celular, como sempre: "Confirmar nota" no rodapé, e "Descartar nota" depois dos itens', async () => {
+    await open();
+    expect(side()).toBeUndefined();
+    expect(footer().props.title).toBe('Confirmar nota (2 itens)');
+    expect(renderer!.root.findByType(Screen).props.wide).toBe(true);
+    const all = lines();
+    expect(all.indexOf('Mercado')).toBeLessThan(all.indexOf('Itens (2)'));
+    expect(all.indexOf('Itens (2)')).toBeLessThan(all.indexOf('ARROZ 5KG'));
+    expect(all.indexOf('ARROZ 5KG')).toBeLessThan(all.indexOf('Descartar nota'));
+    expect(all.indexOf('Descartar nota')).toBeLessThan(all.indexOf('Confirmar nota (2 itens)'));
+  });
+
+  it('na janela estreita do navegador, também: as colunas não desenham caixa nenhuma', async () => {
+    await browser(800);
+    await open();
+    expect(side()).toBeUndefined();
+    expect(main()).toBeUndefined();
+    expect(footer().props.title).toBe('Confirmar nota (2 itens)');
+  });
+
+  it('no computador, os itens na principal; o cabeçalho, o total e a lista na do lado; as ações no rodapé, sempre à vista', async () => {
+    await browser(1440);
+    await open();
+    const aside = said(side()!);
+    expect(aside).toEqual(expect.arrayContaining(['Mercado', 'Assaí', 'Soma dos itens', 'Total da nota']));
+    expect(aside).not.toContain('DETERGENTE YPE');
+    // As ações não ficam numa coluna que rola: ficam no rodapé fixo, encostadas à direita, a de confirmar por último.
+    expect(aside).not.toContain('Confirmar nota (2 itens)');
+    expect(aside).not.toContain('Descartar nota');
+    expect(footerButtons()).toEqual(['Descartar nota', 'Confirmar nota (2 itens)']);
+    expect(renderer!.root.findByType(Actions).props.end).toBe(true);
+    // As duas colunas rolam com a tela: nenhuma fica parada nem rola por dentro.
+    for (const box of boxes()) expect(flat(box).position).not.toBe('sticky');
+    for (const box of boxes()) expect(flat(box).overflowY).toBeUndefined();
+    const items = said(main()!);
+    expect(items).toEqual(expect.arrayContaining(['Itens (2)', 'DETERGENTE YPE', 'ARROZ 5KG']));
+    expect(items).not.toContain('Descartar nota');
+    // Um botão de cada.
+    expect(renderer!.root.findAllByType(Button).filter((entry) => String(entry.props.title).startsWith('Confirmar nota'))).toHaveLength(1);
+    expect(renderer!.root.findAllByType(Button).filter((entry) => entry.props.title === 'Descartar nota')).toHaveLength(1);
+  });
+
+  it('no computador, a ordem do teclado e do leitor de tela é exatamente a do celular: os itens antes de descartar e de confirmar', async () => {
+    const phone = await phoneLines();
+    await browser(1440);
+    await open();
+    expect(side()).toBeDefined();
+    expect(lines()).toEqual(phone);
+    const all = lines();
+    expect(all.indexOf('ARROZ 5KG')).toBeLessThan(all.indexOf('Descartar nota'));
+    expect(all.indexOf('Descartar nota')).toBeLessThan(all.indexOf('Confirmar nota (2 itens)'));
+  });
+
+  it('no computador, "Confirmar nota" no rodapé confirma como o do celular', async () => {
+    await browser(1440);
+    await open();
+    await press(button('Confirmar nota'));
+    expect(mockDb.rpcs.map((rpc) => rpc.fn)).toEqual(['confirm_receipt']);
+    expect((mockDb.rpcs[0].args.p_items as Row[]).map((entry) => entry.id)).toEqual(['a', 'b']);
+  });
+
+  it('a nota confirmada, no computador: sem "Confirmar nota", e "Excluir nota" no rodapé, depois dos itens', async () => {
+    seed(receipt({ status: 'confirmed', source: 'qrcode' }), item('a', 'DETERGENTE YPE', 50));
+    const phone = await phoneLines();
+    await browser(1440);
+    await open();
+    expect(button('Confirmar nota')).toBeUndefined();
+    expect(footerButtons()).toEqual(['Excluir nota']);
+    expect(lines()).toEqual(phone);
+  });
+
+  it('a janela que cruza a largura do computador não perde o que foi digitado num item (o peso do balcão)', async () => {
+    seed(receipt({ total: 22.99 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }));
+    const weightField = () => renderer!.root.findAllByType(TextField).find((entry) => entry.props.placeholder === 'Peso em kg (ex.: 0,186)');
+    await browser(1440);
+    await open();
+    await press(chip('Informar o peso'));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    // Para a janela estreita (o iPad que vira de pé) e de volta: o campo continua aberto, com o peso digitado.
+    await browser(900);
+    expect(side()).toBeUndefined();
+    expect(weightField()?.props.value).toBe('0,186');
+    await browser(1440);
+    expect(side()).toBeDefined();
+    expect(weightField()?.props.value).toBe('0,186');
+  });
+
+  it('as fotos da nota abrem na caixa das fotos (SheetModal `photo`): no computador, uma caixa grande no meio da janela', async () => {
+    seed(receipt({ image_path: 'h1/nota.jpg' }), item('a', 'DETERGENTE YPE', 50));
+    jest.mocked(signedImageUrl).mockResolvedValueOnce('https://fotos/h1/nota.jpg');
+    await browser(1440);
+    await open();
+    await press(button('Ver foto da nota'));
+    const viewer = renderer!.root.findAllByType(SheetModal).find((entry) => entry.props.visible);
+    expect(viewer?.props.photo).toBe(true);
+    expect(said(viewer!)).toContain('Foto da nota');
   });
 });

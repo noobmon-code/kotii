@@ -1,4 +1,4 @@
-import { router, Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
@@ -34,6 +34,7 @@ import {
 import { weekdayOf } from '@/domain/health';
 import { WEEKDAYS } from '@/domain/medications';
 import { openNewPerson, PersonChips } from '@/features/health/PersonChips';
+import { closeWindow } from '@/lib/navigation';
 import type { FamilyEvent, Person } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
 import {
@@ -272,7 +273,7 @@ function EventForm({
     const values = result.values;
     const send = () => {
       setKnown((before) => [...before, values]);
-      save.mutate({ id: event?.id, values }, { onSuccess: () => router.back(), onError });
+      save.mutate({ id: event?.id, values }, { onSuccess: () => closeWindow('compromisso/[id]'), onError });
     };
     // Uma pergunta por toque, e a resposta vale para o que a pessoa leu: se a busca chegar com a pergunta
     // aberta, o salvar não pergunta de novo.
@@ -369,7 +370,7 @@ function EventForm({
           icon="trash-can-outline"
           onPress={() =>
             confirmAction('Excluir compromisso', series ? `Excluir "${event.title}" em todas as vezes?` : `Excluir "${event.title}"?`, 'Excluir', () =>
-              remove.mutate(event.id, { onSuccess: () => router.back(), onError }),
+              remove.mutate(event.id, { onSuccess: () => closeWindow('compromisso/[id]'), onError }),
             )
           }
         />
