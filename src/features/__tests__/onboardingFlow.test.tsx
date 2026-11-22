@@ -17,6 +17,7 @@ import {
   CHOICE_TITLE,
   CODE_TITLE,
   CONFIRM_EMAIL_DONE,
+  CONFIRM_EMAIL_NOT_YET,
   CONFIRM_EMAIL_RESENT,
   CONFIRM_EMAIL_TITLE,
   confirmEmailText,
@@ -209,6 +210,31 @@ const pressText = async (label: string) => {
   await settle();
 };
 const sheet = (title: string) => renderer!.root.findAll((n) => n.props.title === title && typeof n.props.onClose === 'function')[0];
+/**
+ * O relógio e o setInterval de mentira, para a espera do "Reenviar o e-mail" (useResendWait); o setTimeout segue de
+ * verdade, porque o settle espera por ele.
+ */
+function fakeClock() {
+  jest.useFakeTimers({
+    doNotFake: [
+      'hrtime',
+      'nextTick',
+      'performance',
+      'queueMicrotask',
+      'requestAnimationFrame',
+      'cancelAnimationFrame',
+      'requestIdleCallback',
+      'cancelIdleCallback',
+      'setImmediate',
+      'clearImmediate',
+      'setTimeout',
+      'clearTimeout',
+    ],
+  });
+}
+const passSeconds = async (seconds: number) => {
+  await act(async () => jest.advanceTimersByTime(seconds * 1000));
+};
 const calls = (name: string) => mockRpc.mock.calls.filter(([called]) => called === name);
 
 beforeEach(() => {
@@ -232,6 +258,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
+  jest.useRealTimers();
 });
 
 describe('o começo depois da conta (bem-vindo, com a chave ligada)', () => {
@@ -632,10 +659,13 @@ describe('a prévia do começo (para quem mantém o app)', () => {
     await type('Senha', 'segredo1');
     await press(SIGN_UP_TITLE);
     expect(page()).toContain(confirmEmailText('nova@exemplo.com'));
+    // Como a conta de verdade: a espera para reenviar já começa com a conta criada.
+    expect(button('Reenviar o e-mail em 60 s').props.disabled).toBe(true);
     await press(CONFIRM_EMAIL_DONE);
     expect(page()).toContain(SIGN_IN_TITLE);
     await press(SIGN_IN_TITLE);
     expect(mockAuth.signUp).not.toHaveBeenCalled();
+    expect(mockAuth.resend).not.toHaveBeenCalled();
     expect(mockAuth.signInWithPassword).not.toHaveBeenCalled();
     await type('Seu nome', 'Ana');
     await press('Continuar');
@@ -671,6 +701,7 @@ describe('as boas-vindas e a conta (entrar, com a chave ligada)', () => {
   });
 
   it('o aparelho que nunca teve conta vê as boas-vindas; criar a conta pede a confirmação numa tela', async () => {
+    fakeClock();
     await mount(<SignInScreen />);
     expect(page()).toContain(WELCOME_TITLE);
     await press(WELCOME_CREATE);
@@ -683,12 +714,47 @@ describe('as boas-vindas e a conta (entrar, com a chave ligada)', () => {
     expect(mockAuth.signUp).toHaveBeenCalledWith({ email: 'nova@exemplo.com', password: 'segredo1' });
     expect(page()).toContain(CONFIRM_EMAIL_TITLE);
     expect(page()).toContain(confirmEmailText('nova@exemplo.com'));
+    // O e-mail acabou de sair: o Supabase recusa outro antes de 60 s, então a espera começa com a conta criada (um
+    // "Reenviar" logo de cara não mandaria nada e diria "Mandamos de novo").
+    expect(button('Reenviar o e-mail')).toBeUndefined();
+    expect(button('Reenviar o e-mail em 60 s').props.disabled).toBe(true);
+    await passSeconds(59);
+    expect(button('Reenviar o e-mail em 1 s').props.disabled).toBe(true);
+    await passSeconds(1);
+    expect(button('Reenviar o e-mail').props.disabled).toBe(false);
     await press('Reenviar o e-mail');
     expect(mockAuth.resend).toHaveBeenCalledWith({ type: 'signup', email: 'nova@exemplo.com' });
     expect(notify).toHaveBeenCalledWith(CONFIRM_EMAIL_TITLE, CONFIRM_EMAIL_RESENT);
+    // E de novo a espera, depois do reenvio.
+    expect(button('Reenviar o e-mail em 60 s').props.disabled).toBe(true);
     await press(CONFIRM_EMAIL_DONE);
     expect(page()).toContain(SIGN_IN_TITLE);
     expect(field('E-mail').props.value).toBe('nova@exemplo.com');
+  });
+
+  it('"Reenviar o e-mail" recusado por ser cedo demais não diz "Mandamos de novo": nada saiu, e a espera é a do servidor', async () => {
+    fakeClock();
+    // O servidor espera mais do que a conta da tela (ou outra aba pediu antes): a recusa de sempre do Supabase.
+    mockAuth.resend.mockResolvedValueOnce({
+      data: {},
+      error: Object.assign(new Error('For security purposes, you can only request this after 47 seconds.'), {
+        status: 429,
+        code: 'over_email_send_rate_limit',
+      }),
+    } as never);
+    await mount(<SignInScreen />);
+    await press(WELCOME_CREATE);
+    await type('E-mail', 'nova@exemplo.com');
+    await type('Senha', 'segredo1');
+    await press(SIGN_UP_TITLE);
+    await passSeconds(60);
+    await press('Reenviar o e-mail');
+    expect(mockAuth.resend).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(CONFIRM_EMAIL_TITLE, CONFIRM_EMAIL_NOT_YET);
+    expect(notify).not.toHaveBeenCalledWith(CONFIRM_EMAIL_TITLE, CONFIRM_EMAIL_RESENT);
+    expect(button('Reenviar o e-mail em 47 s').props.disabled).toBe(true);
+    // A tela continua na confirmação, com o mesmo e-mail.
+    expect(page()).toContain(confirmEmailText('nova@exemplo.com'));
   });
 
   it('quem chegou pelo link do convite vê o convite nas boas-vindas', async () => {

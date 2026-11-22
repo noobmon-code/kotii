@@ -51,6 +51,9 @@ export const CONFIRM_EMAIL_DONE = 'Já confirmei, entrar';
 export const CONFIRM_EMAIL_RESEND = 'Reenviar o e-mail';
 export const CONFIRM_EMAIL_CHANGE = 'Usar outro e-mail';
 export const CONFIRM_EMAIL_RESENT = 'Mandamos de novo. Use o link do e-mail mais recente.';
+/** Pedido cedo demais: o Supabase não mandou outro, e o link do e-mail anterior continua valendo. */
+export const CONFIRM_EMAIL_NOT_YET =
+  'Ainda não deu para mandar outro. O link do e-mail que já mandamos continua valendo; o botão mostra quando dá para pedir de novo.';
 /** O Supabase só manda outro e-mail para o mesmo endereço depois disso. */
 export const RESEND_SECONDS = 60;
 export function resendLabel(waitSeconds: number): string {
@@ -167,7 +170,7 @@ export function inviteLink(origin: string, code: string): string {
 /** A mensagem do convite: com o link quando há o endereço do site (no navegador), e sempre com o código. */
 export function inviteMessage(houseName: string, code: string, origin: string | null): string {
   return origin
-    ? `Entra na nossa casa "${houseName}" no Kotii: ${inviteLink(origin, code)} (ou use o código ${code}).`
+    ? `Entre na nossa casa "${houseName}" no Kotii: ${inviteLink(origin, code)} (ou use o código ${code}).`
     : `Entre na nossa casa "${houseName}" no Kotii com o código ${code}.`;
 }
 

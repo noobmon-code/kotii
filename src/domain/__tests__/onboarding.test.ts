@@ -69,7 +69,7 @@ describe('o código do convite', () => {
   });
 
   it('acha o código no link, na mensagem ou sozinho', () => {
-    expect(inviteCodeFrom('Entra na nossa casa: https://kotii.app/convite/abc234 (ou use o código ABC234).')).toBe('ABC234');
+    expect(inviteCodeFrom('Entre na nossa casa: https://kotii.app/convite/abc234 (ou use o código ABC234).')).toBe('ABC234');
     expect(inviteCodeFrom('Entre na nossa casa "Casa" no Kotii com o código XYZ789.')).toBe('XYZ789');
     expect(inviteCodeFrom('  xyz 789 ')).toBe('XYZ789');
     expect(inviteCodeFrom('Código: KM2P9Q')).toBe('KM2P9Q');
@@ -91,6 +91,8 @@ describe('a mensagem do convite', () => {
     expect(message).toContain('https://kotii.app/convite/ABC234');
     expect(message).toContain('código ABC234');
     expect(message).toContain('"Casa da Ana"');
+    // Você, como o resto do app (e como a mensagem sem o link): "Entre … use", nunca "Entra … use".
+    expect(message).toBe('Entre na nossa casa "Casa da Ana" no Kotii: https://kotii.app/convite/ABC234 (ou use o código ABC234).');
   });
 
   it('sem o endereço do site, só o código (como antes)', () => {

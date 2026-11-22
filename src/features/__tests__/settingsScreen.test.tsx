@@ -332,7 +332,7 @@ describe('Configurações: a aba', () => {
       await act(async () => invite().props.onPress());
       await press('Compartilhar convite');
       expect(share).toHaveBeenLastCalledWith({
-        message: 'Entra na nossa casa "Casa da Ana" no Kotii: https://kotii.app/convite/ABC234 (ou use o código ABC234).',
+        message: 'Entre na nossa casa "Casa da Ana" no Kotii: https://kotii.app/convite/ABC234 (ou use o código ABC234).',
       });
       await act(async () => renderer?.unmount());
 

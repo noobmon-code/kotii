@@ -93,7 +93,11 @@ export function AccountForm({
   );
 }
 
-/** A espera para mandar o e-mail de novo (o Supabase recusa outro para o mesmo endereço antes disso). */
+/**
+ * A espera para mandar o e-mail de novo (o Supabase recusa outro para o mesmo endereço antes disso). Começa quando o
+ * primeiro e-mail sai (a conta criada), não só depois de um reenvio: senão o primeiro "Reenviar" seria cedo demais e
+ * não mandaria nada. `start(seconds)` aceita os segundos que o servidor disse faltar.
+ */
 export function useResendWait() {
   const [until, setUntil] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -106,10 +110,10 @@ export function useResendWait() {
   }, [waiting]);
   return {
     wait,
-    start: () => {
+    start: (seconds: number = RESEND_SECONDS) => {
       const at = Date.now();
       setNow(at);
-      setUntil(at + RESEND_SECONDS * 1000);
+      setUntil(at + seconds * 1000);
     },
   };
 }

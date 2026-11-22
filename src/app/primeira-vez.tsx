@@ -85,7 +85,10 @@ export default function OnboardingPreviewScreen() {
             onEmail={setEmail}
             onPassword={setPassword}
             onSubmit={() => {
-              if (filled()) setStep(step === 'criar' ? 'confirmar' : 'casa');
+              if (!filled()) return;
+              // Como na conta de verdade: a espera para reenviar começa quando a conta é criada.
+              if (step === 'criar') resend.start();
+              setStep(step === 'criar' ? 'confirmar' : 'casa');
             }}
             onSwitch={() => setStep(step === 'criar' ? 'entrar' : 'criar')}
             onForgot={() => notify('Prévia', 'Numa conta de verdade, aqui começa a recuperação da senha, como hoje.')}
@@ -96,7 +99,7 @@ export default function OnboardingPreviewScreen() {
           <ConfirmEmailStep
             email={email.trim()}
             onDone={() => setStep('entrar')}
-            onResend={resend.start}
+            onResend={() => resend.start()}
             onChange={() => setStep('criar')}
             resendWait={resend.wait}
             busy={false}
