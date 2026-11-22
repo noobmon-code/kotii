@@ -11518,8 +11518,10 @@ begin
 end $$;
 
 -- A foto do dia de um mês em que ninguém usou a IA, com a função de agora: cada tipo que ai_usage aceita, com zero
--- (um zero sabido: só o dia reconstruído fica com '{}'), a foto de produto também. As fotos de mais abaixo já têm
--- uso de todos os tipos que contam, então o zero é só desta.
+-- (um zero sabido: só o dia reconstruído fica com '{}'), a foto de produto também. Aqui não há soma nenhuma: o total
+-- do dia é só o objeto de zeros de snapshot_app_stats, e ele tem de ter cada tipo do check de ai_usage. As fotos de
+-- mais abaixo conferem o mesmo zero ao lado das somas: o do consultor financeiro, que não tem uso nelas, e, no fim,
+-- o da foto de produto sem uso no mês.
 reset role;
 do $$
 declare
@@ -11704,6 +11706,9 @@ begin
   select * into s from public.app_daily_stats where day = today;
   assert s.accounts = 5 and s.households = 2, 'today: five accounts, two households';
   assert s.active_users = 2 + beto_today, 'today: Ana and Dani (and Beto when his refresh was today): ' || s.active_users;
+  -- O consultor financeiro não tem uso neste mês: o "finance": 0 vem do objeto de zeros, não de uma soma.
+  assert not exists (select 1 from public.ai_usage where kind = 'finance' and month = public.ai_month()),
+    'no finance use this month, so its zero is the snapshot''s own';
   assert s.ai_month = '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0, "product": 90}',
     'the month''s AI use, summed, and every kind without use at zero: ' || s.ai_month::text;
   assert not s.backfilled, 'a real snapshot';
@@ -11862,12 +11867,15 @@ begin
   assert (select active_users from public.app_daily_stats where day = today - 1) = yesterday_active + 5, 'yesterday never goes down';
 end $$;
 
--- Os outros tipos com uso e a foto de produto sem nenhum no mês: ela fica com zero, ao lado das somas.
+-- Os outros tipos com uso e a foto de produto sem nenhum no mês: ela fica com zero, ao lado das somas (como o
+-- consultor financeiro, que segue sem uso).
 do $$
 declare
   s public.app_daily_stats;
 begin
   delete from public.ai_usage where kind = 'product' and month = public.ai_month();
+  assert not exists (select 1 from public.ai_usage where kind in ('product', 'finance') and month = public.ai_month()),
+    'no product photo nor finance use this month';
   perform public.snapshot_app_stats();
   select * into s from public.app_daily_stats where day = (now() at time zone 'America/Sao_Paulo')::date;
   assert s.ai_month = '{"chat": 245, "photo": 164, "menu": 39, "nfce": 0, "finance": 0, "product": 0}',
