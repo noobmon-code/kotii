@@ -8,8 +8,8 @@ import { normalizeSearch } from '@/domain/search';
 import { CategoryIcon, Icon, Section, Text, useCategoryTint } from '@/ui/primitives';
 import { radius, space } from '@/ui/theme';
 
-// As faixas ficam acima da lista: compactas, para ela começar mais cedo (o desenho menor, menos espaço em cima e
-// embaixo). O azulejo tem a largura de antes (92), com 2 de cada lado em vez de 4: o nome vai em duas linhas com 88
+// As faixas ficam acima da lista: compactas, para ela começar mais cedo (o desenho de 36 em vez de 44, e 8 em cima em
+// vez de 12; embaixo do nome, os mesmos 8 de antes). O azulejo tem a largura de antes (92), com 2 de cada lado em vez de 4: o nome vai em duas linhas com 88
 // pontos, e toda palavra dos itens comuns cabe inteira numa, em vez de quebrar numa letra; a mais larga é
 // "Multivitamínico" (87,1 em Nunito SemiBold 12,5; recentPurchases.test.tsx mede cada palavra do catálogo com as
 // larguras do arquivo da fonte). O toque passa dos 44.

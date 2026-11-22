@@ -2,13 +2,25 @@
 // o próprio texto que o app manda pelo WhatsApp, listShare) vira itens, um por
 // linha, com quantidade e unidade quando a linha diz. A tela mostra a prévia
 // antes de pôr qualquer coisa: o que já está para comprar na lista não entra
-// de novo. A mesma leitura serve o campo de pôr item (readListLine): a mesma
-// quantidade, a mesma unidade e o mesmo nome, com uma diferença só: a observação
-// entre parênteses que diz o que se pode comprar ("Leite (sem lactose)",
-// decidesPurchase) fica no nome digitado, e a colagem a tira, como toda
-// observação, porque é ali que o texto do app escreve a descrição do item. Por
-// isso "Leite (sem lactose)" digitado é o item "Leite (sem lactose)", e colado é
-// "Leite": readListLine e parsePastedList não são trocáveis.
+// de novo. A leitura de cada item serve também o campo de pôr item
+// (readListLine): o texto digitado é lido como um item colado (a quantidade, a
+// unidade e o nome saem do mesmo jeito), mas a mesma linha não dá o mesmo nos
+// dois caminhos, em três coisas:
+// - digitado, o texto é um item só: a vírgula e o ponto e vírgula, que na
+//   colagem separam itens (splitItems), ficam no nome ("arroz, feijão" digitado
+//   é o item "Arroz, feijão"; colado, "Arroz" e "Feijão"; "2 kg arroz,
+//   integral" digitado é 2 kg de "Arroz, integral"; colado, 2 kg de "Arroz" e
+//   1 un de "Integral");
+// - a colagem tira os títulos (isHeading: a primeira linha em negrito ou
+//   itálico, as seções e o título do texto do app); digitado, nada é título, e
+//   "*Arroz*" é o item "Arroz" (colado sozinho, não dá item nenhum);
+// - a observação entre parênteses que diz o que se pode comprar ("Leite (sem
+//   lactose)", decidesPurchase) fica no nome digitado, e a colagem a tira, como
+//   toda observação, porque é ali que o texto do app escreve a descrição do item
+//   ("Leite (sem lactose)" digitado é esse item; colado, "Leite").
+// Por isso readListLine e parsePastedList não são trocáveis: "Pão, de
+// preferência integral" digitado é um item; colado, seriam dois, "Pão" e "De
+// preferência integral".
 
 import type { Unit } from '@/lib/types';
 
@@ -284,8 +296,11 @@ function readItem(text: string, typed = false): ReadItem | null {
 const cleanText = (text: string) => text.normalize('NFC').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '');
 
 /**
- * O item de uma linha digitada no campo de pôr item, com o que a linha disse da quantidade: o da colagem, a não ser
- * pela observação que diz o que se pode comprar, que aqui fica no nome ("Leite (sem lactose)"; colado, "Leite").
+ * O item de uma linha digitada no campo de pôr item, com o que a linha disse da quantidade. É lido como um item da
+ * colagem, com três diferenças (o cabeçalho do arquivo as conta): a linha toda é um item só, e a vírgula, que na
+ * colagem separa itens, fica no nome ("arroz, feijão" é o item "Arroz, feijão"); nada nela é título ("*Arroz*" é
+ * "Arroz"; colado sozinho, é o título e não dá item); e a observação que diz o que se pode comprar fica no nome
+ * ("Leite (sem lactose)"; colado, "Leite").
  */
 export interface TypedLine extends PastedItem {
   /** A linha disse a quantidade ("2 kg arroz", "leite x2", "1 dz ovos"); sem ela, 1 un, a de sempre. */

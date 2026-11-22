@@ -125,14 +125,16 @@ describe('as faixas de cima da lista', () => {
     expect(tile.props.accessibilityLabel).toBe('Adicionar Café, 1 un. Costuma comprar a cada 10 dias · última há 14 dias');
   });
 
-  it('compactas: desenho menor e menos espaço em cima, o nome em até duas linhas, e o toque continua passando dos 44', async () => {
+  it('compactas: desenho menor e menos espaço em cima (embaixo, o de antes), o nome em até duas linhas, e o toque continua passando dos 44', async () => {
     const root = await mount(<RecentPurchases items={[milk]} onAdd={jest.fn()} />);
     const [tile] = tiles(root);
     const style = tileStyle(tile);
-    // Antes: desenho de 44 e 12 em cima. A largura é a de antes (92), para o nome (ver o teste de baixo).
+    // Antes: desenho de 44, 12 em cima e 8 embaixo. Só o desenho e o espaço de cima diminuíram: os 8 embaixo do nome
+    // são os de antes. A largura também é a de antes (92), para o nome (ver o teste de baixo).
     expect(style.width).toBe(92);
     expect(style.minHeight).toBeGreaterThanOrEqual(44);
     expect(style.paddingTop).toBe(8);
+    expect(style.paddingBottom).toBe(8);
     expect(tile.findByType(CategoryIcon).props.size).toBe(36);
     expect(tile.findAllByType(Text)[0].props.numberOfLines).toBe(2);
   });

@@ -1,3 +1,6 @@
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
 import { describe, expect, it } from '@jest/globals';
 
 import { listShareText, type ShareItem } from '../listShare';
@@ -75,7 +78,7 @@ describe('readListLine: a linha digitada no campo de pôr item', () => {
     expect(typed('Leite x2 (marca X)')).toEqual(['Leite', 2, 'un', true]);
   });
 
-  it('a única diferença da colagem: lá a observação sai sempre, porque é onde o texto do app escreve a descrição', () => {
+  it('a observação que decide a compra: colada, ela sai sempre, porque é onde o texto do app escreve a descrição', () => {
     // Digitada, "(sem lactose)" é o pedido; colada, pode ser a descrição de um item que já está na lista (listShare).
     for (const [text, name] of [
       ['Leite (sem lactose)', 'Leite'],
@@ -91,6 +94,37 @@ describe('readListLine: a linha digitada no campo de pôr item', () => {
   it('um item só: a vírgula fica no nome (na colagem ela separa itens), e "1,5 kg" continua a quantidade', () => {
     expect(typed('arroz, feijão')).toEqual(['Arroz, feijão', 1, 'un', false]);
     expect(typed('1,5 kg tomate')).toEqual(['Tomate', 1.5, 'kg', true]);
+  });
+
+  it('a mesma linha não dá o mesmo nos dois caminhos: a vírgula, o título e a observação que decide a compra', () => {
+    // A vírgula: digitada, fica no nome de um item só; colada, separa itens.
+    expect(typed('2 kg arroz, integral')).toEqual(['Arroz, integral', 2, 'kg', true]);
+    expect(read('2 kg arroz, integral')).toEqual([['Arroz', 2, 'kg'], ['Integral', 1, 'un']]);
+    expect(typed('arroz, feijão')).toEqual(['Arroz, feijão', 1, 'un', false]);
+    expect(read('arroz, feijão')).toEqual([['Arroz', 1, 'un'], ['Feijão', 1, 'un']]);
+    expect(typed('Pão, de preferência integral')).toEqual(['Pão, de preferência integral', 1, 'un', false]);
+    expect(read('Pão, de preferência integral')).toEqual([['Pão', 1, 'un'], ['De preferência integral', 1, 'un']]);
+    // O título: a primeira linha em negrito, colada, é o título da lista; digitada, é o item.
+    expect(typed('*Arroz*')).toEqual(['Arroz', 1, 'un', false]);
+    expect(read('*Arroz*')).toEqual([]);
+    expect(typed('*Laticínios*')).toEqual(['Laticínios', 1, 'un', false]);
+    expect(read('- Leite\n*Laticínios*')).toEqual([['Leite', 1, 'un']]);
+    // A observação que decide a compra: digitada, fica no nome; colada, sai.
+    expect(typed('Leite (sem lactose)')).toEqual(['Leite (sem lactose)', 1, 'un', false]);
+    expect(read('Leite (sem lactose)')).toEqual([['Leite', 1, 'un']]);
+  });
+
+  it('o cabeçalho de listPaste.ts e o TypedLine contam as três diferenças, e não uma só', () => {
+    const source = readFileSync(join(__dirname, '..', 'listPaste.ts'), 'utf8');
+    const header = source.slice(0, source.indexOf('\nimport ')).toLowerCase();
+    const typedDoc = source.slice(source.lastIndexOf('/**', source.indexOf('export interface TypedLine')), source.indexOf('export interface TypedLine')).toLowerCase();
+    for (const doc of [header, typedDoc]) {
+      expect(doc).toContain('vírgula');
+      expect(doc).toContain('título');
+      expect(doc).toContain('sem lactose');
+      expect(doc).toContain('três');
+      expect(doc).not.toMatch(/diferença só|única diferença|a não ser pela observação/);
+    }
   });
 
   it('a linha que não diz o que comprar não é item: só a quantidade, só um número, vazia', () => {
