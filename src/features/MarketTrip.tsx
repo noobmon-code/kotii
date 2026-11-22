@@ -2,7 +2,14 @@ import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { AppState, StyleSheet, View } from 'react-native';
 
-import { marketTripErrorMessage, useAnnounceMarketTrip, useEndingMarketTrips, useEndMarketTrip, useMarketTrips } from '@/data/marketTrips';
+import {
+  marketTripErrorMessage,
+  useAnnounceMarketTrip,
+  useAnnouncingMarketTrips,
+  useEndingMarketTrips,
+  useEndMarketTrip,
+  useMarketTrips,
+} from '@/data/marketTrips';
 import { announceResultText, canAnnounceTrip, liveTrips, TRIP_CONFIRM, tripActionLabel, tripBannerText, tripButtonLabels } from '@/domain/marketTrips';
 import { useAuth, useHousehold } from '@/lib/auth';
 import type { ListKind } from '@/lib/types';
@@ -17,21 +24,44 @@ interface TripList {
   kind: ListKind;
 }
 
-/**
- * "Estou indo ao mercado", na lista: confirma e avisa a casa (o servidor
- * manda o aviso aos navegadores dos outros e a faixa aparece para todos);
- * depois diz o que aconteceu. Sem mais ninguém na casa, não aparece.
- */
-export function MarketTripAction({ list }: { list: TripList }) {
+/** O botão "Estou indo ao mercado" aparece: há mais alguém na casa, e o banco já tem as idas. */
+function useTripActionShown(): boolean {
   const members = useHousehold().data?.members.length ?? 0;
-  // A mesma busca da faixa (sem pedido a mais): null é o banco dizendo que ainda não tem as idas.
+  // A mesma busca da faixa (sem pedido a mais): null é o banco dizendo que ainda não tem as idas. Antes da migração o
+  // botão só poderia falhar: não aparece. Enquanto a busca não respondeu, sem internet ou com outro erro, ele fica (não
+  // some nem pisca).
   const notDeployed = useMarketTrips().data === null;
+  return canAnnounceTrip(members) && !notDeployed;
+}
+
+/**
+ * "Estou indo ao mercado", na lista: o botão, que abre a confirmação (`MarketTripConfirm`) pelo `onPress`. As duas
+ * são separadas porque a tela desenha a confirmação fora das colunas do computador (ui/desktop), e o aberto dela fica
+ * com a tela: a pergunta aberta não depende de onde o botão está nem de ele ser montado de novo. Sem mais ninguém na
+ * casa, não aparece.
+ */
+export function MarketTripAction({ list, onPress }: { list: TripList; onPress: () => void }) {
+  const shown = useTripActionShown();
+  // Gira pelo pedido da confirmação, também depois de remontar.
+  const announcing = useAnnouncingMarketTrips().includes(list.id);
+  if (!shown) return null;
+  return (
+    <Button title={tripActionLabel(list.kind)} icon="cart-arrow-right" variant="secondary" compact loading={announcing} onPress={onPress} />
+  );
+}
+
+/**
+ * A confirmação de "Estou indo ao mercado": avisa a casa (o servidor manda o aviso aos navegadores dos outros e a
+ * faixa aparece para todos) e depois diz o que aconteceu. Fecha quando o botão sai (a casa ficou só com a pessoa, ou
+ * o banco disse que não tem as idas), como quando era parte dele.
+ */
+export function MarketTripConfirm({ list, visible, onClose }: { list: TripList; visible: boolean; onClose: () => void }) {
+  const shown = useTripActionShown();
   const announce = useAnnounceMarketTrip();
-  const [asking, setAsking] = useState(false);
-  if (!canAnnounceTrip(members)) return null;
-  // Antes da migração o botão só poderia falhar: não aparece. Enquanto a busca
-  // não respondeu, sem internet ou com outro erro, ele fica (não some nem pisca).
-  if (notDeployed) return null;
+  useEffect(() => {
+    if (visible && !shown) onClose();
+  }, [visible, shown, onClose]);
+  if (!shown) return null;
 
   const label = tripActionLabel(list.kind);
   // A resposta é esperada aqui, e não nas opções do mutate (que só valem com a tela aberta): quem volta para as
@@ -46,16 +76,13 @@ export function MarketTripAction({ list }: { list: TripList }) {
   };
 
   return (
-    <>
-      <Button title={label} icon="cart-arrow-right" variant="secondary" compact loading={announce.isPending} onPress={() => setAsking(true)} />
-      <ActionSheet
-        visible={asking}
-        title={TRIP_CONFIRM.title}
-        message={TRIP_CONFIRM.message}
-        actions={[{ label: TRIP_CONFIRM.action, icon: 'bullhorn-outline', onPress: tell }]}
-        onClose={() => setAsking(false)}
-      />
-    </>
+    <ActionSheet
+      visible={visible}
+      title={TRIP_CONFIRM.title}
+      message={TRIP_CONFIRM.message}
+      actions={[{ label: TRIP_CONFIRM.action, icon: 'bullhorn-outline', onPress: tell }]}
+      onClose={onClose}
+    />
   );
 }
 

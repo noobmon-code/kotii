@@ -345,7 +345,7 @@ describe('a tela', () => {
       const around = boxes(root).filter((box) => box.findAll((node) => node === button).length > 0);
       return around[around.length - 1];
     };
-    const page = (props: { wide?: boolean; refreshing?: boolean; ownRefreshButton?: boolean } = {}) => (
+    const page = (props: { wide?: boolean; fab?: boolean; refreshing?: boolean; ownRefreshButton?: boolean } = {}) => (
       <Screen onRefresh={onRefresh} {...props}>
         <Text>conteúdo</Text>
       </Screen>
@@ -385,7 +385,7 @@ describe('a tela', () => {
 
     it('nas abas fica por cima, no canto de cima à direita; nas outras telas, numa linha dele, à direita, antes do conteúdo', async () => {
       await browser(1440);
-      const tab = await mount(page({ wide: true }));
+      const tab = await mount(page({ wide: true, fab: true }));
       expect(flat(holder(tab))).toMatchObject({ position: 'absolute', right: SCREEN_PADDING, zIndex: 1 });
       // Antes do conteúdo, na ordem do teclado e do leitor de tela: a primeira caixa dentro da do conteúdo.
       const first = (root: ReactTestInstance) => boxes(content(root))[1] === holder(root);
@@ -396,10 +396,18 @@ describe('a tela', () => {
       expect(first(form)).toBe(true);
     });
 
+    it('na tela larga que não é aba (a lista aberta), numa linha dele: por cima, cobriria o cartão de pôr item da coluna do lado', async () => {
+      await browser(1440);
+      const root = await mount(page({ wide: true }));
+      expect(flat(content(root)).maxWidth).toBe(DESKTOP_CONTENT_WIDTH);
+      expect(flat(holder(root))).toEqual({ alignSelf: 'flex-end' });
+      expect(boxes(content(root))[1]).toBe(holder(root));
+    });
+
     it('numa aba com o título só para o leitor de tela, vem depois dele: quem navega pelos títulos o acha a partir do começo da página', async () => {
       await browser(1440);
       const root = await mount(
-        <Screen wide heading="Compras" onRefresh={onRefresh}>
+        <Screen fab wide heading="Compras" onRefresh={onRefresh}>
           <Text>Listas</Text>
         </Screen>,
       );

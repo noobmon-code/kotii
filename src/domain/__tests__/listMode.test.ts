@@ -1,17 +1,22 @@
 import { describe, expect, it } from '@jest/globals';
 
 import {
+  ADD_FIELD_PLACEHOLDER,
   addCardShape,
+  addLineButton,
   addOptionsLabel,
-  DEFAULT_AMOUNT,
+  BARCODE_BUTTON,
   emptyListMessage,
+  isUsualAmount,
   LIST_MENU_LABELS,
   listMenuActions,
   listMode,
+  showsAddOptionsButton,
   showsEmptyList,
   showsSuggestions,
-  startsExpanded,
+  suggestionRow,
 } from '../listMode';
+import { readListLine } from '../listPaste';
 
 describe('listMode: montar a lista ou fazer a compra', () => {
   it('sem nada no carrinho e sem ida própria, montando', () => {
@@ -49,16 +54,32 @@ describe('addCardShape: o cartão de pôr item', () => {
   });
 });
 
-describe('startsExpanded: o modo compra começa recolhido só com a quantidade de sempre', () => {
-  it('1 un, recolhe', () => {
-    expect(startsExpanded(DEFAULT_AMOUNT.quantity, DEFAULT_AMOUNT.unit)).toBe(false);
-    expect(startsExpanded(' 1 ', 'un')).toBe(false);
+describe('o campo de pôr item: a quantidade vem do texto', () => {
+  it('o exemplo do campo diz que a quantidade vai no texto, e é lido como a linha que mostra', () => {
+    expect(ADD_FIELD_PLACEHOLDER).toBe('Adicionar (ex.: 2 kg arroz)');
+    const example = /ex\.: (.+)\)$/.exec(ADD_FIELD_PLACEHOLDER)![1];
+    expect(readListLine(example)).toMatchObject({ name: 'Arroz', quantity: 2, unit: 'kg', counted: true });
   });
 
-  it('outra quantidade, outra unidade ou o campo apagado: fica inteiro, para o item não sair com o que não se vê', () => {
-    expect(startsExpanded('3', 'un')).toBe(true);
-    expect(startsExpanded('1', 'kg')).toBe(true);
-    expect(startsExpanded('', 'un')).toBe(true);
+  it('a quantidade de sempre é 1 un', () => {
+    expect(isUsualAmount(1, 'un')).toBe(true);
+    expect(isUsualAmount(2, 'un')).toBe(false);
+    expect(isUsualAmount(1, 'kg')).toBe(false);
+  });
+
+  it('o botão diz o que vai entrar: o nome lido e, fora a de sempre, a quantidade', () => {
+    expect(addLineButton(readListLine('2 kg arroz')!)).toEqual({ title: 'Adicionar "Arroz" · 2 kg', label: 'Adicionar Arroz, 2 kg' });
+    expect(addLineButton(readListLine('leite x2')!)).toEqual({ title: 'Adicionar "Leite" · 2 un', label: 'Adicionar Leite, 2 un' });
+    expect(addLineButton(readListLine('½ kg presunto')!).title).toBe('Adicionar "Presunto" · 0,5 kg');
+    expect(addLineButton(readListLine('café')!)).toEqual({ title: 'Adicionar "Café"', label: 'Adicionar Café' });
+    // "1 leite" é a de sempre: o botão não repete.
+    expect(addLineButton(readListLine('1 leite')!).title).toBe('Adicionar "Leite"');
+    // O tamanho que é do nome fica no nome, e o botão mostra assim.
+    expect(addLineButton(readListLine('Café Pilão 500g')!).title).toBe('Adicionar "Café Pilão 500g"');
+  });
+
+  it('o botão do código de barras: curto na tela, a ação inteira para o leitor de tela', () => {
+    expect(BARCODE_BUTTON).toEqual({ title: 'Código de barras', label: 'Ler código de barras' });
   });
 });
 
@@ -90,17 +111,73 @@ describe('showsEmptyList e emptyListMessage: a lista sem itens', () => {
     expect(showsEmptyList({ mode: 'ver', items: 0, suggestions: 3 })).toBe(true);
   });
 
+  it('no computador as faixas ficam na coluna do lado: a lista vazia vai sempre na dos itens, que não fica em branco', () => {
+    for (const mode of ['montar', 'compra', 'ver'] as const) {
+      for (const suggestions of [0, 3]) expect(showsEmptyList({ mode, items: 0, suggestions, desktop: true })).toBe(true);
+      expect(showsEmptyList({ mode, items: 1, suggestions: 3, desktop: true })).toBe(false);
+    }
+  });
+
   it('o texto de cada momento só fala do que está na tela', () => {
     expect(emptyListMessage('montar')).toBe('Digite um item ou escolha do catálogo de itens comuns da casa.');
     expect(emptyListMessage('compra')).toBe('Digite no campo acima o que faltou.');
     expect(emptyListMessage('ver')).toBe('Esta lista ficou sem itens.');
   });
+
+  it('no computador o campo fica na coluna ao lado da lista vazia, e não acima: o texto diz onde ele está', () => {
+    expect(emptyListMessage('compra', true)).toBe('Digite no campo ao lado o que faltou.');
+    // Os outros não dizem onde está o campo: os mesmos do celular.
+    expect(emptyListMessage('montar', true)).toBe(emptyListMessage('montar'));
+    expect(emptyListMessage('ver', true)).toBe(emptyListMessage('ver'));
+    for (const mode of ['montar', 'compra', 'ver'] as const) expect(emptyListMessage(mode, true)).not.toMatch(/acima/);
+  });
+
+  it('montando no computador com as faixas na tela, o texto aponta para elas, embaixo do campo ao lado', () => {
+    expect(emptyListMessage('montar', true, true)).toBe(
+      'Digite um item no campo ao lado, escolha do catálogo de itens comuns ou toque numa das sugestões embaixo dele.',
+    );
+    // No celular a lista vazia não aparece com as faixas; no modo compra e na arquivada elas não estão na tela.
+    expect(emptyListMessage('montar', false, true)).toBe(emptyListMessage('montar'));
+    expect(emptyListMessage('compra', true, true)).toBe(emptyListMessage('compra', true));
+    expect(emptyListMessage('ver', true, true)).toBe(emptyListMessage('ver'));
+  });
+});
+
+describe('suggestionRow: a sugestão da busca diz quanto põe, quando a quantidade foi digitada', () => {
+  it('com a quantidade digitada, a linha de baixo diz quanto, também 1 un', () => {
+    expect(suggestionRow('Banana', 'Frutas e verduras', { quantity: 2, unit: 'kg' })).toEqual({
+      subtitle: 'Frutas e verduras · 2 kg',
+      label: 'Banana, Frutas e verduras, 2 kg',
+    });
+    // "30 ovos" no "Ovos (30 un)": uma cartela, e a linha diz antes do toque.
+    expect(suggestionRow('Ovos (30 un)', 'Ovos', { quantity: 1, unit: 'un' }).subtitle).toBe('Ovos · 1 un');
+    expect(suggestionRow('Queijo', 'Frios', { quantity: 500, unit: 'g' }).subtitle).toBe('Frios · 500 g');
+  });
+
+  it('sem quantidade digitada, a linha de sempre, e o leitor de tela lê os textos como estão', () => {
+    expect(suggestionRow('Banana', 'Frutas e verduras', null)).toEqual({ subtitle: 'Frutas e verduras' });
+  });
+});
+
+describe('showsAddOptionsButton: o botão "Mais opções" ao lado do campo', () => {
+  it('no modo compra, com o campo vazio', () => {
+    expect(showsAddOptionsButton('compra', false)).toBe(true);
+  });
+
+  it('com texto no campo, sai: o que ele abre só aparece com o campo vazio, e aberto não mostraria nada', () => {
+    expect(showsAddOptionsButton('compra', true)).toBe(false);
+  });
+
+  it('montando o cartão já está inteiro, e a arquivada não tem cartão', () => {
+    expect(showsAddOptionsButton('montar', false)).toBe(false);
+    expect(showsAddOptionsButton('ver', false)).toBe(false);
+  });
 });
 
 describe('addOptionsLabel: o botão "Mais opções" para o leitor de tela', () => {
   it('diz o que ele abre; o código de barras só quando a casa tem como lê-lo', () => {
-    expect(addOptionsLabel(true)).toBe('Mais opções: quantidade, unidade, itens comuns, colar lista e código de barras');
-    expect(addOptionsLabel(false)).toBe('Mais opções: quantidade, unidade, itens comuns, colar lista');
+    expect(addOptionsLabel(true)).toBe('Mais opções: itens comuns, colar lista e código de barras');
+    expect(addOptionsLabel(false)).toBe('Mais opções: itens comuns e colar lista');
   });
 });
 

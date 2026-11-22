@@ -39,6 +39,18 @@ const NEVER_DROP = new Set([
   'milnutri', 'enfamil',
 ]);
 
+/**
+ * O texto tem uma palavra que decide o que se pode comprar (NEVER_DROP: "sem lactose", "zero", "integral",
+ * "infantil", "Ninho"). A linha digitada no campo de pôr item (domain/listPaste, readListLine) não tira do nome a
+ * observação entre parênteses que diz isso ("Leite (sem lactose)"): sem ela, quem vai ao mercado traria o leite
+ * comum. O "Colar lista" tira, porque é ali que o texto do app escreve a descrição do item.
+ */
+export function decidesPurchase(text: string): boolean {
+  return normalizeSearch(text)
+    .split(/[^a-z0-9]+/)
+    .some((word) => word !== '' && (NEVER_DROP.has(word) || NEVER_DROP.has(singular(word))));
+}
+
 /** O item da lista sem a marca. */
 export interface GenericItem {
   /** O nome para a lista: "Leite desnatado". Sem saber que item é, o próprio nome. */

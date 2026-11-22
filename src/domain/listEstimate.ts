@@ -162,6 +162,30 @@ function eggsAsked(item: Pick<EstimateItem, 'name' | 'quantity' | 'unit' | 'cate
 }
 
 /**
+ * A quantidade com que entra o item escolhido nas sugestões depois de a pessoa digitar uma quantidade ("30 ovos",
+ * "1 dz ovos"), quando ele é de ovos: os mesmos ovos que a linha digitada pede, lidos como a conta lê (eggsAsked).
+ * O item cujo nome já diz quantos vêm ("Ovos (30 un)", "Ovos (dúzia)", os itens comuns que a busca por "ovos"
+ * sugere) entra em cartelas, arredondadas para cima porque não se compra meia ("30 ovos" é 1 "Ovos (30 un)", e não
+ * trinta cartelas de trinta; "2 dz ovos" são 2 "Ovos (dúzia)"; "20 ovos", 1 "Ovos (30 un)"); o sem a conta no nome
+ * ("Ovos brancos") entra em ovos, a partir de EGGS_AS_COUNT. Com poucas unidades sem a conta no nome ("2 ovos",
+ * "2 caixas de ovos"), cada uma já é uma cartela, como na conta: ficam como foram digitadas. Fora dos ovos e de "un",
+ * a quantidade digitada, como sempre.
+ */
+export function chosenItemQuantity(
+  typed: { name: string; quantity: number; unit: string },
+  chosen: { name: string; category: string | null | undefined },
+): number {
+  if (chosen.category !== 'ovos' || typed.unit !== 'un') return typed.quantity;
+  // A linha digitada pede os ovos do item escolhido: a categoria é a dele.
+  const asked = eggsAsked({ ...typed, category: 'ovos' });
+  if (!asked) return typed.quantity;
+  const size = packageSize(chosen.name);
+  // Com uma folga mínima: num múltiplo exato, o ponto flutuante não pode pôr uma cartela a mais.
+  if (size?.unit === 'un') return Math.max(1, Math.ceil(asked.count / size.amount - 1e-9));
+  return asked.count >= EGGS_AS_COUNT ? asked.count : typed.quantity;
+}
+
+/**
  * O preço por ovo de uma cotação em "un" que diz quantos vêm (dois ou mais); null nas outras. Arredondado a 8 casas:
  * R$ 5,04 em 6 e R$ 8,40 em 10 são o mesmo R$ 0,84 o ovo, mas em ponto flutuante o segundo sai um pouco acima.
  */
@@ -1088,6 +1112,44 @@ export function describePantryHits(names: readonly string[]): string {
   const all = [...unique.values()];
   const shown = all.length > PANTRY_NAMES ? [...all.slice(0, PANTRY_NAMES), `mais ${all.length - PANTRY_NAMES}`] : all;
   return `Na despensa: ${joinNames(shown)}. Se já acabou, dê baixa lá.`;
+}
+
+// O cartão da conta, antes da lista, fica recolhido numa linha: o quanto deve dar e o "i" que abre, ali mesmo, o
+// resto (de onde sai a conta, os preços de outras casas, o que não deu para conferir, carrinho e falta comprar,
+// "Onde estou" e a despensa). A linha recolhida não pode deixar o número ser lido errado: diz o lugar escolhido e
+// que há preço de outras casas na conta.
+
+/** O "i" do cartão da conta, para o leitor de tela (que também diz se está aberto). */
+export const ESTIMATE_MORE_LABEL = 'Mais sobre a conta da lista';
+
+/**
+ * O que a linha recolhida diz embaixo do total, para ele não ser lido errado: o lugar escolhido (a conta é a de lá,
+ * não a do último preço) e, com preço de outras casas na conta, que ela os inclui (o aviso inteiro, de que não são
+ * em tempo real, fica no "i"). null quando não há o que dizer.
+ */
+export function estimateMarker(
+  estimate: Partial<Pick<ListEstimate, 'sharedCount'>>,
+  storeName: string | null,
+): string | null {
+  const parts = [
+    ...(storeName ? [`Lugar escolhido: ${storeName}`] : []),
+    ...(estimate.sharedCount ? [storeName ? 'inclui preços de outras casas' : 'Inclui preços de outras casas'] : []),
+  ];
+  return parts.length ? parts.join(' · ') : null;
+}
+
+/** Quantos itens diferentes da lista estão na despensa (sem ligar para maiúscula ou acento, como describePantryHits). */
+const pantryCount = (names: readonly string[]) => new Set(names.map(normalizeSearch).filter(Boolean)).size;
+
+/**
+ * A linha recolhida quando nenhum item tem preço: só o que o cartão tem a dizer, curto (os preços que não deu para
+ * conferir, quantos itens estão na despensa). null quando não há nada (o cartão nem aparece).
+ */
+export function estimateShortLine({ unchecked, inPantry }: { unchecked: boolean; inPantry: readonly string[] }): string | null {
+  const count = pantryCount(inPantry);
+  const pantry = count ? `${count === 1 ? '1 item da lista está' : `${count} itens da lista estão`} na despensa.` : null;
+  if (unchecked) return pantry ? `Não deu para conferir os preços. ${pantry}` : 'Não deu para conferir os preços.';
+  return pantry;
 }
 
 /**

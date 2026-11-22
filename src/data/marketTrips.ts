@@ -118,12 +118,27 @@ export function tripsOnline(): boolean {
   return onlineManager.isOnline();
 }
 
+const ANNOUNCE_MARKET_TRIP_KEY = 'announceMarketTrip';
+
 export function useAnnounceMarketTrip() {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: [ANNOUNCE_MARKET_TRIP_KEY],
     mutationFn: announceMarketTrip,
     // Sem esperar a busca: o resultado do aviso aparece já, a faixa logo em seguida.
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: [MARKET_TRIPS_KEY] }),
+  });
+}
+
+/**
+ * As listas cujo aviso de ida está no ar agora, cada uma pelo seu pedido: o botão "Estou indo ao mercado" gira
+ * enquanto o da lista dele anda, mesmo sendo a confirmação (outro componente, fora das colunas do computador) quem
+ * pede, e também depois de a tela o montar de novo.
+ */
+export function useAnnouncingMarketTrips(): string[] {
+  return useMutationState({
+    filters: { mutationKey: [ANNOUNCE_MARKET_TRIP_KEY], status: 'pending' },
+    select: (mutation) => mutation.state.variables as string,
   });
 }
 

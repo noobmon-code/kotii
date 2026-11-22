@@ -2,13 +2,35 @@
 // o próprio texto que o app manda pelo WhatsApp, listShare) vira itens, um por
 // linha, com quantidade e unidade quando a linha diz. A tela mostra a prévia
 // antes de pôr qualquer coisa: o que já está para comprar na lista não entra
-// de novo.
+// de novo. A leitura de cada item serve também o campo de pôr item
+// (readListLine): o texto digitado é lido como um item colado (a quantidade, a
+// unidade e o nome saem do mesmo jeito), mas a mesma linha não dá o mesmo nos
+// dois caminhos, em três coisas:
+// - digitado, o texto é um item só: a vírgula e o ponto e vírgula, que na
+//   colagem separam itens (splitItems), ficam no nome ("arroz, feijão" digitado
+//   é o item "Arroz, feijão"; colado, "Arroz" e "Feijão"; "2 kg arroz,
+//   integral" digitado é 2 kg de "Arroz, integral"; colado, 2 kg de "Arroz" e
+//   1 un de "Integral");
+// - a colagem tira os títulos (isHeading: a primeira linha em negrito ou
+//   itálico, as seções e o título do texto do app); digitado, nada é título, e
+//   "*Arroz*" é o item "Arroz" (colado sozinho, não dá item nenhum);
+// - a observação entre parênteses que diz o que se pode comprar ("Leite (sem
+//   lactose)", decidesPurchase) fica no nome digitado, e a colagem a tira, como
+//   toda observação, porque é ali que o texto do app escreve a descrição do item
+//   ("Leite (sem lactose)" digitado é esse item; colado, "Leite").
+// Fora essas três, os dois caminhos dão o mesmo item, também com marcadores e
+// emojis no começo: a caixinha sai inteira mesmo depois de um emoji ou de outro
+// marcador ("✅ [x] 2 kg arroz" é 2 kg de "Arroz" digitado ou colado;
+// stripLeading), e listPaste.test.ts varre linhas ao acaso para conferir.
+// Por isso readListLine e parsePastedList não são trocáveis: "Pão, de
+// preferência integral" digitado é um item; colado, seriam dois, "Pão" e "De
+// preferência integral".
 
 import type { Unit } from '@/lib/types';
 
 import { CATEGORIES } from './categories';
 import { COMMON_ITEMS } from './commonItems';
-import { pendingSameItem, sameListItem } from './genericItem';
+import { decidesPurchase, pendingSameItem, sameListItem } from './genericItem';
 import { PRIORITIES } from './listItem';
 import { listNameKey } from './listLinks';
 import { parseDecimal } from './money';
@@ -113,17 +135,26 @@ function leadingFraction(s: string): { text: string } | { keep: true } | null {
 /** Letra ou número: o que começa e termina um nome. Emoji, marcador e pontuação não. */
 const isWordChar = (char: string) => /[\p{L}\p{N}]/u.test(char);
 
-/** Tira do começo os marcadores ("-", "•", "*", "[ ]", "✅", "1.", o número em emoji), emojis e espaços. */
+/** A caixinha de marcar no começo ("[ ]", "[x]", "[✓]"), com o espaço depois. */
+const CHECKBOX = /^\[[\sxX✓✔]?\]\s*/;
+
+/**
+ * Tira do começo os marcadores ("-", "•", "*", "[ ]", "✅", "1.", o número em emoji), emojis e espaços. A caixinha sai
+ * inteira também depois de outro marcador ou de um emoji ("- [x] arroz", "✅ [x] 2 kg arroz"): tirando um caractere
+ * de cada vez, o "[" sairia sozinho e o "x] " ficaria no nome. É o que faz a linha digitada (readListLine, que não
+ * passa pela limpeza dos emojis que a colagem faz antes do título) e a colada darem o mesmo item aqui.
+ */
 function stripLeading(text: string): string {
   let s = text;
   for (;;) {
     const before = s;
-    s = s.replace(/^\[[\sxX✓✔]?\]\s*/, '');
+    s = s.replace(CHECKBOX, '');
     // Numeração ("1.", "2)"), com espaço depois ou colada no nome ("1.Arroz"): "1.5 kg" é quantidade.
     s = s.replace(/^\d{1,3}[.)](?:\s+(?=\S)|(?=\p{L}))/u, '');
     // Número em emoji (o 1 a 9 dos emojis, e o 10): sempre numeração.
     s = s.replace(/^(?:\d{1,2}\u{FE0F}?\u{20E3}|\u{1F51F})\s*/u, '');
-    while (s && !isWordChar(s[0]) && s[0] !== '(') s = s.slice(1);
+    // Para na caixinha, que a volta seguinte tira inteira.
+    while (s && !isWordChar(s[0]) && s[0] !== '(' && !CHECKBOX.test(s)) s = s.slice(1);
     if (s === before) return s;
   }
 }
@@ -190,8 +221,17 @@ function isHeading(text: string, first: boolean): boolean {
   return Boolean(marked) && (first || SECTION_TITLES.has(normalizeSearch(marked![1])));
 }
 
-/** Um item da linha, ou null quando ela não diz item nenhum. */
-function readItem(text: string): PastedItem | null {
+/** Um item lido e se a linha disse a quantidade (sem ela, 1 un). */
+interface ReadItem {
+  item: PastedItem;
+  counted: boolean;
+}
+
+/**
+ * Um item da linha, ou null quando ela não diz item nenhum. `typed`: a linha digitada no campo de pôr item
+ * (readListLine), em que a observação que diz o que se pode comprar fica no nome; na colagem ela sai.
+ */
+function readItem(text: string, typed = false): ReadItem | null {
   let s = stripTrailing(stripLeading(text.trim()));
   if (!s || s.endsWith(':')) return null;
   // "· urgente", "· se der": a prioridade que o app escreve fica de fora.
@@ -231,10 +271,16 @@ function readItem(text: string): PastedItem | null {
   }
 
   // Quantidade no fim: "Leite (2)", "Leite x2", "Leite 2x"; a do começo vale mais. Outro parêntese no fim é a
-  // observação, que sai, a não ser que seja o nome de um item comum ("Ovos (dúzia)").
+  // observação, que sai, a não ser que seja o nome de um item comum ("Ovos (dúzia)"). Na colagem sai sempre: é ali
+  // que o texto do app (listShare) escreve a descrição do item ("- 2 un Leite (sem lactose)"), e o item colado de
+  // volta precisa ser o "Leite" que já está na lista (pastePreview). Na linha digitada, a observação que diz o que
+  // se pode comprar ("Leite (sem lactose)", "Pão (integral)": decidesPurchase, de genericItem) volta ao fim do nome
+  // (`note`), depois de lida a quantidade escrita antes dela ("Leite x2 (sem lactose)" são 2 un).
+  let note: string | null = null;
   const group = trailingGroup(s);
   if (group && !COMMON_WITH_PARENS.has(listNameKey(s))) {
     const after = quantityPhrase(group.inner);
+    if (typed && !after && decidesPurchase(group.inner)) note = s.slice(group.start).replace(/\s+/g, ' ').trim();
     s = stripTrailing(s.slice(0, group.start).trim());
     if (after && !counted) {
       quantity = after.quantity;
@@ -246,15 +292,47 @@ function readItem(text: string): PastedItem | null {
   const timesQuantity = times ? quantityOf(times[1] ?? times[2]) : null;
   if (times && timesQuantity !== null) {
     quantity = timesQuantity;
+    counted = true;
     s = s.slice(0, times.index).trim();
   }
 
-  const name = stripTrailing(stripLeading(s.replace(/\s+/g, ' ').trim())).slice(0, NAME_MAX).trim();
+  const base = stripTrailing(stripLeading(s.replace(/\s+/g, ' ').trim()));
+  const name = [base, note].filter(Boolean).join(' ').slice(0, NAME_MAX).trim();
   if (!name || !/\p{L}/u.test(name)) return null;
   // Tudo em minúsculas ("arroz", como se digita numa conversa): a primeira letra maiúscula, como os outros itens.
   const shown = name === name.toLocaleLowerCase('pt-BR') ? name.charAt(0).toLocaleUpperCase('pt-BR') + name.slice(1) : name;
   const common = COMMON_BY_KEY.get(listNameKey(shown));
-  return { name: shown, quantity, unit, category: common?.category ?? guessCategory(shown) };
+  return { item: { name: shown, quantity, unit, category: common?.category ?? guessCategory(shown) }, counted };
+}
+
+/** Os caracteres que não se veem (o espaço de largura zero de um texto copiado) saem antes de ler. */
+const cleanText = (text: string) => text.normalize('NFC').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '');
+
+/**
+ * O item de uma linha digitada no campo de pôr item, com o que a linha disse da quantidade. É lido como um item da
+ * colagem, com três diferenças (o cabeçalho do arquivo as conta): a linha toda é um item só, e a vírgula, que na
+ * colagem separa itens, fica no nome ("arroz, feijão" é o item "Arroz, feijão"); nada nela é título ("*Arroz*" é
+ * "Arroz"; colado sozinho, é o título e não dá item); e a observação que diz o que se pode comprar fica no nome
+ * ("Leite (sem lactose)"; colado, "Leite"). Fora essas três, dá o mesmo item que a linha colada, também com
+ * marcadores e emojis no começo ("✅ [x] 2 kg arroz" é 2 kg de "Arroz" nos dois).
+ */
+export interface TypedLine extends PastedItem {
+  /** A linha disse a quantidade ("2 kg arroz", "leite x2", "1 dz ovos"); sem ela, 1 un, a de sempre. */
+  counted: boolean;
+}
+
+/**
+ * A linha que a pessoa digita no campo de pôr item, lida como a colagem lê cada item: "2 kg arroz", "500 g queijo",
+ * "1 dz ovos", "2 pacotes de arroz", "½ kg presunto", "leite (2)", "leite x2". A quantidade e a unidade saem sempre
+ * como na colagem. O tamanho que é parte do nome fica no nome, como na colagem ("Café Pilão 500g", "Arroz 5kg"), e a
+ * observação entre parênteses sai ("Leite (marca X)" é "Leite"), menos a que diz o que se pode comprar: digitada,
+ * ela é o pedido ("Leite (sem lactose)" fica assim, decidesPurchase; "Leite x2 (sem lactose)" são 2 un dele), e
+ * não a descrição que o texto do app escreve ali, que a colagem tira. É um item só: a vírgula, que na colagem
+ * separa itens, aqui fica no nome. null quando a linha não diz o que comprar ("2 kg", "3x", só um número).
+ */
+export function readListLine(text: string): TypedLine | null {
+  const read = readItem(cleanText(text).slice(0, LINE_MAX), true);
+  return read ? { ...read.item, counted: read.counted } : null;
 }
 
 /**
@@ -262,15 +340,16 @@ function readItem(text: string): PastedItem | null {
  * óleo"). Aceita marcadores e emojis no começo ("- ", "• ", "✅ ", "1. "),
  * quantidade antes ("2 kg arroz", "2x leite") ou depois ("leite (2)", "leite
  * x2") e o texto que o app manda pelo WhatsApp: o título e as seções em
- * negrito ficam de fora, e a observação entre parênteses e a prioridade
- * ("· urgente") saem do nome. Linhas vazias e títulos ("Feira:") não viram
- * item. A categoria é a do item comum de mesmo nome, ou o chute pelo nome.
- * Até PASTE_MAX_ITEMS itens; `cut` diz quantos ficaram de fora e `more`, que
- * eram tantos que a conta parou (a tela diz "mais de").
+ * negrito ficam de fora, e a observação entre parênteses (onde o texto do
+ * app escreve a descrição do item) e a prioridade ("· urgente") saem do nome:
+ * colado de volta, o item é o que já está na lista. Linhas vazias e títulos
+ * ("Feira:") não viram item. A categoria é a do item comum de mesmo nome, ou
+ * o chute pelo nome. Até PASTE_MAX_ITEMS itens; `cut` diz quantos ficaram de
+ * fora e `more`, que eram tantos que a conta parou (a tela diz "mais de").
  */
 export function parsePastedList(text: string): { items: PastedItem[]; cut: number; more: boolean } {
   const items: PastedItem[] = [];
-  const lines = text.normalize('NFC').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '').split(/\r\n|\r|\n/).slice(0, MAX_LINES);
+  const lines = cleanText(text).split(/\r\n|\r|\n/).slice(0, MAX_LINES);
   // Os números no começo seguem 1, 2, 3 ("1- Arroz", "2- Feijão"): numeração, que sai.
   const numbered = isNumbering(lines);
   let first = true;
@@ -284,8 +363,8 @@ export function parsePastedList(text: string): { items: PastedItem[]; cut: numbe
     first = false;
     if (heading) continue;
     for (const part of splitItems(line)) {
-      const item = readItem(part);
-      if (item) items.push(item);
+      const read = readItem(part);
+      if (read) items.push(read.item);
       // Bem além do que entra, a conta para: a tela relê o texto a cada letra e não pode travar num texto enorme.
       if (items.length > COUNT_MAX) return { items: items.slice(0, PASTE_MAX_ITEMS), cut: COUNT_MAX - PASTE_MAX_ITEMS, more: true };
     }

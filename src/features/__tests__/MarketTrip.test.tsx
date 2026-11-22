@@ -1,14 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { defaultScheduler, notifyManager, onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router } from 'expo-router';
-import type { ReactElement } from 'react';
+import { useState, type ReactElement } from 'react';
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from 'react-test-renderer';
 
 import { TRIP_LIMIT_REACHED } from '@/domain/marketTrips';
+import type { ListKind } from '@/lib/types';
 import { ActionSheet } from '@/ui/ActionSheet';
 import { notify } from '@/ui/dialogs';
 
-import { MarketTripAction, MarketTripBanner } from '../MarketTrip';
+import { MarketTripAction, MarketTripBanner, MarketTripConfirm } from '../MarketTrip';
 
 // A faixa e o botão de verdade, com as idas lidas pelo caminho real
 // (data/marketTrips); só o banco é trocado. "mock" no nome: o jest.mock só
@@ -89,6 +90,20 @@ function textsOf(node: ReactTestRendererJSON | ReactTestRendererJSON[] | string 
   return (node.children ?? []).flatMap(textsOf);
 }
 
+/**
+ * O botão e a confirmação ligados como a lista os liga: o aberto fica com a tela, e a confirmação fora do botão.
+ * `buttonKey` remonta só o botão: o aberto da pergunta não depende dele.
+ */
+function TripAction({ list, buttonKey = 0 }: { list: { id: string; kind: ListKind }; buttonKey?: number }) {
+  const [asking, setAsking] = useState(false);
+  return (
+    <>
+      <MarketTripAction key={buttonKey} list={list} onPress={() => setAsking(true)} />
+      <MarketTripConfirm list={list} visible={asking} onClose={() => setAsking(false)} />
+    </>
+  );
+}
+
 let client: QueryClient;
 let tree: ReactTestRenderer;
 
@@ -103,6 +118,14 @@ async function render(element: ReactElement) {
   return textsOf(tree.toJSON());
 }
 
+/** Desenha de novo, com o mesmo cache (a tela que continua aberta). */
+async function rerender(element: ReactElement) {
+  await act(async () => {
+    tree.update(<QueryClientProvider client={client}>{element}</QueryClientProvider>);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
 /** Toca num botão pelo título e espera o pedido terminar. */
 async function press(title: string) {
   await act(async () => {
@@ -114,7 +137,7 @@ async function press(title: string) {
 /** "Estou indo ao mercado" → "Avisar agora"; devolve o que a pessoa leu depois. */
 async function announce(result: unknown) {
   mockDb.rpc = { data: result, error: null };
-  await render(<MarketTripAction list={{ id: 'lista', kind: 'mercado' }} />);
+  await render(<TripAction list={{ id: 'lista', kind: 'mercado' }} />);
   await press('Estou indo ao mercado');
   await act(async () => {
     tree.root.findByType(ActionSheet).props.actions[0].onPress();
@@ -307,7 +330,7 @@ describe('o botão "Estou indo ao mercado"', () => {
       await render(
         <>
           <MarketTripBanner listId="lista" />
-          <MarketTripAction list={list} />
+          <TripAction list={list} />
         </>,
       ),
     ).toEqual([]);
@@ -315,21 +338,74 @@ describe('o botão "Estou indo ao mercado"', () => {
 
   it('enquanto as idas ainda não responderam, continua lá', async () => {
     mockDb.trips = null;
-    expect(await render(<MarketTripAction list={list} />)).toEqual(['Estou indo ao mercado']);
+    expect(await render(<TripAction list={list} />)).toEqual(['Estou indo ao mercado']);
   });
 
   it('sem internet ou com outro erro na busca das idas, também: só some quando o banco diz que não tem o recurso', async () => {
     mockDb.trips = { data: null, error: FETCH_FAILED };
-    expect(await render(<MarketTripAction list={list} />)).toEqual(['Estou indo ao mercado']);
+    expect(await render(<TripAction list={list} />)).toEqual(['Estou indo ao mercado']);
     await act(async () => tree.unmount());
     client.clear();
     mockDb.trips = { data: null, error: { code: '42501', message: 'permission denied for table market_trips' } };
-    expect(await render(<MarketTripAction list={list} />)).toEqual(['Estou indo ao mercado']);
+    expect(await render(<TripAction list={list} />)).toEqual(['Estou indo ao mercado']);
   });
 
   it('sozinha na casa, não aparece', async () => {
     mockHouse.members = 1;
-    expect(await render(<MarketTripAction list={list} />)).toEqual([]);
+    expect(await render(<TripAction list={list} />)).toEqual([]);
+  });
+
+  it('a pergunta aberta é da tela: o botão que remonta não a fecha, e gira pelo pedido dela, também remontado', async () => {
+    // No computador o botão fica na coluna do lado (ui/desktop); a confirmação fica fora das colunas, com a tela.
+    const answers: ((answer: Answer) => void)[] = [];
+    mockDb.rpc = () => new Promise((resolve) => answers.push(resolve));
+    const sheet = () => tree.root.findByType(ActionSheet);
+    const button = () => tree.root.findAllByProps({ title: 'Estou indo ao mercado' })[0];
+    await render(<TripAction list={list} />);
+    await press('Estou indo ao mercado');
+    expect(sheet().props.visible).toBe(true);
+    await rerender(<TripAction list={list} buttonKey={1} />);
+    expect(sheet().props.visible).toBe(true);
+    await act(async () => {
+      sheet().props.onClose();
+      sheet().props.actions[0].onPress();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(button().props.loading).toBe(true);
+    await rerender(<TripAction list={list} buttonKey={2} />);
+    expect(button().props.loading).toBe(true);
+    await act(async () => {
+      answers.shift()?.({ data: { trip_id: 't1', created_at: new Date().toISOString(), notified: 2, members: 2, repeated: false }, error: null });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(button().props.loading).toBe(false);
+    expect(notify).toHaveBeenLastCalledWith('Estou indo ao mercado', 'Aviso enviado para 2 pessoas.');
+    expect(mockDb.calls).toEqual([['announce_market_trip', { p_list_id: 'lista' }]]);
+  });
+
+  it('o botão gira só pelo aviso da lista dele', async () => {
+    mockDb.rpc = () => new Promise(() => undefined);
+    await render(<TripAction list={list} />);
+    await press('Estou indo ao mercado');
+    await act(async () => {
+      tree.root.findByType(ActionSheet).props.actions[0].onPress();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(tree.root.findAllByProps({ title: 'Estou indo ao mercado' })[0].props.loading).toBe(true);
+    await rerender(<TripAction list={{ id: 'outra', kind: 'mercado' }} />);
+    expect(tree.root.findAllByProps({ title: 'Estou indo ao mercado' })[0].props.loading).toBe(false);
+  });
+
+  it('a pergunta aberta fecha quando o botão sai (a casa ficou só com a pessoa), e não volta aberta com ele', async () => {
+    await render(<TripAction list={list} />);
+    await press('Estou indo ao mercado');
+    expect(tree.root.findByType(ActionSheet).props.visible).toBe(true);
+    mockHouse.members = 1;
+    await rerender(<TripAction list={list} />);
+    expect(tree.root.findAllByType(ActionSheet)).toHaveLength(0);
+    mockHouse.members = 2;
+    await rerender(<TripAction list={list} />);
+    expect(tree.root.findByType(ActionSheet).props.visible).toBe(false);
   });
 
   it('depois de "Avisar agora", diz o que aconteceu', async () => {
@@ -353,7 +429,7 @@ describe('o botão "Estou indo ao mercado"', () => {
     const answers: ((answer: Answer) => void)[] = [];
     mockDb.rpc = () => new Promise((resolve) => answers.push(resolve));
     const tellAndLeave = async () => {
-      await render(<MarketTripAction list={list} />);
+      await render(<TripAction list={list} />);
       await press('Estou indo ao mercado');
       await act(async () => {
         tree.root.findByType(ActionSheet).props.actions[0].onPress();

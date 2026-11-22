@@ -8,7 +8,14 @@ import { normalizeSearch } from '@/domain/search';
 import { CategoryIcon, Icon, Section, Text, useCategoryTint } from '@/ui/primitives';
 import { radius, space } from '@/ui/theme';
 
+// As faixas ficam acima da lista: compactas, para ela começar mais cedo (o desenho de 36 em vez de 44, e 8 em cima em
+// vez de 12; embaixo do nome, os mesmos 8 de antes). O azulejo tem a largura de antes (92), com 2 de cada lado em vez de 4: o nome vai em duas linhas com 88
+// pontos, e toda palavra dos itens comuns cabe inteira numa, em vez de quebrar numa letra; a mais larga é
+// "Multivitamínico" (87,1 em Nunito SemiBold 12,5; recentPurchases.test.tsx mede cada palavra do catálogo com as
+// larguras do arquivo da fonte). O toque passa dos 44.
 const TILE = 92;
+const TILE_PADDING = 2;
+const ART = 36;
 
 /**
  * Itens postos na lista por uma faixa: somem no toque e ficam escondidos até
@@ -40,7 +47,9 @@ type StripItem = Omit<RecentItem, 'times'>;
 
 /**
  * Faixa "Comprados recentemente": o que a casa costuma comprar, do mais
- * frequente ao menos. Um toque põe o item na lista com a quantidade de sempre.
+ * frequente ao menos. Um toque põe o item na lista com a quantidade de sempre,
+ * que o leitor de tela diz; na tela, só o nome (a quantidade muda nos detalhes
+ * do item, depois de posto).
  */
 export function RecentPurchases({ items, onAdd }: { items: RecentItem[]; onAdd: (item: RecentItem) => void }) {
   return (
@@ -48,7 +57,6 @@ export function RecentPurchases({ items, onAdd }: { items: RecentItem[]; onAdd: 
       title="Comprados recentemente"
       items={items}
       onAdd={onAdd}
-      caption={(item) => formatQuantity(item.quantity, item.unit)}
       describe={(item) =>
         `${formatQuantity(item.quantity, item.unit)}${item.times > 1 ? `, comprado ${item.times} vezes` : ''}`
       }
@@ -56,7 +64,7 @@ export function RecentPurchases({ items, onAdd }: { items: RecentItem[]; onAdd: 
   );
 }
 
-/** Faixa "Acho que acabou": o que já passou do intervalo de costume (restockSuggestions). */
+/** Faixa "Acho que acabou": o que já passou do intervalo de costume (restockSuggestions); embaixo do nome, o porquê. */
 export function RestockStrip({ items, onAdd }: { items: RestockItem[]; onAdd: (item: RestockItem) => void }) {
   return (
     <Strip
@@ -79,7 +87,8 @@ function Strip<T extends StripItem>({
   title: string;
   items: T[];
   onAdd: (item: T) => void;
-  caption: (item: T) => string;
+  /** A linha embaixo do nome (o porquê da sugestão); sem ela, só o nome. */
+  caption?: (item: T) => string;
   describe: (item: T) => string;
 }) {
   if (!items.length) return null;
@@ -91,14 +100,14 @@ function Strip<T extends StripItem>({
         contentContainerStyle={styles.row}
         keyboardShouldPersistTaps="handled">
         {items.map((item) => (
-          <Tile key={item.name} item={item} caption={caption(item)} label={describe(item)} onPress={() => onAdd(item)} />
+          <Tile key={item.name} item={item} caption={caption?.(item)} label={describe(item)} onPress={() => onAdd(item)} />
         ))}
       </ScrollView>
     </Section>
   );
 }
 
-function Tile({ item, caption, label, onPress }: { item: StripItem; caption: string; label: string; onPress: () => void }) {
+function Tile({ item, caption, label, onPress }: { item: StripItem; caption?: string; label: string; onPress: () => void }) {
   const tint = useCategoryTint(item.category);
   return (
     <Pressable
@@ -106,13 +115,15 @@ function Tile({ item, caption, label, onPress }: { item: StripItem; caption: str
       accessibilityLabel={`Adicionar ${item.name}, ${label}`}
       onPress={onPress}
       style={({ pressed }) => [styles.tile, { backgroundColor: tint.bg }, pressed && styles.pressed]}>
-      <CategoryIcon category={item.category} name={item.name} size={44} backdrop={false} />
+      <CategoryIcon category={item.category} name={item.name} size={ART} backdrop={false} />
       <Text variant="small" color="text" numberOfLines={2} style={styles.center}>
         {item.name}
       </Text>
-      <Text variant="small" style={styles.center}>
-        {caption}
-      </Text>
+      {caption ? (
+        <Text variant="small" style={styles.center}>
+          {caption}
+        </Text>
+      ) : null}
       <View style={styles.plus}>
         <Icon name="plus-circle" size={18} color="primary" />
       </View>
@@ -124,11 +135,12 @@ const styles = StyleSheet.create({
   row: { gap: space.sm },
   tile: {
     width: TILE,
+    minHeight: 44,
     alignItems: 'center',
     gap: space.xs,
     borderRadius: radius.lg,
-    paddingHorizontal: space.xs,
-    paddingTop: space.md,
+    paddingHorizontal: TILE_PADDING,
+    paddingTop: space.sm,
     paddingBottom: space.sm,
   },
   pressed: { transform: [{ scale: 0.95 }] },

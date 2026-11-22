@@ -109,8 +109,9 @@ export function Screen({
   /** A largura máxima do conteúdo e do rodapé (o Painel do app, feito para o computador, vai mais longe). */
   maxWidth?: number;
   /**
-   * Tela que usa a largura do computador (as abas, arrumadas em colunas): na janela larga do navegador o conteúdo
-   * vai até DESKTOP_CONTENT_WIDTH. No celular e na janela estreita, a largura de sempre.
+   * Tela que usa a largura do computador (as abas, a lista aberta e a revisão da nota, arrumadas em colunas): na
+   * janela larga do navegador o conteúdo vai até DESKTOP_CONTENT_WIDTH, e o rodapé fica com as mesmas beiradas dele.
+   * No celular e na janela estreita, a largura de sempre.
    */
   wide?: boolean;
   /**
@@ -124,12 +125,14 @@ export function Screen({
   const c = useColors();
   const desktop = useDesktop();
   const max = wide && desktop ? DESKTOP_CONTENT_WIDTH : maxWidth;
-  // Puxar para atualizar não existe no navegador: no computador, o mesmo pedido vira um botão. Nas abas (`wide`) ele
-  // fica por cima, no canto de cima à direita, onde a coluna larga tem lugar (ao lado do seletor das partes, sobre o
-  // véu da Hoje); nas outras telas, numa linha só dele antes do conteúdo, para não cobrir o primeiro cartão.
+  // Puxar para atualizar não existe no navegador: no computador, o mesmo pedido vira um botão. Nas abas (`wide` com
+  // `fab`: só elas têm o Nuke por cima) ele fica por cima, no canto de cima à direita, onde a coluna larga tem lugar (ao
+  // lado do seletor das partes, sobre o véu da Hoje); nas outras telas, as largas também (a lista aberta, cuja coluna do
+  // lado começa pelo cartão de pôr item), numa linha só dele antes do conteúdo, para não cobrir o primeiro cartão.
+  const refreshFloats = wide && fab;
   const refreshButton =
     desktop && onRefresh && !ownRefreshButton ? (
-      <View style={wide ? styles.refreshFloating : styles.refreshRow}>
+      <View style={refreshFloats ? styles.refreshFloating : styles.refreshRow}>
         <RefreshButton refreshing={Boolean(refreshing)} onRefresh={onRefresh} />
       </View>
     ) : null;

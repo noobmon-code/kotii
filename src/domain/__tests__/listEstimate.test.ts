@@ -3,11 +3,16 @@ import { describe, expect, it } from '@jest/globals';
 import {
   CHOSEN_STORE_MS,
   cartSplitLine,
+  chosenItemQuantity,
   currentStoreChoice,
   describeEstimate,
   describePantryHits,
+  EGGS_AS_COUNT,
+  ESTIMATE_MORE_LABEL,
   estimateHeadline,
   estimateList,
+  estimateMarker,
+  estimateShortLine,
   formatItemCost,
   itemFacts,
   listSharedOnly,
@@ -28,6 +33,7 @@ import {
   uncheckedPricesNote,
 } from '../listEstimate';
 import { LinkIndex, listNameKey } from '../listLinks';
+import { readListLine } from '../listPaste';
 import { formatBRL } from '../money';
 import { storePriceIndex } from '../priceLevel';
 import type { PurchaseRecord } from '../recentPurchases';
@@ -537,6 +543,57 @@ describe('estimateList', () => {
       expect(storePriceNote(listStorePrices(list, [cartela('bom', 13.99, null)])('d', 'bom')!)).toBe(
         'Preço por unidade da nota, 1 cartela (sem saber quantos ovos vêm nela)',
       );
+    });
+
+    describe('chosenItemQuantity: a quantidade digitada, posta no item de ovos escolhido nas sugestões', () => {
+      /** A linha digitada no campo de pôr item, como a tela a lê. */
+      const typed = (text: string) => readListLine(text)!;
+      const choose = (text: string, name: string) => chosenItemQuantity(typed(text), { name, category: 'ovos' });
+
+      it('no item cujo nome diz quantos vêm, os ovos digitados viram cartelas, e não cartelas de cartelas', () => {
+        expect(choose('30 ovos', 'Ovos (30 un)')).toBe(1);
+        expect(choose('1 dz ovos', 'Ovos (dúzia)')).toBe(1);
+        expect(choose('2 dz ovos', 'Ovos (dúzia)')).toBe(2);
+        expect(choose('60 ovos', 'Ovos (30 un)')).toBe(2);
+        // Não se compra meia cartela: para cima.
+        expect(choose('20 ovos', 'Ovos (30 un)')).toBe(1);
+        expect(choose('1 dz ovos', 'Ovos (30 un)')).toBe(1);
+        expect(choose('1,5 dz ovos', 'Ovos (dúzia)')).toBe(2);
+      });
+
+      it('poucas unidades já são cartelas, como na conta: ficam como foram digitadas', () => {
+        expect(choose('2 ovos', 'Ovos (dúzia)')).toBe(2);
+        expect(choose('2 caixas de ovos', 'Ovos (30 un)')).toBe(2);
+        // A linha que já diz a cartela no nome ("2 Ovos (dúzia)") pede as mesmas duas.
+        expect(choose('2 ovos (dúzia)', 'Ovos (dúzia)')).toBe(2);
+      });
+
+      it('no item sem a conta no nome, os ovos que a linha pede', () => {
+        expect(choose('30 ovos', 'Ovos brancos')).toBe(30);
+        expect(choose('2 ovos (dúzia)', 'Ovos brancos')).toBe(24);
+        expect(choose('2 ovos', 'Ovos brancos')).toBe(2);
+      });
+
+      it('fora dos ovos e de "un", a quantidade digitada, como sempre', () => {
+        expect(chosenItemQuantity(typed('2 kg banana'), { name: 'Banana', category: 'hortifruti' })).toBe(2);
+        expect(chosenItemQuantity(typed('30 pães'), { name: 'Pão francês (10 un)', category: 'padaria' })).toBe(30);
+        expect(chosenItemQuantity({ name: 'Ovos', quantity: 2, unit: 'kg' }, { name: 'Ovos (30 un)', category: 'ovos' })).toBe(2);
+      });
+
+      it('a conta lê no item escolhido pelo menos os ovos digitados, e nunca uma cartela a mais', () => {
+        const quotes = [cartela('bom', 13.99, 30)];
+        const eggsOf = (name: string, quantity: number) => estimateList([ovos('x', name, quantity)], quotes).byItem.get('x')!.eggs!.count;
+        for (const [name, size] of [['Ovos (30 un)', 30], ['Ovos (dúzia)', 12]] as const) {
+          for (let count = EGGS_AS_COUNT; count <= 150; count++) {
+            const asked = eggsOf('Ovos', count);
+            expect(asked).toBe(count);
+            const cartons = chosenItemQuantity({ name: 'Ovos', quantity: count, unit: 'un' }, { name, category: 'ovos' });
+            const got = eggsOf(name, cartons);
+            expect(got).toBeGreaterThanOrEqual(asked);
+            expect(got - size).toBeLessThan(asked);
+          }
+        }
+      });
     });
   });
 
@@ -1950,6 +2007,31 @@ describe('textos da estimativa', () => {
     expect(describePantryHits(['Café', 'Arroz', 'Leite', 'Óleo', 'Sal', 'café'])).toBe(
       'Na despensa: Café, Arroz, Leite e mais 2. Se já acabou, dê baixa lá.',
     );
+  });
+});
+
+describe('o cartão da conta recolhido numa linha', () => {
+  it('o "i" tem nome para o leitor de tela', () => {
+    expect(ESTIMATE_MORE_LABEL).toBe('Mais sobre a conta da lista');
+  });
+
+  it('embaixo do total, o lugar escolhido e os preços de outras casas, para o número não ser lido errado', () => {
+    expect(estimateMarker({ sharedCount: 0 }, null)).toBeNull();
+    expect(estimateMarker({}, null)).toBeNull();
+    expect(estimateMarker({ sharedCount: 0 }, 'Assaí')).toBe('Lugar escolhido: Assaí');
+    expect(estimateMarker({ sharedCount: 2 }, null)).toBe('Inclui preços de outras casas');
+    expect(estimateMarker({ sharedCount: 1 }, 'Assaí')).toBe('Lugar escolhido: Assaí · inclui preços de outras casas');
+  });
+
+  it('sem item com preço, uma linha curta: os preços que não deu para conferir e quantos itens estão na despensa', () => {
+    expect(estimateShortLine({ unchecked: true, inPantry: [] })).toBe('Não deu para conferir os preços.');
+    expect(estimateShortLine({ unchecked: false, inPantry: ['Café'] })).toBe('1 item da lista está na despensa.');
+    // Sem repetir o mesmo nome, como a frase da despensa.
+    expect(estimateShortLine({ unchecked: false, inPantry: ['Leite', 'leite', 'Café'] })).toBe('2 itens da lista estão na despensa.');
+    expect(estimateShortLine({ unchecked: true, inPantry: ['Café', 'Arroz'] })).toBe(
+      'Não deu para conferir os preços. 2 itens da lista estão na despensa.',
+    );
+    expect(estimateShortLine({ unchecked: false, inPantry: [] })).toBeNull();
   });
 });
 
