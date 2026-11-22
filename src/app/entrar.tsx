@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 
 import { acceptTermsAtSignIn } from '@/data/terms';
-import { CONFIRM_EMAIL_RESENT, CONFIRM_EMAIL_TITLE } from '@/domain/onboarding';
+import { CONFIRM_EMAIL_NOT_YET, CONFIRM_EMAIL_RESENT, CONFIRM_EMAIL_TITLE } from '@/domain/onboarding';
 import { TERMS_CONSENT, TERMS_TITLE } from '@/domain/terms';
 import { SESSION_ENDED } from '@/lib/accessErrors';
 import { resendWaitSeconds, translateAuthError } from '@/lib/authErrors';
@@ -83,8 +83,11 @@ export default function SignInScreen() {
         if (error) throw error;
         // Com o e-mail a confirmar ainda não há sessão: o aceite fica para a primeira entrada.
         if (data.session) void acceptTermsAtSignIn(data.session.user.id, true);
-        else if (FEATURES.onboarding) setConfirming(trimmed);
-        else {
+        else if (FEATURES.onboarding) {
+          setConfirming(trimmed);
+          // O e-mail de confirmação acabou de sair: o Supabase só manda outro depois da espera, que começa já.
+          confirmWait.start();
+        } else {
           notify('Confirme seu e-mail', 'Enviamos um link de confirmação. Depois é só entrar.');
           setMode('entrar');
         }
@@ -96,16 +99,18 @@ export default function SignInScreen() {
     }
   }
 
-  // Mandar de novo o e-mail de confirmação. Pedido cedo demais, o link do e-mail anterior ainda vale: a espera começa
-  // do mesmo jeito.
+  // Mandar de novo o e-mail de confirmação. Pedido cedo demais (o servidor espera mais que a conta da tela, ou outra aba
+  // pediu antes), o link do e-mail anterior ainda vale: a espera segue os segundos que o servidor disse, e o aviso diz
+  // que nada saiu, em vez de "Mandamos de novo".
   async function resendConfirmation() {
     if (!confirming) return;
     setBusy(true);
     try {
       const { error } = await supabase.auth.resend({ type: 'signup', email: confirming });
-      if (error && resendWaitSeconds(error) === null) throw error;
-      confirmWait.start();
-      notify(CONFIRM_EMAIL_TITLE, CONFIRM_EMAIL_RESENT);
+      const early = error ? resendWaitSeconds(error) : null;
+      if (error && early === null) throw error;
+      confirmWait.start(early ?? undefined);
+      notify(CONFIRM_EMAIL_TITLE, early === null ? CONFIRM_EMAIL_RESENT : CONFIRM_EMAIL_NOT_YET);
     } catch (err) {
       notify('Não deu para enviar o e-mail', translateAuthError(err));
     } finally {
@@ -262,6 +267,12 @@ export default function SignInScreen() {
               onPress={() => {
                 setRecovery(null);
                 setCode('');
+                // O botão promete o formulário de entrar, e é para lá que vai: também no aparelho que nunca teve conta
+                // e abriu aqui pelo link do e-mail que não deu certo (a recuperação abriu sem passar pelas boas-vindas,
+                // e o aviso do link, que continua à vista, diz "é só entrar"). Sem isto, o começo novo voltaria às
+                // boas-vindas, com "Criar conta" para quem já tem conta.
+                setMode('entrar');
+                setWelcomeDone(true);
               }}
             />
           </View>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 
 import {
+  FIRST_STEP_INVITE_BY_CODE,
   FIRST_STEP_INVITE_BY_LINK,
   firstSteps,
   firstStepsProgress,
@@ -47,10 +48,17 @@ describe('os primeiros passos', () => {
 
   it('com o começo novo, a dica de convidar fala do link (o toque abre o convite ali)', () => {
     expect(firstSteps(fresh)?.[0].hint).toBe('Em Configurações, com o código de convite');
-    expect(firstSteps(fresh, undefined, { inviteByLink: true })?.[0].hint).toBe(FIRST_STEP_INVITE_BY_LINK);
+    expect(firstSteps(fresh, undefined, { invite: 'configuracoes' })?.[0].hint).toBe('Em Configurações, com o código de convite');
+    expect(firstSteps(fresh, undefined, { invite: 'link' })?.[0].hint).toBe(FIRST_STEP_INVITE_BY_LINK);
     // Os outros passos não mudam, nem o que foi pulado.
-    expect(firstSteps(fresh, undefined, { inviteByLink: true })?.slice(1)).toEqual(firstSteps(fresh)?.slice(1));
-    expect(firstSteps(fresh, SKIPPED, { inviteByLink: true })?.map((step) => step.key)).toEqual(['convidar', 'lista', 'nota', 'pessoas']);
+    expect(firstSteps(fresh, undefined, { invite: 'link' })?.slice(1)).toEqual(firstSteps(fresh)?.slice(1));
+    expect(firstSteps(fresh, SKIPPED, { invite: 'link' })?.map((step) => step.key)).toEqual(['convidar', 'lista', 'nota', 'pessoas']);
+  });
+
+  it('no aparelho, onde o convite vai só com o código, a dica não promete um link', () => {
+    expect(firstSteps(fresh, undefined, { invite: 'codigo' })?.[0].hint).toBe(FIRST_STEP_INVITE_BY_CODE);
+    expect(FIRST_STEP_INVITE_BY_CODE).not.toMatch(/link/i);
+    expect(firstSteps(fresh, undefined, { invite: 'codigo' })?.slice(1)).toEqual(firstSteps(fresh)?.slice(1));
   });
 
   it('enquanto falta saber algum deles, nada (um passo dado não aparece como por fazer)', () => {

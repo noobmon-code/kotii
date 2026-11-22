@@ -20,9 +20,10 @@ export function useInstallStep(): boolean {
 /**
  * Pôr o Kotii na tela de início, no fim do começo: no Android e no computador, "Instalar" num toque (o convite do
  * navegador); no iPhone, o passo a passo do Safari e o aviso de entrar de novo pelo ícone (o app da tela de início
- * não vê a conta aberta no Safari). "Agora não" não esconde o cartão de instalar da Hoje.
+ * não vê a conta aberta no Safari). "Agora não" não esconde o cartão de instalar da Hoje. `onClosed`: como no
+ * InviteSheet (ui/ActionSheet).
  */
-export function InstallSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
+export function InstallSheet({ visible, onClose, onClosed }: { visible: boolean; onClose: () => void; onClosed?: () => void }) {
   const { mode, install } = useInstallApp();
   if (mode === 'hidden') return null;
   if (mode === 'prompt') {
@@ -34,11 +35,12 @@ export function InstallSheet({ visible, onClose }: { visible: boolean; onClose: 
         actions={[{ label: INSTALL_ACTION, icon: 'download', onPress: () => void install() }]}
         cancelLabel={INSTALL_SKIP}
         onClose={onClose}
+        onClosed={onClosed}
       />
     );
   }
   return (
-    <ActionSheet visible={visible} title={INSTALL_TITLE} actions={[]} cancelLabel={INSTALL_IOS_OK} onClose={onClose}>
+    <ActionSheet visible={visible} title={INSTALL_TITLE} actions={[]} cancelLabel={INSTALL_IOS_OK} onClose={onClose} onClosed={onClosed}>
       <Text variant="body">{INSTALL_IOS_STEPS}</Text>
       <Text variant="body">{INSTALL_IOS_SIGN_IN}</Text>
       <Text variant="muted">{INSTALL_IOS_WHY}</Text>

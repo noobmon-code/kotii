@@ -4,10 +4,13 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'rea
 
 import SignInScreen from '@/app/entrar';
 import TermsScreen from '@/app/termos';
+import { CONFIRM_EMAIL_TITLE, SIGN_IN_TITLE, SIGN_UP_TITLE, WELCOME_CREATE, WELCOME_SIGN_IN } from '@/domain/onboarding';
 import { TERMS_CONSENT, TERMS_SECTIONS, TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
+import { FEATURES } from '@/lib/features';
 
-// A tela dos termos e o link da tela de entrar. A linha dos termos em Configurações → Sobre o Kotii está em
-// settingsScreen.test.tsx e, logo depois da linha dos preços compartilhados, em sharedPricesScreens.test.tsx.
+// A tela dos termos e o link da tela de entrar: a do começo novo (a chave ligada, como o app sai) e a de antes (com a
+// chave desligada). A linha dos termos em Configurações → Sobre o Kotii está em settingsScreen.test.tsx e, logo depois
+// da linha dos preços compartilhados, em sharedPricesScreens.test.tsx.
 
 /** Se há para onde voltar, e quem escuta as mudanças da pilha (a tela dos termos). */
 let mockCanGoBack = true;
@@ -151,7 +154,11 @@ describe('tela dos termos', () => {
   });
 });
 
-describe('tela de entrar', () => {
+describe('tela de entrar (a de antes, com a chave do começo desligada)', () => {
+  beforeEach(() => {
+    jest.replaceProperty(FEATURES, 'onboarding', false);
+  });
+
   it('avisa que continuar é concordar com os termos, e o botão abre a tela deles', async () => {
     const page = await mount(<SignInScreen />);
     expect(page).toContain(`${TERMS_CONSENT}${TERMS_TITLE}`);
@@ -194,5 +201,62 @@ describe('tela de entrar', () => {
     await act(async () => button('Criar conta').props.onPress());
     expect(mockAuth.signUp).toHaveBeenCalledTimes(2);
     expect(mockTerms.atSignIn).not.toHaveBeenCalled();
+  });
+});
+
+describe('tela de entrar (o começo novo, como o app sai)', () => {
+  beforeEach(() => {
+    jest.replaceProperty(FEATURES, 'onboarding', true);
+  });
+
+  /** O aparelho nunca teve conta: as boas-vindas, e um toque leva ao formulário. */
+  async function open(door: string) {
+    await mount(<SignInScreen />);
+    await act(async () => button(door).props.onPress());
+    return textOf(renderer!.root);
+  }
+
+  it('as boas-vindas já têm o botão dos termos, que abre a tela deles', async () => {
+    await mount(<SignInScreen />);
+    await act(async () => button(TERMS_TITLE).props.onPress());
+    expect(router.push).toHaveBeenCalledWith('/termos');
+  });
+
+  it('entrar avisa que continuar é confirmar ter 18 anos ou mais e concordar com os termos, e o botão abre a tela deles', async () => {
+    const page = await open(WELCOME_SIGN_IN);
+    expect(page).toContain(`${TERMS_CONSENT}${TERMS_TITLE}`);
+    expect(page).toContain('Ao continuar, você confirma que tem 18 anos ou mais e concorda com os');
+    await act(async () => button(TERMS_TITLE).props.onPress());
+    expect(router.push).toHaveBeenCalledWith('/termos');
+  });
+
+  it('o aviso também vale para quem cria a conta', async () => {
+    expect(await open(WELCOME_CREATE)).toContain(`${TERMS_CONSENT}${TERMS_TITLE}`);
+  });
+
+  it('entrar com a senha passa a conta para o aceite da entrada (que só grava para quem não tem nenhum)', async () => {
+    await open(WELCOME_SIGN_IN);
+    await type('E-mail', 'ana@exemplo.com');
+    await type('Senha', 'segredo1');
+    await act(async () => button(SIGN_IN_TITLE).props.onPress());
+    expect(mockAuth.signInWithPassword).toHaveBeenCalledTimes(1);
+    expect(mockTerms.atSignIn).toHaveBeenCalledWith('u1', false);
+  });
+
+  it('criar a conta grava o aceite da versão atual; com o e-mail a confirmar, fica para a primeira entrada', async () => {
+    await open(WELCOME_CREATE);
+    await type('E-mail', 'bia@exemplo.com');
+    await type('Senha', 'segredo1');
+    await act(async () => button(SIGN_UP_TITLE).props.onPress());
+    expect(mockAuth.signUp).toHaveBeenCalledTimes(1);
+    expect(mockTerms.atSignIn).toHaveBeenCalledWith('u2', true);
+
+    mockTerms.atSignIn.mockClear();
+    mockAuth.signUp.mockResolvedValueOnce({ data: { user: { id: 'u3' }, session: null }, error: null });
+    await act(async () => button(SIGN_UP_TITLE).props.onPress());
+    expect(mockAuth.signUp).toHaveBeenCalledTimes(2);
+    expect(mockTerms.atSignIn).not.toHaveBeenCalled();
+    // A confirmação do e-mail é uma tela (pelo link do e-mail; nenhum código).
+    expect(textOf(renderer!.root)).toContain(CONFIRM_EMAIL_TITLE);
   });
 });
