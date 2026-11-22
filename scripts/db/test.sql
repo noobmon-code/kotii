@@ -4530,6 +4530,505 @@ end $$;
 reset role;
 
 -- ---------------------------------------------------------------------------
+\echo '• excluir produto: só o que não está em nenhuma nota, e o código ambíguo fica'
+-- Dalva e Davi moram juntos; Dora mora em outra casa e também tem um "Biscoito errado".
+\set user_dp1 '00000000-0000-0000-0000-0000000007d1'
+\set user_dp2 '00000000-0000-0000-0000-0000000007d2'
+\set user_dp3 '00000000-0000-0000-0000-0000000007d3'
+reset role;
+insert into auth.users (id) values (:'user_dp1'), (:'user_dp2'), (:'user_dp3');
+
+-- As permissões e as peças que a migração escreve. Conferidas duas vezes: como a migração as deixou e depois de
+-- rodar de novo os revoke e grant dela, que precisam dar no mesmo.
+create function pg_temp.delete_product_access() returns void language plpgsql as $$
+declare
+  fk record;
+begin
+  -- Cada papel conferido sozinho.
+  assert has_function_privilege('authenticated', 'public.delete_product(uuid, text)', 'execute'), 'members delete products';
+  assert not has_function_privilege('anon', 'public.delete_product(uuid, text)', 'execute'), 'anon does not';
+  assert not has_function_privilege('public', 'public.delete_product(uuid, text)', 'execute'), 'nor everyone (PUBLIC)';
+  assert (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'delete_product') = 1,
+    'one delete_product only';
+  assert (select not prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = 'public.delete_product(uuid, text)'::regprocedure),
+    'delete_product runs as the caller, with an empty search_path';
+  assert has_function_privilege('authenticated', 'public.delete_product_available()', 'execute'), 'members ask whether deleting exists';
+  assert not has_function_privilege('anon', 'public.delete_product_available()', 'execute'), 'anon cannot ask it';
+  assert not has_function_privilege('public', 'public.delete_product_available()', 'execute'), 'nor everyone (PUBLIC)';
+  assert (select proconfig = array['search_path=""'] from pg_proc where oid = 'public.delete_product_available()'::regprocedure),
+    'the probe has an empty search_path';
+  -- As funções dos dois gatilhos: só os gatilhos as chamam.
+  assert (select not prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = 'public.products_keep_receipt_lines()'::regprocedure),
+    'the guard runs as the caller, with an empty search_path';
+  assert (select not prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = 'public.product_store_codes_forget_unlinked()'::regprocedure),
+    'the store-code cleanup runs as the caller, with an empty search_path';
+  assert not has_function_privilege('public', 'public.products_keep_receipt_lines()', 'execute'), 'nobody calls the guard (PUBLIC)';
+  assert not has_function_privilege('anon', 'public.products_keep_receipt_lines()', 'execute'), 'nobody calls the guard (anon)';
+  assert not has_function_privilege('authenticated', 'public.products_keep_receipt_lines()', 'execute'), 'nobody calls the guard (members)';
+  assert not has_function_privilege('public', 'public.product_store_codes_forget_unlinked()', 'execute'), 'nobody calls the cleanup (PUBLIC)';
+  assert not has_function_privilege('anon', 'public.product_store_codes_forget_unlinked()', 'execute'), 'nobody calls the cleanup (anon)';
+  assert not has_function_privilege('authenticated', 'public.product_store_codes_forget_unlinked()', 'execute'), 'nobody calls the cleanup (members)';
+  assert exists (select 1 from pg_trigger where tgrelid = 'public.products'::regclass and tgname = 'products_keep_receipt_lines' and not tgisinternal),
+    'the guard trigger is on products';
+  assert exists (select 1 from pg_trigger where tgrelid = 'public.product_store_codes'::regclass and tgname = 'product_store_codes_forget_unlinked' and not tgisinternal),
+    'the cleanup trigger is on product_store_codes';
+  -- A linha de código pode ficar sem produto (a ambígua); a marca continua obrigatória.
+  assert not (select attnotnull from pg_attribute where attrelid = 'public.product_store_codes'::regclass and attname = 'product_id'),
+    'a store code may lose its product';
+  assert (select attnotnull from pg_attribute where attrelid = 'public.product_store_codes'::regclass and attname = 'ambiguous'),
+    'ambiguous is still not null';
+  -- O que cada chave para products faz quando o produto sai: c (cascade) leva as linhas, n (set null) as deixa sem
+  -- o produto. Uma tabela nova precisa de uma decisão aqui e em merge_products.
+  assert (
+    select array_agg(t.relname::text || ':' || c.confdeltype::text order by t.relname::text, c.conname::text)
+    from pg_constraint c join pg_class t on t.oid = c.conrelid
+    where c.contype = 'f' and c.confrelid = 'public.products'::regclass
+  ) = array['list_item_links:c', 'pantry_items:n', 'product_aliases:c', 'product_barcodes:c', 'product_distinct_pairs:c',
+            'product_distinct_pairs:c', 'product_store_codes:n', 'purchase_history:n', 'receipt_items:n', 'shopping_list_items:n'],
+    'a table that references products needs a decision in delete_product (and merge_products): keep its rows without the product (set null) or delete them (cascade)';
+  -- Todo set null para products só limpa o product_id (a casa da linha fica).
+  for fk in
+    select c.conname, c.conrelid, c.confdelsetcols
+    from pg_constraint c
+    where c.contype = 'f' and c.confrelid = 'public.products'::regclass and c.confdeltype = 'n'
+  loop
+    assert fk.confdelsetcols = array[(select attnum from pg_attribute where attrelid = fk.conrelid and attname = 'product_id')]::int2[],
+      format('%s nulls only product_id', fk.conname);
+  end loop;
+end $$;
+select pg_temp.delete_product_access() \gset
+revoke execute on function public.delete_product(uuid, text) from public, anon;
+grant execute on function public.delete_product(uuid, text) to authenticated;
+revoke execute on function public.delete_product_available() from public, anon;
+grant execute on function public.delete_product_available() to authenticated;
+revoke execute on function public.products_keep_receipt_lines() from public, anon, authenticated;
+revoke execute on function public.product_store_codes_forget_unlinked() from public, anon, authenticated;
+select pg_temp.delete_product_access() \gset
+
+-- Tudo o que excluir mexeria num produto, como quem chama vê. Depois de uma recusa, tem de estar igual.
+create function pg_temp.delete_product_state(p uuid) returns jsonb language sql as $$
+  select jsonb_build_object(
+    'product', (select to_jsonb(x) from public.products x where x.id = p),
+    'receipt_items', (select jsonb_agg(to_jsonb(i) order by i.id) from public.receipt_items i where i.product_id = p),
+    'pantry_items', (select jsonb_agg(to_jsonb(i) order by i.id) from public.pantry_items i where i.product_id = p),
+    'list_items', (select jsonb_agg(to_jsonb(i) order by i.id) from public.shopping_list_items i where i.product_id = p),
+    'purchase_history', (select jsonb_agg(to_jsonb(h) order by h.id) from public.purchase_history h where h.product_id = p),
+    'aliases', (select jsonb_agg(to_jsonb(a) order by a.alias) from public.product_aliases a where a.product_id = p),
+    'links', (select jsonb_agg(to_jsonb(k) order by k.name_key) from public.list_item_links k where k.product_id = p),
+    'barcodes', (select jsonb_agg(to_jsonb(b) order by b.gtin) from public.product_barcodes b where b.product_id = p),
+    'store_codes', (select jsonb_agg(to_jsonb(s) order by s.store_cnpj, s.store_code) from public.product_store_codes s where s.product_id = p),
+    'pairs', (select jsonb_agg(to_jsonb(d) order by d.product_a, d.product_b)
+      from public.product_distinct_pairs d where p in (d.product_a, d.product_b)),
+    'prices', (select jsonb_agg(to_jsonb(o) order by o.receipt_id, o.unit_price) from public.price_observations o where o.product_id = p)
+  );
+$$;
+
+create function pg_temp.delete_product_unchanged() returns void language plpgsql as $$
+begin
+  assert pg_temp.delete_product_state(current_setting('test.dp_junk')::uuid) = current_setting('test.dp_state_junk')::jsonb, 'the junk product is untouched';
+  assert pg_temp.delete_product_state(current_setting('test.dp_bought')::uuid) = current_setting('test.dp_state_bought')::jsonb, 'the bought product is untouched';
+  assert pg_temp.delete_product_state(current_setting('test.dp_review')::uuid) = current_setting('test.dp_state_review')::jsonb, 'the product in review is untouched';
+  assert pg_temp.delete_product_state(current_setting('test.dp_both')::uuid) = current_setting('test.dp_state_both')::jsonb, 'the product bought and in review is untouched';
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_dp1', false) \gset
+select (public.create_household('Casa da Dalva', 'Dalva')).invite_code as invite_dp \gset
+select set_config('request.jwt.claim.sub', :'user_dp2', false) \gset
+select public.join_household(:'invite_dp', 'Davi') \gset
+select set_config('request.jwt.claim.sub', :'user_dp3', false) \gset
+select (public.create_household('Casa da Dora', 'Dora')).id as hh_dp3 \gset
+select set_config('test.hh_dp3_id', :'hh_dp3', false) \gset
+do $$
+declare
+  p uuid;
+begin
+  assert public.delete_product_available() is true, 'a signed-in person learns that deleting exists';
+  insert into public.products (name, category) values ('Biscoito errado', 'mercearia') returning id into p;
+  perform set_config('test.dp_dora', p::text, false);
+end $$;
+
+-- Dalva: um produto que ninguém comprou, ligado a tudo o que pode apontar para ele, e os que estão em notas.
+select set_config('request.jwt.claim.sub', :'user_dp1', false) \gset
+do $$
+declare
+  s uuid;
+  r uuid;
+  i uuid;
+  l uuid;
+  l_old uuid;
+  ids uuid[];
+  tokens uuid[];
+  p_junk uuid;
+  p_other uuid;
+  p_bought uuid;
+  p_review uuid;
+  p_both uuid;
+  p_free uuid;
+  p_direct uuid;
+begin
+  insert into public.stores (name, cnpj) values ('Mercado da Dalva', '11222333000181') returning id into s;
+  insert into public.products (name, category) values ('Biscoito errado', 'mercearia') returning id into p_junk;
+  insert into public.products (name, category) values ('Biscoito recheado', 'mercearia') returning id into p_other;
+
+  -- Despensa: um item aberto e um já consumido.
+  insert into public.pantry_items (product_id, name, category) values (p_junk, 'Biscoito', 'mercearia');
+  insert into public.pantry_items (product_id, name, category, consumed_at) values (p_junk, 'Biscoito', 'mercearia', now());
+  -- Listas: um item aberto, um que saiu pelo carrinho (histórico de compras) e um de lista arquivada.
+  insert into public.shopping_lists (name) values ('Mercado') returning id into l;
+  insert into public.shopping_list_items (list_id, name, product_id) values (l, 'Biscoito', p_junk);
+  insert into public.shopping_list_items (list_id, name, product_id, checked_at) values (l, 'Biscoito errado', p_junk, now());
+  select array_agg(id), array_agg(toggle_token) into ids, tokens from public.shopping_list_items where list_id = l and checked_at is not null;
+  assert public.clear_checked_items(l, ids, tokens) = 1, 'the cart item went to the purchase history';
+  insert into public.shopping_lists (name, archived_at) values ('Semana passada', now()) returning id into l_old;
+  insert into public.shopping_list_items (list_id, name, product_id) values (l_old, 'Biscoito', p_junk);
+  -- O que a casa aprendeu: a descrição da nota, o nome da lista, o código de barras e dois códigos do mercado (um
+  -- deles ambíguo: o 1 de todo o hortifruti a granel, que um dia ensinou este produto).
+  insert into public.product_aliases (alias, product_id) values ('BISC ERRADO', p_junk);
+  insert into public.list_item_links (name_key, product_id) values ('biscoito errado', p_junk);
+  insert into public.product_barcodes (gtin, product_id) values ('07891000100103', p_junk);
+  insert into public.product_store_codes (store_cnpj, store_code, product_id, learned_from) values ('11222333000181', 'B123', p_junk, 'BISC ERRADO');
+  insert into public.product_store_codes (store_cnpj, store_code, product_id, learned_from, ambiguous) values ('11222333000181', '1', p_junk, 'TOMATE KG', true);
+  insert into public.product_distinct_pairs (product_a, product_b) values (least(p_junk, p_other), greatest(p_junk, p_other));
+
+  -- "Arroz 5kg": uma compra, pela confirmação da nota.
+  insert into public.receipts (store_id, purchased_at, source) values (s, '2026-11-01 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'ARROZ 5KG', 1, 'un', 25.90, 25.90) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i,
+    'new_product', jsonb_build_object('name', 'Arroz 5kg', 'category', 'mercearia'))));
+  select id into p_bought from public.products where name = 'Arroz 5kg';
+  -- "Feijão": só num rascunho, achado pelo apelido.
+  insert into public.products (name, category) values ('Feijão', 'mercearia') returning id into p_review;
+  insert into public.receipts (store_id, status) values (s, 'draft') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit_price, total_price, product_id) values (r, 'FEIJAO', 8, 8, p_review);
+  -- "Café": uma compra e um rascunho.
+  insert into public.receipts (store_id, purchased_at, source) values (s, '2026-11-02 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'CAFE 500G', 1, 'un', 19.90, 19.90) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i,
+    'new_product', jsonb_build_object('name', 'Café', 'category', 'mercearia'))));
+  select id into p_both from public.products where name = 'Café';
+  insert into public.receipts (store_id, status) values (s, 'draft') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit_price, total_price, product_id) values (r, 'CAFE 500G', 21, 21, p_both);
+  -- Nada aponta para estes.
+  insert into public.products (name, category) values ('Sabão', 'limpeza') returning id into p_free;
+  insert into public.products (name, category) values ('Sal', 'mercearia') returning id into p_direct;
+
+  perform set_config('test.dp_junk', p_junk::text, false);
+  perform set_config('test.dp_other', p_other::text, false);
+  perform set_config('test.dp_bought', p_bought::text, false);
+  perform set_config('test.dp_review', p_review::text, false);
+  perform set_config('test.dp_both', p_both::text, false);
+  perform set_config('test.dp_free', p_free::text, false);
+  perform set_config('test.dp_direct', p_direct::text, false);
+  perform set_config('test.dp_state_junk', pg_temp.delete_product_state(p_junk)::text, false);
+  perform set_config('test.dp_state_bought', pg_temp.delete_product_state(p_bought)::text, false);
+  perform set_config('test.dp_state_review', pg_temp.delete_product_state(p_review)::text, false);
+  perform set_config('test.dp_state_both', pg_temp.delete_product_state(p_both)::text, false);
+  assert pg_temp.delete_product_state(p_bought)->'prices' is not null, 'the bought product has a price';
+  assert jsonb_array_length(pg_temp.delete_product_state(p_junk)->'store_codes') = 2, 'both market codes point to the junk product';
+end $$;
+
+-- Dora (outra casa): para ela o produto da Dalva não existe, e ela não fica sabendo se acertou o nome.
+select set_config('request.jwt.claim.sub', :'user_dp3', false) \gset
+do $$
+declare
+  p_junk uuid := current_setting('test.dp_junk')::uuid;
+begin
+  begin
+    perform public.delete_product(p_junk);
+    raise exception 'FAIL: D deleted a product of another household';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.delete_product(p_junk, 'Biscoito errado');
+    raise exception 'FAIL: D deleted a product of another household by its name';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.delete_product(p_junk, 'Outro');
+    raise exception 'FAIL: D was told the name of a product of another household does not match';
+  exception when no_data_found then null;
+  end;
+  delete from public.products where id = p_junk;
+  assert not found, 'a direct delete of another household''s product reaches nothing';
+  assert (select count(*) from public.products) = 1, 'D keeps her product';
+end $$;
+
+set role anon;
+do $$
+begin
+  begin
+    perform public.delete_product(current_setting('test.dp_junk')::uuid);
+    raise exception 'FAIL: anon deleted a product';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.delete_product(current_setting('test.dp_junk')::uuid, 'Biscoito errado');
+    raise exception 'FAIL: anon deleted a product by its name';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.delete_product_available();
+    raise exception 'FAIL: anon asked whether deleting exists';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- Dalva: cada recusa vem antes de qualquer mudança.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_dp1', false) \gset
+do $$
+declare
+  p_junk uuid := current_setting('test.dp_junk')::uuid;
+  p_bought uuid := current_setting('test.dp_bought')::uuid;
+  p_review uuid := current_setting('test.dp_review')::uuid;
+  p_both uuid := current_setting('test.dp_both')::uuid;
+  wrong text;
+begin
+  begin
+    perform public.delete_product(p_bought, 'Arroz 5kg');
+    raise exception 'FAIL: deleted a product with purchases';
+  exception when sqlstate 'NK016' then null;
+  end;
+  perform pg_temp.delete_product_unchanged();
+  -- O nome é conferido antes das compras.
+  begin
+    perform public.delete_product(p_bought, 'Outro');
+    raise exception 'FAIL: deleted a product by a wrong name';
+  exception when sqlstate 'NK008' then null;
+  end;
+  perform pg_temp.delete_product_unchanged();
+  -- A compra vence o rascunho.
+  begin
+    perform public.delete_product(p_both, 'Café');
+    raise exception 'FAIL: deleted a product with purchases and a draft';
+  exception when sqlstate 'NK016' then null;
+  end;
+  perform pg_temp.delete_product_unchanged();
+  begin
+    perform public.delete_product(p_review, 'Feijão');
+    raise exception 'FAIL: deleted a product on a receipt under review';
+  exception when sqlstate 'NK017' then null;
+  end;
+  perform pg_temp.delete_product_unchanged();
+  begin
+    perform public.delete_product(null);
+    raise exception 'FAIL: deleted a null product';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.delete_product(gen_random_uuid(), 'Biscoito errado');
+    raise exception 'FAIL: deleted a product that does not exist';
+  exception when no_data_found then null;
+  end;
+  -- O nome tem de ser exatamente o da linha: nem maiúsculas, nem espaço, nem vazio.
+  foreach wrong in array array['biscoito errado', 'Biscoito errado ', 'Biscoito Errado', ''] loop
+    begin
+      perform public.delete_product(p_junk, wrong);
+      raise exception 'FAIL: deleted by the name %', wrong;
+    exception when sqlstate 'NK008' then null;
+    end;
+  end loop;
+  perform pg_temp.delete_product_unchanged();
+end $$;
+-- Outro aparelho renomeia entre a leitura e o toque: o nome que a pessoa leu já não é o dele.
+update public.products set name = 'Biscoito errado 2' where id = current_setting('test.dp_junk')::uuid;
+do $$
+begin
+  perform public.delete_product(current_setting('test.dp_junk')::uuid, 'Biscoito errado');
+  raise exception 'FAIL: deleted a product renamed meanwhile';
+exception when sqlstate 'NK008' then null;
+end $$;
+update public.products set name = 'Biscoito errado' where id = current_setting('test.dp_junk')::uuid;
+do $$
+begin
+  perform pg_temp.delete_product_unchanged();
+end $$;
+
+-- Dalva: um delete direto pela API do produto que está numa nota esbarra no gatilho; o que não está, sai.
+do $$
+declare
+  p_direct uuid := current_setting('test.dp_direct')::uuid;
+begin
+  begin
+    delete from public.products where id = current_setting('test.dp_bought')::uuid;
+    raise exception 'FAIL: a product with purchases left by a direct delete';
+  exception when sqlstate 'NK016' then null;
+  end;
+  begin
+    delete from public.products where id = current_setting('test.dp_both')::uuid;
+    raise exception 'FAIL: a product with purchases and a draft left by a direct delete';
+  exception when sqlstate 'NK016' then null;
+  end;
+  begin
+    delete from public.products where id = current_setting('test.dp_review')::uuid;
+    raise exception 'FAIL: a product on a receipt under review left by a direct delete';
+  exception when sqlstate 'NK017' then null;
+  end;
+  perform pg_temp.delete_product_unchanged();
+  delete from public.products where id = p_direct;
+  assert found, 'the guard only refuses with receipt lines';
+  assert not exists (select 1 from public.products where id = p_direct), 'the product with nothing pointing to it left';
+end $$;
+
+-- As marcas da lixeira de itens da lista, antes: excluir o produto não apaga item nenhum.
+reset role;
+select count(*) as dp_tombstones from public.shopping_list_item_tombstones \gset
+select set_config('test.dp_tombstones', :'dp_tombstones', false) \gset
+
+-- Davi (mesma casa, não foi ele quem criou o produto) exclui. O que estava na despensa e nas listas fica, sem o
+-- produto; o que a casa aprendeu sobre ele sai; o código de mercado ambíguo fica, sem produto e ainda sem valer.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_dp2', false) \gset
+do $$
+declare
+  p_junk uuid := current_setting('test.dp_junk')::uuid;
+  tokens uuid[];
+begin
+  select array_agg(toggle_token order by id) into tokens from public.shopping_list_items where product_id = p_junk;
+  assert public.delete_product(p_junk, 'Biscoito errado') = jsonb_build_object('deleted', p_junk, 'pantry', 1, 'list', 1, 'barcodes', 1),
+    'deletes and says what lost the link: the open pantry item, the open list item and the barcode';
+  assert not exists (select 1 from public.products where id = p_junk), 'the product is gone';
+  assert (select count(*) from public.pantry_items where name = 'Biscoito' and product_id is null) = 2, 'both pantry rows stay, without the product';
+  assert (select count(*) from public.shopping_list_items where name = 'Biscoito' and product_id is null) = 2,
+    'the open and the archived list items stay, without the product';
+  assert (select array_agg(toggle_token order by id) from public.shopping_list_items where name = 'Biscoito') = tokens,
+    'the list items keep their toggle token';
+  assert (select count(*) from public.purchase_history where name = 'Biscoito errado' and product_id is null) = 1,
+    'the purchase history row stays, without the product';
+  assert not exists (select 1 from public.product_aliases where alias = 'BISC ERRADO'), 'the alias is gone';
+  assert not exists (select 1 from public.list_item_links where name_key = 'biscoito errado'), 'the list link is gone';
+  assert not exists (select 1 from public.product_barcodes where gtin = '07891000100103'), 'the barcode is gone';
+  assert not exists (select 1 from public.product_distinct_pairs where p_junk in (product_a, product_b)), 'the pair is gone';
+  assert not exists (select 1 from public.product_store_codes where store_code = 'B123'), 'the market code that was not ambiguous left with it';
+  assert (select product_id is null and ambiguous and learned_from = 'TOMATE KG' from public.product_store_codes where store_code = '1'),
+    'the ambiguous market code stays, without a product';
+  assert not exists (select 1 from public.match_store_codes('11222333000181', array['1'])), 'and still gives no product in that market';
+  assert exists (select 1 from public.products where id = current_setting('test.dp_other')::uuid), 'the other product of the pair stays';
+  begin
+    perform public.delete_product(p_junk, 'Biscoito errado');
+    raise exception 'FAIL: deleted the same product twice';
+  exception when no_data_found then null;
+  end;
+end $$;
+reset role;
+do $$
+begin
+  assert (select count(*) from public.shopping_list_item_tombstones) = current_setting('test.dp_tombstones')::bigint,
+    'a set null is an update: no tombstone is written';
+end $$;
+
+-- Dalva: a marca ambígua continua valendo depois que o produto dela saiu. Outra nota no mesmo mercado com o
+-- código 1 dá outro produto à linha, e o código continua sem valer.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_dp1', false) \gset
+do $$
+declare
+  s uuid;
+  r uuid;
+  i uuid;
+  p_cebola uuid;
+begin
+  select id into s from public.stores where cnpj = '11222333000181';
+  insert into public.receipts (store_id, purchased_at, source) values (s, '2026-11-03 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, store_code, unit_price, total_price) values (r, 'CEBOLA KG', '1', 6, 3)
+    returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i,
+    'new_product', jsonb_build_object('name', 'Cebola', 'category', 'hortifruti'))));
+  select id into p_cebola from public.products where name = 'Cebola';
+  assert (select product_id = p_cebola and ambiguous from public.product_store_codes where store_code = '1'),
+    'the code gets the new product and stays ambiguous';
+  assert not exists (select 1 from public.match_store_codes('11222333000181', array['1'])), 'and still gives no product';
+
+  -- Quem grava direto pela API: a linha ambígua sem produto fica; a que deixa de ser ambígua sem produto, ou nasce
+  -- assim, sai.
+  insert into public.product_store_codes (store_cnpj, store_code, product_id, learned_from, ambiguous) values ('11222333000181', 'Z1', null, 'Z', true);
+  assert exists (select 1 from public.product_store_codes where store_code = 'Z1'), 'an ambiguous code without a product stays';
+  update public.product_store_codes set ambiguous = false where store_code = 'Z1';
+  assert not exists (select 1 from public.product_store_codes where store_code = 'Z1'), 'no longer ambiguous and without a product: it goes';
+  insert into public.product_store_codes (store_cnpj, store_code, product_id, learned_from, ambiguous) values ('11222333000181', 'Z2', null, 'Z', false);
+  assert not exists (select 1 from public.product_store_codes where store_code = 'Z2'), 'a code born without a product and not ambiguous goes';
+
+  -- O rascunho deixou de ter o produto: aí sai, e sem ligação nenhuma. Sem nome, não há conferência.
+  update public.receipt_items set product_id = null where product_id = current_setting('test.dp_review')::uuid;
+  assert public.delete_product(current_setting('test.dp_review')::uuid, 'Feijão')
+    = jsonb_build_object('deleted', current_setting('test.dp_review')::uuid, 'pantry', 0, 'list', 0, 'barcodes', 0),
+    'once the draft line lost it, the product leaves';
+  assert (public.delete_product(current_setting('test.dp_free')::uuid))->>'deleted' = current_setting('test.dp_free'), 'without a name, no check';
+end $$;
+
+-- Dora exclui o produto dela, com o mesmo nome; o da Dalva já não existia, e o resto da Dalva fica.
+select set_config('request.jwt.claim.sub', :'user_dp3', false) \gset
+do $$
+declare
+  p uuid;
+  r uuid;
+  s uuid;
+begin
+  assert (public.delete_product(current_setting('test.dp_dora')::uuid, 'Biscoito errado'))->>'deleted' = current_setting('test.dp_dora'),
+    'D deletes her own product';
+  assert (select count(*) from public.products) = 0, 'D has no products left';
+
+  -- A casa da Dora vai sair pelos caminhos do banco: um produto num rascunho, um código de mercado comum e um
+  -- ambíguo.
+  insert into public.stores (name, cnpj) values ('Mercado da Dora', '22333444000155') returning id into s;
+  insert into public.products (name, category) values ('Leite', 'laticinios') returning id into p;
+  insert into public.receipts (store_id, status) values (s, 'draft') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit_price, total_price, product_id) values (r, 'LEITE 1L', 5, 5, p);
+  insert into public.product_store_codes (store_cnpj, store_code, product_id, learned_from) values ('22333444000155', 'L1', p, 'LEITE 1L');
+  insert into public.product_store_codes (store_cnpj, store_code, product_id, learned_from, ambiguous) values ('22333444000155', 'L2', p, 'LEITE', true);
+end $$;
+select set_config('request.jwt.claim.sub', :'user_dp1', false) \gset
+do $$
+begin
+  assert (select array_agg(name order by name) from public.products) = array['Arroz 5kg', 'Biscoito recheado', 'Café', 'Cebola'],
+    'Dalva keeps her other products';
+end $$;
+-- A última moradora sai e a casa é apagada: o gatilho de products fica de fora (quem apaga é o banco) e o dos
+-- códigos roda em qualquer ordem das duas cascatas (casa → produtos → código, casa → código).
+select set_config('request.jwt.claim.sub', :'user_dp3', false) \gset
+do $$
+begin
+  assert (public.leave_household(public.current_household_id(), true))->>'status' = 'deleted', 'D, the last member, deletes her house';
+end $$;
+reset role;
+do $$
+declare
+  hh uuid := current_setting('test.hh_dp3_id')::uuid;
+begin
+  assert not exists (select 1 from public.households where id = hh), 'the house is gone';
+  assert not exists (select 1 from public.products where household_id = hh), 'with its products';
+  assert not exists (select 1 from public.receipts where household_id = hh), 'its receipts';
+  assert not exists (select 1 from public.receipt_items where household_id = hh), 'and their lines';
+  assert not exists (select 1 from public.product_store_codes where household_id = hh), 'and both market codes';
+end $$;
+
+-- "São diferentes" se desfaz por qualquer morador: é um delete da linha, pela RLS da casa.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_dp1', false) \gset
+do $$
+begin
+  insert into public.product_distinct_pairs (product_a, product_b) values (
+    least(current_setting('test.dp_other')::uuid, current_setting('test.dp_bought')::uuid),
+    greatest(current_setting('test.dp_other')::uuid, current_setting('test.dp_bought')::uuid));
+end $$;
+select set_config('request.jwt.claim.sub', :'user_dp2', false) \gset
+do $$
+declare
+  a uuid := least(current_setting('test.dp_other')::uuid, current_setting('test.dp_bought')::uuid);
+  b uuid := greatest(current_setting('test.dp_other')::uuid, current_setting('test.dp_bought')::uuid);
+  n integer;
+begin
+  with gone as (delete from public.product_distinct_pairs where product_a = a and product_b = b returning *) select count(*) into n from gone;
+  assert n = 1, 'another member undoes the pair, and gets it back';
+  with gone as (delete from public.product_distinct_pairs where product_a = a and product_b = b returning *) select count(*) into n from gone;
+  assert n = 0, 'undoing again gets nothing back';
+end $$;
+reset role;
+
+-- ---------------------------------------------------------------------------
 \echo '• preços compartilhados: o que entra, o que nunca entra, quem lê e quem não alcança a tabela'
 -- Paula e Quico compram no mesmo atacado, em São Paulo; Saulo também, numa
 -- leitura que veio sem o nome da loja. Rita já comprou o mesmo arroz (tem o
@@ -10814,11 +11313,28 @@ begin
     and not exists (select 1 from public.product_barcodes where product_id in (p_nanica, p_desnatado)), 'nothing points to the gone ones';
   assert (select count(*) from public.product_store_codes) = 2 and (select count(*) from public.product_barcodes) = 2, 'nothing was lost';
 
-  delete from public.products where id = p_banana;
+  -- A banana tem linhas de nota: um delete direto pela API esbarra no gatilho products_keep_receipt_lines
+  -- (20261122100000_delete_product.sql), e nada sai.
+  begin
+    delete from public.products where id = p_banana;
+    raise exception 'FAIL: a product with receipt lines left by a direct delete';
+  exception when sqlstate 'NK016' then null;
+  end;
+  assert exists (select 1 from public.product_store_codes where store_code = '250474')
+    and exists (select 1 from public.product_barcodes where gtin = '00000096385074'), 'the refused delete kept the codes';
+end $$;
+-- Como dona da tabela (como a cascata da casa apagada), o produto sai e as linhas de nota ficam sem ele.
+reset role;
+delete from public.products where id = current_setting('test.sc_banana')::uuid;
+do $$
+begin
+  -- O 250474 não é ambíguo: sai com o produto (product_store_codes_forget_unlinked).
   assert not exists (select 1 from public.product_store_codes where store_code = '250474')
     and not exists (select 1 from public.product_barcodes where gtin = '00000096385074'), 'a deleted product takes its codes';
-  assert (select count(*) from public.product_store_codes) = 1, 'and only its codes';
+  assert (select count(*) from public.product_store_codes where household_id = current_setting('test.hh_sc1')::uuid) = 1, 'and only its codes';
 end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_sc1', false) \gset
 
 -- O mercadinho que usa o mesmo código para itens diferentes (o 1 para todo o hortifruti a granel): o código
 -- fica ambíguo e deixa de valer; vale o código de barras, depois o apelido de cada descrição.
