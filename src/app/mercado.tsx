@@ -34,8 +34,8 @@ import {
 import { canRenameStore } from '@/domain/storeName';
 import { BarRow } from '@/features/market/BarRow';
 import { MarketTrendChart } from '@/features/market/MarketTrendChart';
-import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { RenameStoreModal } from '@/features/RenameStoreModal';
+import { openReceiptCamera } from '@/features/scan/receiptCamera';
 import { FEATURES } from '@/lib/features';
 import {
   Button,
@@ -82,7 +82,6 @@ export default function MarketMonthScreen() {
   // voltar sai da tela, como nas abas de Finanças.
   const view = viewFromParam(aba);
   const market = useMarketData(month);
-  const scanner = useReceiptScanner();
   const stores = useStores();
   const [category, setCategory] = useState<string | null>(null);
   // O mercado tocado na lista de mercados: '' é o das notas sem mercado, null é nenhum.
@@ -226,12 +225,10 @@ export default function MarketMonthScreen() {
           onChangesLayout={(y) => {
             changesY.current = y;
           }}
-          onAddReceipt={scanner.open}
-          adding={scanner.busy}
+          onAddReceipt={openReceiptCamera}
         />
       )}
 
-      {scanner.element}
       {renamingStore && renameStore ? (
         <RenameStoreModal store={renameStore} stores={stores.data ?? []} onClose={() => setRenamingStore(false)} />
       ) : null}
@@ -265,7 +262,6 @@ function MonthBody({
   onSwitchLayout,
   onChangesLayout,
   onAddReceipt,
-  adding,
 }: {
   summary: MarketMonth;
   trend: MarketTrend | null;
@@ -294,8 +290,8 @@ function MonthBody({
   onDetailsOpen: (open: boolean) => void;
   onSwitchLayout: (y: number) => void;
   onChangesLayout: (y: number) => void;
+  /** A câmera só da nota (features/scan/receiptCamera). */
   onAddReceipt: () => void;
-  adding: boolean;
 }) {
   return (
     <>
@@ -322,7 +318,7 @@ function MonthBody({
                 ? 'As compras aparecem aqui quando uma nota fiscal é confirmada ou um gasto é lançado como Mercado em Finanças. Fotografe o cupom ou leia o QR code da nota.'
                 : 'As compras aparecem aqui quando uma nota fiscal é confirmada. Fotografe o cupom ou leia o QR code da nota.'
             }
-            action={<Button title="Adicionar nota" icon="camera-outline" onPress={onAddReceipt} loading={adding} />}
+            action={<Button title="Adicionar nota" icon="camera-outline" onPress={onAddReceipt} />}
           />
           {/* Sem total na tela não há o que abrir e fechar: o que espera a revisão e o que ficou de fora já vêm à vista. */}
           {summary.closing ? (

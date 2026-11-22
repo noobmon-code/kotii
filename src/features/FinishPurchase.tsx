@@ -6,7 +6,7 @@ import { FINISH_OFFLINE_NOTICE, FINISH_SHEET, finishStart, type ConfirmedReceipt
 import { stopWaitingForReceipt, takeConfirmedReceipt, waitForReceipt } from '@/lib/finishPurchase';
 import { ActionSheet } from '@/ui/ActionSheet';
 
-import { useReceiptScanner } from './ReceiptScanner';
+import { openReceiptCamera } from './scan/receiptCamera';
 
 interface Handlers {
   /** Sem a nota (escolhido, ou sem internet, com o aviso): o "Limpar o carrinho" de sempre. */
@@ -16,14 +16,15 @@ interface Handlers {
 }
 
 /**
- * "Finalizar compra", na lista (domain/finishPurchase): a nota antes de limpar. `start` pergunta como finalizar,
- * com as opções do leitor de nota de sempre (useReceiptScanner) e o caminho sem a nota; sem internet, a nota fica
- * para depois e o "Limpar" segue com o aviso. Com a nota, a lista espera por ela (lib/finishPurchase): a revisão
- * confirma, tira da lista o que casou, guarda na despensa e volta, e a lista, de novo em foco, recebe o que
- * aconteceu. Voltar sem confirmar acaba a espera, sem aviso. `element` precisa ser renderizado pela tela.
+ * "Finalizar compra", na lista (domain/finishPurchase): a nota antes de limpar. `start` pergunta como finalizar:
+ * "Ler a nota" (a câmera só da nota, /escanear?para=nota) ou o caminho sem a nota; sem internet, a nota fica para
+ * depois e o "Limpar" segue com o aviso. Com a nota, a lista espera por ela (lib/finishPurchase): a câmera dá lugar
+ * à tela do QR ou à revisão, a revisão confirma, tira da lista o que casou, guarda na despensa e volta, e a lista,
+ * de novo em foco, recebe o que aconteceu. Voltar sem confirmar (da câmera ou da revisão) acaba a espera, sem
+ * aviso. `element` precisa ser renderizado pela tela. `busy` continua para os botões da tela, sempre false: a
+ * leitura agora corre na câmera, e nada daqui espera.
  */
 export function useFinishPurchase(listId: string, handlers: Handlers) {
-  const scanner = useReceiptScanner();
   const [asking, setAsking] = useState(false);
   // O foco chega sem render: lê as funções do último desenho da tela (o carrinho e a ida de agora).
   const latest = useRef(handlers);
@@ -51,27 +52,25 @@ export function useFinishPurchase(listId: string, handlers: Handlers) {
   };
 
   const element = (
-    <>
-      <ActionSheet
-        visible={asking}
-        title={FINISH_SHEET.title}
-        message={FINISH_SHEET.message}
-        actions={[
-          // A espera começa já na escolha: a câmera, a galeria ou o QR code abrem depois que o menu fecha.
-          ...scanner.actions.map((action) => ({
-            ...action,
-            onPress: () => {
-              waitForReceipt(listId);
-              action.onPress();
-            },
-          })),
-          { label: FINISH_SHEET.withoutReceipt, icon: 'cart-remove', onPress: () => withoutReceipt() },
-        ]}
-        onClose={() => setAsking(false)}
-      />
-      {scanner.element}
-    </>
+    <ActionSheet
+      visible={asking}
+      title={FINISH_SHEET.title}
+      message={FINISH_SHEET.message}
+      actions={[
+        {
+          label: FINISH_SHEET.withReceipt,
+          icon: 'camera-outline',
+          // A espera começa já na escolha: a câmera abre depois que o menu fecha.
+          onPress: () => {
+            waitForReceipt(listId);
+            openReceiptCamera();
+          },
+        },
+        { label: FINISH_SHEET.withoutReceipt, icon: 'cart-remove', onPress: () => withoutReceipt() },
+      ]}
+      onClose={() => setAsking(false)}
+    />
   );
 
-  return { start, element, busy: scanner.busy };
+  return { start, element, busy: false };
 }

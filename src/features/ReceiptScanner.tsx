@@ -1,29 +1,29 @@
 import { router } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';
 
-import { MAX_RECEIPT_PHOTOS, pickReceiptImages, useCreateManualReceipt, useScanReceipt, type ScanSource } from '@/data/receipts';
+import { MAX_RECEIPT_PHOTOS, pickReceiptImages, useScanReceipt, type ScanSource } from '@/data/receipts';
 import { useHouseholdId } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
-import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
+import { ActionSheet } from '@/ui/ActionSheet';
 import { BusyOverlay } from '@/ui/BusyOverlay';
 import { notify } from '@/ui/dialogs';
 
 /**
- * Fluxo "nota -> revisão". `open()` mostra as opções (QR code, câmera,
- * galeria, manual); `element` precisa ser renderizado pela tela.
- * `actions` são essas mesmas opções, para a tela que as põe na pergunta dela
- * (o "Finalizar compra" da lista: um menu só, sem abrir um depois do outro).
- * `readPhotos(source, chave)` lê pela foto uma nota cuja chave já se conhece
- * (do QR code). `replace`: a revisão toma o lugar da tela atual (a do QR).
+ * A leitura pela foto de uma nota cuja chave já se conhece (do QR code): os prints da Sefaz da nota pendente
+ * (nota/pendente e, quando a pendente não pôde ser guardada, nota/qrcode), e a foto da nota que a Sefaz não trouxe
+ * (fora do ar, ou sem os itens) ou que o limite do QR do mês barrou (o cartão da tela do QR no lugar da câmera dela,
+ * domain/nfce photoAfterSefazFailure). `readPhotos(source, chave)` abre a
+ * câmera (uma parte de cada vez) ou a galeria; `element` precisa ser renderizado pela tela. A revisão sempre toma o
+ * lugar da tela atual (a pendente ou a do QR), para que quem abriu a nota (a lista do "Finalizar compra", Compras →
+ * Notas) fique logo embaixo dela. Adicionar uma nota (Compras → Notas, o Mercado do mês, o "Finalizar compra" da
+ * lista) é a câmera só da nota do "Escanear" (features/scan/receiptCamera), não daqui.
  */
-export function useReceiptScanner({ replace = false }: { replace?: boolean } = {}) {
+export function useReceiptScanner() {
   const householdId = useHouseholdId();
   const scan = useScanReceipt(householdId);
-  const manual = useCreateManualReceipt();
-  const [sheetOpen, setSheetOpen] = useState(false);
   // Nota comprida pela câmera: partes já fotografadas, esperando a próxima ou a leitura.
   const [parts, setParts] = useState<string[]>([]);
-  // Chave da nota que está sendo fotografada, quando veio do QR code.
+  // Chave da nota que está sendo fotografada (a do QR code: da pendente, ou da nota que a Sefaz não trouxe).
   const accessKey = useRef<string | null>(null);
 
   const read = useCallback(
@@ -34,16 +34,14 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
         { uris, accessKey: accessKey.current },
         {
           onSuccess: ({ receipt_id, duplicate }) => {
-            const review = { pathname: '/nota/[id]', params: { id: receipt_id } } as const;
-            if (replace) router.replace(review);
-            else router.push(review);
+            router.replace({ pathname: '/nota/[id]', params: { id: receipt_id } });
             if (duplicate) notify('Nota já importada', 'Esta nota já estava no app — abrimos a existente.');
           },
           onError: (err) => notify('Não foi possível ler a nota', errorMessage(err)),
         },
       );
     },
-    [scan, replace],
+    [scan],
   );
 
   const start = useCallback(
@@ -77,36 +75,15 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
   );
 
   const readPhotos = useCallback(
-    (source: ScanSource, key: string | null = null) => {
+    (source: ScanSource, key: string) => {
       accessKey.current = key;
       void start(source);
     },
     [start],
   );
 
-  const startManual = useCallback(() => {
-    manual.mutate(undefined, {
-      onSuccess: ({ id }) => router.push({ pathname: '/nota/[id]', params: { id } }),
-      onError: (err) => notify('Erro', errorMessage(err)),
-    });
-  }, [manual]);
-
-  const actions: SheetAction[] = [
-    { label: 'Ler o QR code da nota', icon: 'qrcode-scan', onPress: () => router.push('/nota/qrcode') },
-    { label: 'Tirar foto da nota', icon: 'camera-outline', onPress: () => readPhotos('camera') },
-    { label: `Escolher da galeria (até ${MAX_RECEIPT_PHOTOS} fotos)`, icon: 'image-outline', onPress: () => readPhotos('library') },
-    { label: 'Digitar manualmente', icon: 'pencil-outline', onPress: startManual },
-  ];
-
   const element = (
     <>
-      <ActionSheet
-        visible={sheetOpen}
-        onClose={() => setSheetOpen(false)}
-        title="Adicionar nota fiscal"
-        message="Pelo QR code, os itens vêm direto da Sefaz; pela foto, a IA lê a nota. Você revisa antes de salvar."
-        actions={actions}
-      />
       <ActionSheet
         visible={parts.length > 0}
         onClose={() => setParts([])}
@@ -125,5 +102,5 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
     </>
   );
 
-  return { open: () => setSheetOpen(true), actions, readPhotos, element, busy: scan.isPending || manual.isPending };
+  return { readPhotos, element, busy: scan.isPending };
 }

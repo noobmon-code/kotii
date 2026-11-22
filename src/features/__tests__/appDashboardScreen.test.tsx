@@ -91,16 +91,33 @@ function rawDashboard(): Record<string, unknown> {
       { day: '2026-10-22', accounts: 5, active_users: 3, households: 4, ai: { chat: 4 }, backfilled: false },
       { day: '2026-10-23', accounts: 5, active_users: 2, households: 4, ai: { chat: 7 }, backfilled: false },
     ],
+    // Como app_dashboard manda desde 20261121013508_app_dashboard_product_kind: os seis tipos de IA, cada um com o
+    // limite e uma linha nas casas perto do limite e no limite. Uma casa chegou às 50 fotos de produto do mês.
     ai: {
       month: '2026-10',
-      limits: { chat: 300, photo: 100, menu: 20, nfce: 200, finance: 100 },
+      limits: { chat: 300, photo: 100, menu: 20, nfce: 200, finance: 100, product: 50 },
       months: [
         { month: '2026-09', kind: 'chat', uses: 10, households: 2 },
         { month: '2026-10', kind: 'chat', uses: 7, households: 1 },
         { month: '2026-10', kind: 'photo', uses: 8, households: 2 },
+        { month: '2026-10', kind: 'product', uses: 50, households: 1 },
       ],
-      near_limit: [{ kind: 'photo', households: 1 }],
-      at_limit: [{ kind: 'photo', households: 0 }],
+      near_limit: [
+        { kind: 'chat', households: 0 },
+        { kind: 'photo', households: 1 },
+        { kind: 'menu', households: 0 },
+        { kind: 'nfce', households: 0 },
+        { kind: 'finance', households: 0 },
+        { kind: 'product', households: 0 },
+      ],
+      at_limit: [
+        { kind: 'chat', households: 0 },
+        { kind: 'photo', households: 0 },
+        { kind: 'menu', households: 0 },
+        { kind: 'nfce', households: 0 },
+        { kind: 'finance', households: 0 },
+        { kind: 'product', households: 1 },
+      ],
     },
     features: APP_FEATURES.map((feature) =>
       feature.key === 'lista'
@@ -228,7 +245,8 @@ describe('Painel do app', () => {
     expect(text).toContain('Lista de compras2 de 4 casas7 registros em 30 dias · 3 casas já usaram');
     expect(text).toContain('Sem uso nos últimos 30 dias:');
     expect(text).toContain('5 notas confirmadas nos últimos 30 dias, todas por foto.');
-    expect(text).toContain('Perto do limite: 1 casa em leituras de foto.');
+    expect(text).toContain('No limite: 1 casa em fotos de produto. Perto do limite: 1 casa em leituras de foto.');
+    expect(text).toContain('Fotos de produto (Escanear)501 de 4 casas · limite de 50 por casa');
     expect(text).toContain('Contas sem casa1 de 5 contas (20%)');
     expect(text).toContain('iPhone/iPad2 pessoas');
     expect(text).toContain('3 pessoas pelo navegador.');

@@ -9,11 +9,14 @@
  * mostrando Finanças): para voltar, basta ligar a chave.
  *
  * `onboarding`: o começo novo de quem chega (domain/onboarding: boas-vindas, criar conta, o nome, a casa, a primeira
- * lista, chamar a casa e a tela de início). Desligada, quem chega vê as telas de entrar e de boas-vindas de antes; o
- * dono vê o começo novo pela prévia (Configurações → Manutenção do app), só com a conta dele (app_admins). Ligar é
- * trocar a constante: o servidor não muda.
+ * lista, chamar a casa e a tela de início). Ligada para todos desde 20/11/2026 (decisão do dono): quem chega vê o
+ * começo novo, e as partes dele que ficam dentro do app (o convite nos Primeiros passos da Hoje e o link em
+ * Configurações) valem para todas as casas. A prévia (Configurações → Manutenção do app) continua, para o dono ver o
+ * começo como uma conta nova. Desligada, quem chega vê as telas de entrar e de boas-vindas de antes, e o começo novo
+ * só pela prévia. Ligar ou desligar é trocar a constante: o servidor não muda.
  *
  * Lida sempre na hora do uso (dentro da função ou da tela), nunca guardada numa constante ao carregar o módulo:
- * os testes ligam a chave com `jest.replaceProperty(FEATURES, 'finance', true)`.
+ * os testes ligam ou desligam a chave com `jest.replaceProperty(FEATURES, 'finance', true)` (ou
+ * `jest.replaceProperty(FEATURES, 'onboarding', false)`, nos testes das telas de antes).
  */
-export const FEATURES: { readonly finance: boolean; readonly onboarding: boolean } = { finance: true, onboarding: false };
+export const FEATURES: { readonly finance: boolean; readonly onboarding: boolean } = { finance: true, onboarding: true };

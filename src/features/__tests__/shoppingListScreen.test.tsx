@@ -20,7 +20,6 @@ import { CartPantryModal } from '@/features/CartPantryModal';
 import { ListEstimateCard } from '@/features/ListEstimateCard';
 import { forgetAddedItems, rememberAdded } from '@/lib/addedItems';
 import { handConfirmedReceipt, stopWaitingForReceipt } from '@/lib/finishPurchase';
-import { pickReceiptImages } from '@/data/receipts';
 import { router } from 'expo-router';
 import { PasteListModal } from '@/features/PasteListModal';
 import { ANNOUNCE_DELAY_MS, PriceCalculator } from '@/features/PriceCalculator';
@@ -83,14 +82,6 @@ jest.mock('expo-router', () => ({
 jest.mock('@tanstack/react-query', () => ({
   useQueryClient: () => ({ getQueryData: (key: unknown[]) => (key[0] === 'listItems' ? mockQueries.items?.data : undefined) }),
   onlineManager: { isOnline: () => mockTrips.online },
-}));
-// O leitor de nota de verdade (o menu do "Finalizar compra" usa as opções dele), sem ler nada: a leitura tem os
-// testes dela (pendingReceiptFlow, duplicateReceipt).
-jest.mock('@/data/receipts', () => ({
-  MAX_RECEIPT_PHOTOS: 6,
-  pickReceiptImages: jest.fn(async () => []),
-  useScanReceipt: () => ({ mutate: jest.fn(), isPending: false }),
-  useCreateManualReceipt: () => ({ mutate: jest.fn(), isPending: false }),
 }));
 jest.mock('@/ui/NukeLive', () => ({ NukeLive: () => null }));
 jest.mock('@/data/home', () => ({ usePantry: () => mockQueries.pantry }));
@@ -1666,7 +1657,6 @@ describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
     jest.mocked(askYesNo).mockReset();
     jest.mocked(notify).mockReset();
     jest.mocked(router.push).mockClear();
-    jest.mocked(pickReceiptImages).mockClear();
     mockQueue.clear.mockClear();
     mockFocus.effect = null;
     stopWaitingForReceipt('l1');
@@ -1749,31 +1739,20 @@ describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
     });
   });
 
-  it('o toque pergunta como finalizar: as opções do leitor de nota e o caminho sem ela', async () => {
+  it('o toque pergunta como finalizar: ler a nota (a câmera só da nota) ou o caminho sem ela', async () => {
     mockQueries.items = loaded([arroz, leite]);
     await mount();
     expect(finishSheet().props.visible).toBe(false);
     await tapFinish();
     expect(finishSheet().props.visible).toBe(true);
     expect((finishSheet().props.actions as SheetAction[]).map((action) => action.label)).toEqual([
-      'Ler o QR code da nota',
-      'Tirar foto da nota',
-      'Escolher da galeria (até 6 fotos)',
-      'Digitar manualmente',
+      'Ler a nota',
       'Sem a nota: só limpar o carrinho',
     ]);
-    // A nota: o leitor de sempre, nada sai do carrinho ainda.
-    await pick('Ler o QR code da nota');
-    expect(router.push).toHaveBeenCalledWith('/nota/qrcode');
+    // A nota: a câmera do "Escanear", só da nota; nada sai do carrinho ainda.
+    await pick('Ler a nota');
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/escanear', params: { para: 'nota' } });
     expect(mockQueue.clear).not.toHaveBeenCalled();
-  });
-
-  it('pela foto, a câmera do leitor de sempre', async () => {
-    mockQueries.items = loaded([leite]);
-    await mount();
-    await tapFinish();
-    await pick('Tirar foto da nota');
-    expect(pickReceiptImages).toHaveBeenCalledWith('camera', 1);
   });
 
   it('sem a nota: o "Limpar" de sempre, com o carrinho do toque e a pergunta da ida depois', async () => {
@@ -1811,7 +1790,7 @@ describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
     it('a lista diz o que a nota fez e o que ficou no carrinho (a revisão não avisa), sem a ida', async () => {
       await mount();
       await tapFinish();
-      await pick('Ler o QR code da nota');
+      await pick('Ler a nota');
       // A revisão tirou o leite da lista; o café ficou no carrinho (a nota não o tinha, ou não casou).
       expect(await confirmedAndBack({ pantryCount: 2, removedListItems: ['l'] })).toBe(true);
       expect(notify).toHaveBeenCalledTimes(1);
@@ -1828,7 +1807,7 @@ describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
     it('a busca nova da lista já chegou sem o que a nota tirou: o mesmo carrinho que sobrou', async () => {
       await mount();
       await tapFinish();
-      await pick('Tirar foto da nota');
+      await pick('Ler a nota');
       mockQueries.items = loaded([arroz, cafe]);
       await act(async () => renderer!.update(<ShoppingListScreen />));
       await confirmedAndBack({ pantryCount: 1, removedListItems: ['l'] });
@@ -1838,7 +1817,7 @@ describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
     it('a nota tirou tudo do carrinho: só o que ela fez', async () => {
       await mount();
       await tapFinish();
-      await pick('Ler o QR code da nota');
+      await pick('Ler a nota');
       await confirmedAndBack({ pantryCount: 2, removedListItems: ['l', 'c', 'outra-lista'] });
       expect(notify).toHaveBeenCalledWith('Nota salva', '2 itens foram para a despensa. 3 itens saíram da lista.');
     });
@@ -1849,7 +1828,7 @@ describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
       mockTrips.end.mockResolvedValue(true);
       await mount();
       await tapFinish();
-      await pick('Ler o QR code da nota');
+      await pick('Ler a nota');
       await confirmedAndBack({ pantryCount: 2, removedListItems: ['l', 'c'] });
       expect(askYesNo).toHaveBeenCalledTimes(1);
       expect(askYesNo).toHaveBeenCalledWith(
@@ -1874,7 +1853,7 @@ describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
       mockTrips.list = trips();
       await mount();
       await tapFinish();
-      await pick('Ler o QR code da nota');
+      await pick('Ler a nota');
       await confirmedAndBack({ pantryCount: 0, removedListItems: ['l', 'c'], ...patch });
       expect(askYesNo).not.toHaveBeenCalled();
       expect(notify).toHaveBeenCalledWith('Nota salva', '2 itens saíram da lista.');
@@ -1884,7 +1863,7 @@ describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
       mockTrips.list = [liveTrip()];
       await mount();
       await tapFinish();
-      await pick('Ler o QR code da nota');
+      await pick('Ler a nota');
       mockTrips.online = false;
       await confirmedAndBack({ pantryCount: 0, removedListItems: ['l', 'c'] });
       expect(askYesNo).not.toHaveBeenCalled();
@@ -1895,7 +1874,7 @@ describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
       mockTrips.list = [liveTrip()];
       await mount();
       await tapFinish();
-      await pick('Ler o QR code da nota');
+      await pick('Ler a nota');
       await act(async () => mockFocus.effect?.());
       expect(notify).not.toHaveBeenCalled();
       expect(askYesNo).not.toHaveBeenCalled();
@@ -1905,13 +1884,13 @@ describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
 
     describe('"Onde estou" depois da nota', () => {
       const estimateCard = () => renderer!.root.findByType(ListEstimateCard);
-      /** No mercado s1 ("Onde estou"), "Finalizar compra" pelo QR code. */
+      /** No mercado s1 ("Onde estou"), "Finalizar compra" com a nota. */
       async function atStoreAndFinish() {
         await mount();
         await act(async () => estimateCard().props.onChangeStore('s1'));
         expect(estimateCard().props.storeId).toBe('s1');
         await tapFinish();
-        await pick('Ler o QR code da nota');
+        await pick('Ler a nota');
       }
 
       it('a nota que esvazia o carrinho encerra as compras, como o "Limpar": a escolha sai', async () => {
@@ -1959,7 +1938,7 @@ describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
     it('a lista que sai da tela no meio deixa de esperar a nota', async () => {
       await mount();
       await tapFinish();
-      await pick('Ler o QR code da nota');
+      await pick('Ler a nota');
       await act(async () => renderer!.unmount());
       renderer = undefined;
       expect(handConfirmedReceipt({ tappedAt: Date.now(), onlineAtTap: true, pantryCount: 0, removedListItems: [] })).toBe(false);

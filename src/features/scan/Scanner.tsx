@@ -1,11 +1,11 @@
-import { CameraView, scanFromURLAsync, useCameraPermissions } from 'expo-camera';
+import { CameraView, scanFromURLAsync } from 'expo-camera';
 import { router, useNavigation } from 'expo-router';
 import { usePreventRemove } from 'expo-router/react-navigation';
 import { useEffect, useRef, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 
 import { useAddToMarketList } from '@/data/market';
-import { pickReceiptImages, useCreateManualReceipt } from '@/data/receipts';
+import { pickReceiptImages, useCreateManualReceipt, useScanReceipt } from '@/data/receipts';
 import { useSaveScanToPantry, useScanPhotos } from '@/data/scan';
 import { GTIN_INVALID, GTIN_INVALID_TITLE, GTIN_RESTRICTED, GTIN_RESTRICTED_TITLE, readTypedGtin } from '@/domain/barcode';
 import type { IconName } from '@/domain/categories';
@@ -16,47 +16,54 @@ import {
   classifyFor,
   galleryLimit,
   listItemsFromScan,
-  PARTS_MESSAGE,
   PARTS_MORE,
+  partsMessage,
   partsRead,
   partsTitle,
+  photoCodeTypes,
   photoStep,
   readScanCode,
   removeScanItem,
   savedToListMessage,
   savedToPantryMessage,
   SCAN_ALLOW_CAMERA,
-  SCAN_BARCODE_TYPES,
+  SCAN_LIVE_QR_NOT_RECEIPT,
   SCAN_LEAVE_TITLE,
   SCAN_MORE,
-  SCAN_NEEDS_CAMERA,
   SCAN_NOTHING_TITLE,
   SCAN_OPTION_LABELS,
   SCAN_QR_NOT_RECEIPT,
   SCAN_QR_NOT_RECEIPT_TITLE,
-  SCAN_READING_MESSAGE,
-  SCAN_READING_TITLE,
   SCAN_RECEIPT_LATER_TITLE,
   SCAN_SHUTTER,
+  scanBarcodeTypes,
   scanCodeStep,
   scanHint,
   scanItemFromProduct,
   scanItemsFromRead,
   scanLeaveQuestion,
+  scanNeedsCamera,
   scanNothingMessage,
   scanOptions,
+  scanReadFailedTitle,
+  scanReading,
   scanReceiptLaterMessage,
+  shutterUsesPhoneCamera,
   tooManyImagesMessage,
+  warnsUnusedCode,
+  type ScanBarcodeType,
   type ScanItem,
   type ScanMode,
   type ScanOption,
   type ScanState,
 } from '@/domain/scan';
 import { useProductBarcode } from '@/features/ProductBarcode';
+import { useScanCameraPermission } from '@/features/scan/cameraPermission';
 import { FoundList } from '@/features/scan/FoundList';
 import { useHouseholdId } from '@/lib/auth';
 import { prepareBarcodeReader } from '@/lib/barcodeReader';
 import { goBackOr } from '@/lib/navigation';
+import { primaryPointerIsTouch } from '@/lib/pointer';
 import { errorMessage } from '@/lib/supabase';
 import { ActionSheet } from '@/ui/ActionSheet';
 import { BusyOverlay } from '@/ui/BusyOverlay';
@@ -78,9 +85,9 @@ const OPTION_ICONS: Record<ScanOption, IconName> = {
 };
 
 /** O QR ou o código de barras que uma foto pegou, se pegou algum que sirva; a leitura que falha não é erro. */
-async function codeInPhoto(uri: string): Promise<string | null> {
+async function codeInPhoto(uri: string, types: readonly ScanBarcodeType[]): Promise<string | null> {
   try {
-    const results = await scanFromURLAsync(uri, [...SCAN_BARCODE_TYPES]);
+    const results = await scanFromURLAsync(uri, [...types]);
     return results.find((result) => readScanCode(result.data))?.data ?? null;
   } catch {
     return null;
@@ -93,15 +100,26 @@ async function codeInPhoto(uri: string): Promise<string | null> {
  * casa, ou "Qual produto é este?"). A foto vai para a IA dizer se é nota, produto ou prateleira; antes disso, o
  * código que a própria foto pegou vale mais, e não gasta leitura. Os produtos achados ficam na tela até a pessoa
  * dizer para onde vão (a despensa ou a lista de mercado), uma vez só para todos. Sem câmera (o computador, ou a
- * permissão negada), ficam as outras opções: a galeria, o link do QR, o código digitado e a nota à mão.
+ * permissão negada), ficam as outras opções: a galeria, o link do QR, o código digitado e a nota à mão. Com partes de
+ * uma nota esperando, é só "Ler", "Mais uma foto" ou "Descartar": "Mais opções" fica fechado, porque qualquer outra
+ * opção tomaria o lugar das fotos tiradas sem aviso.
+ *
+ * No modo da nota (`?para=nota`: o "Adicionar nota" e o "Finalizar compra"), só a nota: o QR ao vivo segue como
+ * sempre (e o QR que não é de uma NFC-e ganha um aviso), o código de barras não é nada, e a foto e a galeria vão para
+ * a leitura de sempre da nota (useScanReceipt, sem `classify`), sem procurar antes o QR nelas: a foto é o caminho de
+ * quando a Sefaz não trouxe a nota pelo QR. No navegador do celular, ali, "Tirar foto" abre a câmera do celular, que
+ * tira a foto inteira (a da prévia da tela é um quadro pequeno do vídeo) e não precisa da permissão da prévia: sem
+ * ela, "Tirar foto" fica no cartão das outras opções.
  */
 export function Scanner({ mode }: { mode: ScanMode }) {
   const c = useColors();
   const navigation = useNavigation();
   const householdId = useHouseholdId();
-  const [permission, requestPermission] = useCameraPermissions();
+  const [permission, requestPermission] = useScanCameraPermission();
   const camera = useRef<CameraView>(null);
   const scan = useScanPhotos(householdId);
+  // Só a nota: a leitura de sempre, a do leitor de nota, que não pergunta à IA se é produto.
+  const receiptScan = useScanReceipt(householdId);
   const savePantry = useSaveScanToPantry();
   const addToList = useAddToMarketList();
   const manual = useCreateManualReceipt();
@@ -115,14 +133,26 @@ export function Scanner({ mode }: { mode: ScanMode }) {
   const [shooting, setShooting] = useState(false);
   const [listing, setListing] = useState(false);
   const lastCode = useRef<{ text: string; at: number } | null>(null);
+  // Os códigos ao vivo que já ganharam o aviso de que não servem (no modo da nota): um aviso por código.
+  const warned = useRef(new Set<string>());
+  // No navegador, depois da câmera do celular, a prévia volta com um vídeo novo (a do celular pode ter tomado o dela).
+  const [preview, setPreview] = useState(0);
   // Saindo de propósito (guardou os produtos, abriu a nota): o aviso de sair não pergunta.
   const leaving = useRef(false);
 
   const state: ScanState = { mode, found: tray.length };
+  // No meio das partes de uma nota, nenhuma: a galeria, o link e a nota à mão perderiam as fotos tiradas.
+  const options = scanOptions(state, parts.length);
   const barcode = useProductBarcode({
     onProduct: (product) => setTray((items) => addScanItems(items, [scanItemFromProduct(product)])),
   });
-  const busy = scan.isPending || savePantry.isPending || listing || manual.isPending || shooting;
+  const reading = scan.isPending || receiptScan.isPending;
+  const busy = reading || savePantry.isPending || listing || manual.isPending || shooting;
+  const barcodeTypes = scanBarcodeTypes(mode);
+  const photoTypes = photoCodeTypes(mode);
+  // O ponteiro do navegador não muda com a tela aberta: lido uma vez.
+  const [touch] = useState(primaryPointerIsTouch);
+  const phoneShutter = shutterUsesPhoneCamera(mode, Platform.OS, touch);
   const hasCamera = Boolean(permission?.granted);
 
   useEffect(() => {
@@ -166,26 +196,47 @@ export function Scanner({ mode }: { mode: ScanMode }) {
     return false;
   }
 
-  /** O código que a câmera viu ao vivo: um de cada vez, e nunca no meio de uma foto ou de uma nota em partes. */
+  /**
+   * O código que a câmera viu ao vivo: um de cada vez, e nunca no meio de uma foto ou de uma nota em partes. No modo
+   * da nota, o QR que não serve avisa, uma vez por código (warnsUnusedCode).
+   */
   function onLiveCode(data: string) {
     if (busy || barcode.busy || parts.length) return;
     const now = seenAt();
     const last = lastCode.current;
     if (last && last.text === data && now - last.at < SAME_CODE_MS) return;
     lastCode.current = { text: data, at: now };
-    handleCode(data);
+    if (handleCode(data) || !warnsUnusedCode(state) || warned.current.has(data)) return;
+    warned.current.add(data);
+    notify(SCAN_QR_NOT_RECEIPT_TITLE, SCAN_LIVE_QR_NOT_RECEIPT);
+  }
+
+  /** A nota lida: a revisão toma o lugar da câmera (quem abriu a câmera fica logo embaixo dela). */
+  function openReview(id: string, duplicate: boolean) {
+    leave(() => router.replace({ pathname: '/nota/[id]', params: { id } }));
+    if (duplicate) notify('Nota já importada', 'Esta nota já estava no app — abrimos a existente.');
   }
 
   function read(uris: string[]) {
     setParts([]);
     const asked = state;
+    const classify = classifyFor(asked);
+    if (classify === null) {
+      receiptScan.mutate(
+        { uris },
+        {
+          onSuccess: ({ receipt_id, duplicate }) => openReview(receipt_id, duplicate),
+          onError: (err) => notify(scanReadFailedTitle(asked), errorMessage(err)),
+        },
+      );
+      return;
+    }
     scan.mutate(
-      { uris, classify: classifyFor(asked) },
+      { uris, classify },
       {
         onSuccess: (reply) => {
           if (reply.kind === 'nota') {
-            leave(() => router.replace({ pathname: '/nota/[id]', params: { id: reply.receiptId } }));
-            if (reply.duplicate) notify('Nota já importada', 'Esta nota já estava no app — abrimos a existente.');
+            openReview(reply.receiptId, reply.duplicate);
           } else if (reply.kind === 'produtos') {
             setTray((items) => addScanItems(items, scanItemsFromRead(reply.products)));
           } else if (reply.kind === 'nota-nao-lida') {
@@ -194,25 +245,38 @@ export function Scanner({ mode }: { mode: ScanMode }) {
             notify(SCAN_NOTHING_TITLE, scanNothingMessage(asked));
           }
         },
-        onError: (err) => notify('Não foi possível ler a foto', errorMessage(err)),
+        onError: (err) => notify(scanReadFailedTitle(asked), errorMessage(err)),
       },
     );
   }
 
-  /** As fotos novas: primeiro o código que a própria foto pegou; senão, a próxima parte da nota ou a leitura. */
+  /**
+   * As fotos novas: primeiro o código que a própria foto pegou (fora do modo da nota, em que a foto é a leitura da
+   * nota: photoCodeTypes); senão, a próxima parte da nota ou a leitura. A tela que já saiu enquanto a galeria ou a
+   * câmera do celular estavam abertas (a câmera daqui leu o QR por trás delas) não lê mais nada.
+   */
   async function afterPhotos(uris: string[], source: 'camera' | 'library') {
-    if (!parts.length) {
-      const found = await codeInPhoto(uris[0]);
+    if (leaving.current) return;
+    if (!parts.length && photoTypes.length) {
+      const found = await codeInPhoto(uris[0], photoTypes);
       if (found && handleCode(found)) return;
     }
     if (source === 'library') return read(uris);
     const next = [...parts, ...uris];
     if (photoStep(state, next.length) === 'ler') read(next);
-    else setParts(next);
+    else {
+      setParts(next);
+      // A foto virou uma parte da nota: o link ou o código que estava sendo digitado sai, e não toma o lugar dela.
+      setField(null);
+    }
   }
 
   async function shoot() {
     if (busy) return;
+    if (phoneShutter) {
+      await shootWithPhone();
+      return;
+    }
     setShooting(true);
     try {
       const picture = await camera.current?.takePictureAsync({ quality: 0.8 });
@@ -222,6 +286,22 @@ export function Scanner({ mode }: { mode: ScanMode }) {
     } finally {
       setShooting(false);
     }
+  }
+
+  /**
+   * A foto pela câmera do celular (no navegador, no modo da nota: shutterUsesPhoneCamera). A tela não fica ocupada
+   * esperando: o navegador antigo não avisa quando a pessoa desiste, e a tela ficaria presa.
+   */
+  async function shootWithPhone() {
+    let uris: string[] = [];
+    try {
+      uris = await pickReceiptImages('camera', 1);
+    } catch (err) {
+      notify('Não deu para tirar a foto', errorMessage(err));
+    } finally {
+      setPreview((count) => count + 1);
+    }
+    if (uris.length) await afterPhotos(uris, 'camera');
   }
 
   async function pickFromGallery() {
@@ -249,6 +329,8 @@ export function Scanner({ mode }: { mode: ScanMode }) {
   }
 
   function choose(option: ScanOption) {
+    // Só o que a tela oferece agora (com partes da nota esperando, nada).
+    if (!options.includes(option)) return;
     if (option === 'galeria') void pickFromGallery();
     else if (option === 'manual') startManual();
     else {
@@ -312,7 +394,6 @@ export function Scanner({ mode }: { mode: ScanMode }) {
     }
   }
 
-  const options = scanOptions(state);
   const optionButton = (option: ScanOption) => (
     <Button
       key={option}
@@ -321,6 +402,19 @@ export function Scanner({ mode }: { mode: ScanMode }) {
       variant="secondary"
       disabled={busy}
       onPress={() => choose(option)}
+    />
+  );
+
+  /** "Tirar foto" (ou, com partes da nota esperando, "Mais uma foto"). */
+  const shutter = (style?: typeof styles.flex) => (
+    <Button
+      title={parts.length ? PARTS_MORE : SCAN_SHUTTER}
+      icon="camera-outline"
+      variant={parts.length ? 'secondary' : 'primary'}
+      loading={shooting}
+      disabled={busy}
+      onPress={() => void shoot()}
+      style={style}
     />
   );
 
@@ -333,31 +427,37 @@ export function Scanner({ mode }: { mode: ScanMode }) {
         <>
           <View style={[styles.camera, { backgroundColor: c.surfaceAlt }]}>
             <CameraView
+              key={preview}
               ref={camera}
               style={StyleSheet.absoluteFill}
               facing="back"
-              barcodeScannerSettings={{ barcodeTypes: [...SCAN_BARCODE_TYPES] }}
+              barcodeScannerSettings={{ barcodeTypes: [...barcodeTypes] }}
               onBarcodeScanned={({ data }) => onLiveCode(data)}
             />
           </View>
           <Row>
-            <Button
-              title={parts.length ? PARTS_MORE : SCAN_SHUTTER}
-              icon="camera-outline"
-              variant={parts.length ? 'secondary' : 'primary'}
-              loading={shooting}
-              disabled={busy}
-              onPress={() => void shoot()}
-              style={styles.flex}
+            {shutter(styles.flex)}
+            <IconButton
+              icon="dots-horizontal"
+              label={SCAN_MORE}
+              disabled={busy || !options.length}
+              onPress={() => setOptionsOpen(true)}
             />
-            <IconButton icon="dots-horizontal" label={SCAN_MORE} disabled={busy} onPress={() => setOptionsOpen(true)} />
           </Row>
         </>
       ) : (
         <Card style={styles.gap}>
-          <Text variant="body">{SCAN_NEEDS_CAMERA}</Text>
+          {/* Com partes da nota esperando, as outras opções saem da tela: o texto não manda procurar por elas. */}
+          <Text variant="body">{scanNeedsCamera(mode, phoneShutter, options.length > 0)}</Text>
+          {/* A câmera do celular não precisa da permissão da prévia: a foto da nota, em partes, fica na tela. */}
+          {phoneShutter ? shutter() : null}
           {/* O navegador sem câmera também responde "negado": o botão fica, e as outras opções vêm logo abaixo. */}
-          <Button title={SCAN_ALLOW_CAMERA} icon="camera-outline" onPress={() => void requestPermission()} />
+          <Button
+            title={SCAN_ALLOW_CAMERA}
+            icon="camera-outline"
+            variant={phoneShutter ? 'secondary' : 'primary'}
+            onPress={() => void requestPermission()}
+          />
           {options.map(optionButton)}
         </Card>
       )}
@@ -365,7 +465,7 @@ export function Scanner({ mode }: { mode: ScanMode }) {
       {parts.length ? (
         <Card style={styles.gap}>
           <Text variant="label">{partsTitle(parts.length)}</Text>
-          <Text variant="small">{PARTS_MESSAGE}</Text>
+          <Text variant="small">{partsMessage(state)}</Text>
           <Button title={partsRead(parts.length)} icon="check" disabled={busy} onPress={() => read(parts)} />
           <Button title="Descartar" variant="ghost" disabled={busy} onPress={() => setParts([])} />
         </Card>
@@ -413,7 +513,7 @@ export function Scanner({ mode }: { mode: ScanMode }) {
         actions={options.map((option) => ({ label: SCAN_OPTION_LABELS[option], icon: OPTION_ICONS[option], onPress: () => choose(option) }))}
       />
       {barcode.element}
-      <BusyOverlay visible={scan.isPending} title={SCAN_READING_TITLE} message={SCAN_READING_MESSAGE} />
+      <BusyOverlay visible={reading} {...scanReading(state)} />
     </Screen>
   );
 }

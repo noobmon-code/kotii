@@ -1,5 +1,5 @@
 // "Finalizar compra", na lista: o botão do rodapé, o caminho do toque e o que a lista diz quando volta da nota.
-// Puro: quem abre o leitor e guarda a espera da nota é features/FinishPurchase (com lib/finishPurchase).
+// Puro: quem abre a câmera da nota e guarda a espera dela é features/FinishPurchase (com lib/finishPurchase).
 //
 // A nota vem antes de limpar, porque a revisão usa o carrinho: um item da lista só sai marcado sozinho na nota
 // quando está no carrinho (`checked_at`, domain/listLinks), e limpar antes apagaria os itens com que ela casa.
@@ -13,11 +13,15 @@ export const END_TRIP_ASK_MS = 30_000;
 
 export const FINISH_LABEL = 'Finalizar compra';
 
-/** A pergunta do toque em "Finalizar compra": as opções do leitor de nota e o caminho sem ela. */
+/**
+ * A pergunta do toque em "Finalizar compra": ler a nota (a câmera só da nota, que lê o QR code e fotografa, com a
+ * galeria, o link do QR e a nota à mão em "Mais opções") ou o caminho sem ela.
+ */
 export const FINISH_SHEET = {
   title: FINISH_LABEL,
   message:
     'Com a nota fiscal, a revisão tira da lista o que você comprou e guarda as compras na despensa. Sem ela, o carrinho é limpo como no "Limpar".',
+  withReceipt: 'Ler a nota',
   withoutReceipt: 'Sem a nota: só limpar o carrinho',
 };
 
@@ -62,7 +66,7 @@ export function listFooter({
 }
 
 /**
- * O toque em "Finalizar compra": com internet, a pergunta da nota (o leitor ou o "Limpar"); sem, a nota fica para
+ * O toque em "Finalizar compra": com internet, a pergunta da nota (a câmera ou o "Limpar"); sem, a nota fica para
  * depois e o fluxo segue como o "Limpar", com o aviso. Ler a nota (a Sefaz, a IA, o rascunho no banco) precisa
  * de internet; limpar, não (vai pela fila da lista).
  */

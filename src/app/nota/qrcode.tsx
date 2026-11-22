@@ -7,7 +7,20 @@ import { FunctionError } from '@/data/images';
 import { usePendingReceipts } from '@/data/pendingReceipts';
 import { useImportNfce } from '@/data/receipts';
 import { captchaStateNote, captchaStateStep } from '@/domain/captchaStates';
-import { NFCE_CAPTCHA, NFCE_CAPTCHA_STATE, nfceFailureRoute, parseNfceQr, qrReadStep } from '@/domain/nfce';
+import {
+  NFCE_CAPTCHA,
+  NFCE_CAPTCHA_STATE,
+  nfceFailureRoute,
+  parseNfceQr,
+  photoAfterSefazFailure,
+  qrReadStep,
+  SEFAZ_PHOTO_AGAIN,
+  SEFAZ_PHOTO_CAMERA,
+  SEFAZ_PHOTO_TITLE,
+  sefazPhotoLibrary,
+  sefazPhotoMessage,
+} from '@/domain/nfce';
+import { MAX_RECEIPT_PHOTOS } from '@/domain/receiptPhotos';
 import { PendingReceiptCard } from '@/features/PendingReceiptCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useSefazRetry } from '@/features/sefazRetry';
@@ -33,6 +46,11 @@ const GIVEN_QR_WAIT_MS = 1500;
  *
  * `?qr=`: o QR que a câmera do "Escanear" já leu (features/scan). A tela segue com ele assim que abre, sem ligar
  * a câmera daqui de novo; se a leitura falhar, a câmera e o campo do link aparecem como sempre.
+ *
+ * Quando a Sefaz não traz a nota (fora do ar, ou sem os itens), ou as leituras pelo QR do mês acabaram
+ * (photoAfterSefazFailure), a leitura pela foto daquela nota, com a chave do QR, toma o lugar da câmera daqui (que
+ * leria o mesmo QR e iria de novo à Sefaz, ou ao mesmo limite, com um aviso a cada leitura), até a pessoa pedir para
+ * ler o QR de novo. A câmera do "Escanear" que abriu esta tela já saiu do caminho: é daqui que a foto vai.
  */
 export default function NfceQrScreen() {
   const c = useColors();
@@ -42,11 +60,14 @@ export default function NfceQrScreen() {
   const givenSent = useRef(false);
   const [permission, requestPermission] = useCameraPermissions();
   const importNfce = useImportNfce();
-  const scanner = useReceiptScanner({ replace: true });
+  const scanner = useReceiptScanner();
   const pendingReceipts = usePendingReceipts();
   const [pasted, setPasted] = useState('');
   // Nota que só dá para ler pelos prints ou pela foto: a chave e o link do QR.
   const [photoOnly, setPhotoOnly] = useState<{ accessKey: string; url: string | null; direct: boolean } | null>(null);
+  // A nota que a Sefaz não trouxe (fora do ar, ou sem os itens), ou que o limite do QR barrou: a chave do QR, para a
+  // leitura pela foto, e o código da falha, para a frase.
+  const [sefazFailed, setSefazFailed] = useState<{ accessKey: string; code: string | null } | null>(null);
   // As que esbarraram no "não sou robô" nesta tela (chave -> aviso): não vão de novo à Sefaz.
   const captchaKeys = useRef(new Map<string, string>());
   // A câmera lê o mesmo QR várias vezes por segundo: um de cada vez.
@@ -103,6 +124,8 @@ export default function NfceQrScreen() {
       return;
     }
     busy.current = true;
+    // Outra busca (o link colado): a foto da nota de antes sai, e a resposta desta diz o que vem.
+    setSefazFailed(null);
     // O estado da nota pediu o "não sou robô" há pouco: a nota nova nem vai à Sefaz (a que a casa já tem abre).
     const skipSefaz = captchaStateStep(await readCaptchaStates(), qr.accessKey, new Date()) === 'photo';
     importNfce.mutate({ ...qr, skipSefaz }, {
@@ -126,6 +149,7 @@ export default function NfceQrScreen() {
           return;
         }
         busy.current = false;
+        if (photoAfterSefazFailure(code)) setSefazFailed({ accessKey: qr.accessKey, code });
         notify('Não deu para ler a nota', message);
       },
     });
@@ -170,6 +194,25 @@ export default function NfceQrScreen() {
           }}>
           <Button title="Ler outro QR code" icon="qrcode-scan" variant="ghost" disabled={scanner.busy} onPress={() => setPhotoOnly(null)} />
         </PendingReceiptCard>
+      ) : sefazFailed ? (
+        <Card style={styles.gap}>
+          <Text variant="heading">{SEFAZ_PHOTO_TITLE}</Text>
+          <Text variant="muted">{sefazPhotoMessage(sefazFailed.code)}</Text>
+          <Button
+            title={SEFAZ_PHOTO_CAMERA}
+            icon="camera-outline"
+            loading={scanner.busy}
+            onPress={() => scanner.readPhotos('camera', sefazFailed.accessKey)}
+          />
+          <Button
+            title={sefazPhotoLibrary(MAX_RECEIPT_PHOTOS)}
+            icon="image-outline"
+            variant="secondary"
+            disabled={scanner.busy}
+            onPress={() => scanner.readPhotos('library', sefazFailed.accessKey)}
+          />
+          <Button title={SEFAZ_PHOTO_AGAIN} icon="qrcode-scan" variant="ghost" disabled={scanner.busy} onPress={() => setSefazFailed(null)} />
+        </Card>
       ) : givenPending ? null : permission?.granted ? (
         <View style={[styles.camera, { backgroundColor: c.surfaceAlt }]}>
           <CameraView

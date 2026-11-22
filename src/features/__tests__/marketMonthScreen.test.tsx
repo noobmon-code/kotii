@@ -43,7 +43,6 @@ const mockState = {
   stores: [] as Store[],
 };
 const mockRouter = { push: jest.fn(), setParams: jest.fn() };
-const mockScanner = { open: jest.fn(), busy: false, element: null };
 
 // As funções só são lidas na hora do toque: o jest.mock roda antes de as variáveis acima existirem.
 jest.mock('expo-router', () => {
@@ -96,7 +95,6 @@ jest.mock('@/data/finance', () => {
 jest.mock('@/lib/auth', () => ({ useHousehold: () => ({ data: { members: [] } }) }));
 jest.mock('@/features/finance/BudgetSection', () => ({ BudgetSection: () => null }));
 jest.mock('@/features/finance/SplitSection', () => ({ SplitSection: () => null }));
-jest.mock('@/features/ReceiptScanner', () => ({ useReceiptScanner: () => mockScanner }));
 // Os desenhos animados (reanimated), o fundo, as imagens e os ícones (que são letras de uma fonte) não entram
 // no que se confere aqui.
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
@@ -288,7 +286,6 @@ beforeEach(() => {
   mockState.stores = [];
   mockRouter.push.mockClear();
   mockRouter.setParams.mockClear();
-  mockScanner.open.mockClear();
 });
 
 afterEach(async () => {
@@ -752,8 +749,9 @@ describe('sem notas, carregando e com erro', () => {
     expect(text).not.toContain('em 0 idas');
     expect(text).not.toContain('Como este total fecha');
     expect(renderer!.root.findAllByType(Segmented)).toHaveLength(0);
+    // A câmera só da nota, direto, como o "Adicionar nota" de Compras → Notas.
     await pressButton('Adicionar nota');
-    expect(mockScanner.open).toHaveBeenCalledTimes(1);
+    expect(mockRouter.push).toHaveBeenCalledWith({ pathname: '/escanear', params: { para: 'nota' } });
   });
 
   it('com Finanças ligada, o mês vazio lembra que o gasto lançado como Mercado lá também conta', async () => {

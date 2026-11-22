@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { CameraView } from 'expo-camera';
 import type { ReactElement } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import NfceQrScreen from '@/app/nota/qrcode';
 import PendingReceiptScreen from '@/app/nota/pendente';
-import { accessKeyCheckDigit } from '@/domain/nfce';
+import { accessKeyCheckDigit, NFCE_QUOTA, SEFAZ_PHOTO_AGAIN, SEFAZ_PHOTO_CAMERA, SEFAZ_PHOTO_TITLE, sefazPhotoLibrary, sefazPhotoMessage } from '@/domain/nfce';
+import { MAX_RECEIPT_PHOTOS } from '@/domain/receiptPhotos';
 import { ReceiptsPanel } from '@/features/market/ReceiptsPanel';
 import { openExternal } from '@/lib/openLink';
+import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
 import { notify } from '@/ui/dialogs';
 import { Button, ListRow } from '@/ui/primitives';
 
@@ -38,6 +41,19 @@ const mockPicked: string[] = [];
 const mockSefazReads = { value: false };
 // A parse-receipt que não achou itens nos prints (só o topo ou o rodapé).
 const mockReadsNoItems = { value: false };
+// A Sefaz que não trouxe a nota (fora do ar, ou a página sem os itens), o limite do mês das notas pelo QR, ou outro
+// erro da função (o limite que ela não conseguiu conferir).
+const mockSefazFails: { value: 'sefaz_down' | 'no_items' | 'quota' | 'unchecked' | null } = { value: null };
+const SEFAZ_FAILURES = {
+  sefaz_down: { status: 502, body: { code: 'sefaz_down', error: 'A Sefaz não respondeu agora. Tente de novo em alguns minutos ou tire foto da nota.' } },
+  no_items: { status: 422, body: { code: 'no_items', error: 'A Sefaz não mostrou os itens desta nota. Tente de novo mais tarde ou tire foto da nota.' } },
+  // A resposta de verdade do limite (supabase/functions/_shared/aiQuota.ts, o tipo `nfce`): 429, sem código.
+  quota: {
+    status: 429,
+    body: { error: 'A casa já leu 200 notas pelo QR code este mês. O limite volta no dia 1º; até lá, dá para tirar foto da nota ou digitar.' },
+  },
+  unchecked: { status: 503, body: { error: 'Não consegui conferir o limite de uso da IA agora. Tente de novo.' } },
+};
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -89,6 +105,10 @@ jest.mock('@/lib/supabase', () => {
       functions: {
         invoke: async (name: string, { body }: { body: Record<string, unknown> }) => {
           mockDb.calls.push({ name, body });
+          if (name === 'nfce' && mockSefazFails.value) {
+            const failure = SEFAZ_FAILURES[mockSefazFails.value];
+            return { data: null, error: new FunctionsHttpError(new Response(JSON.stringify(failure.body), { status: failure.status })) };
+          }
           if (name === 'nfce' && mockSefazReads.value) {
             // A Sefaz mostrou a nota (sem a verificação, desta vez).
             return {
@@ -239,6 +259,7 @@ beforeEach(async () => {
   mockPicked.length = 0;
   mockReadsNoItems.value = false;
   mockSefazReads.value = false;
+  mockSefazFails.value = null;
   jest.mocked(openExternal).mockClear();
   jest.mocked(notify).mockClear();
 });
@@ -276,6 +297,75 @@ describe('o QR que a câmera do "Escanear" já leu (?qr=)', () => {
     await open(<NfceQrScreen />);
     expect(callsTo('nfce')).toHaveLength(1);
     expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/pendente', params: { chave: KEY } });
+  });
+});
+
+describe('a Sefaz que não trouxe a nota (fora do ar, ou sem os itens), e o limite do mês do QR', () => {
+  const cameraShown = () => renderer!.root.findAllByType(CameraView).length > 0;
+
+  it('vindo da câmera do "Escanear" (?qr=): a foto daquela nota, com a chave do QR, toma o lugar da câmera daqui', async () => {
+    mockSefazFails.value = 'sefaz_down';
+    mockParams.qr = QR;
+    await open(<NfceQrScreen />);
+    expect(callsTo('nfce')).toHaveLength(1);
+    expect(notify).toHaveBeenCalledWith('Não deu para ler a nota', SEFAZ_FAILURES.sefaz_down.body.error);
+    // A câmera daqui leria o mesmo QR e iria de novo à mesma Sefaz: no lugar dela, a foto.
+    expect(page()).toContain(SEFAZ_PHOTO_TITLE);
+    expect(cameraShown()).toBe(false);
+    expect(await stored()).toEqual([]);
+    // A foto da câmera do celular, uma parte de cada vez: a revisão toma o lugar desta tela.
+    mockPicked.push('nota.jpg');
+    await press(SEFAZ_PHOTO_CAMERA);
+    const sheet = renderer!.root.findAllByType(ActionSheet).find((entry) => entry.props.visible)!;
+    const read = (sheet.props.actions as SheetAction[]).find((action) => action.label === 'Ler a nota')!;
+    await act(async () => read.onPress());
+    await settle();
+    expect(callsTo('parse-receipt')).toEqual([{ name: 'parse-receipt', body: { image_paths: ['h1/0.jpg'], access_key: KEY } }]);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'r1' } });
+    expect(mockDb.receipts[0]).toMatchObject({ access_key: KEY });
+    expect(callsTo('nfce')).toHaveLength(1);
+  });
+
+  it('sem os itens: a galeria também lê a nota; "Ler o QR code de novo" devolve a câmera, que vai à Sefaz de novo', async () => {
+    mockSefazFails.value = 'no_items';
+    await open(<NfceQrScreen />);
+    await scan(QR);
+    expect(page()).toContain(SEFAZ_PHOTO_TITLE);
+    expect(cameraShown()).toBe(false);
+    await press(SEFAZ_PHOTO_AGAIN);
+    expect(cameraShown()).toBe(true);
+    await scan(QR);
+    expect(callsTo('nfce')).toHaveLength(2);
+    mockPicked.push('topo.jpg', 'rodape.jpg');
+    await press(sefazPhotoLibrary(MAX_RECEIPT_PHOTOS));
+    expect(callsTo('parse-receipt')).toEqual([{ name: 'parse-receipt', body: { image_paths: ['h1/0.jpg', 'h1/1.jpg'], access_key: KEY } }]);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'r1' } });
+  });
+
+  it('o limite do mês das notas pelo QR (que manda tirar foto): a foto, que tem o limite dela, toma o lugar da câmera', async () => {
+    mockSefazFails.value = 'quota';
+    mockParams.qr = QR;
+    await open(<NfceQrScreen />);
+    expect(callsTo('nfce')).toHaveLength(1);
+    expect(notify).toHaveBeenCalledWith('Não deu para ler a nota', SEFAZ_FAILURES.quota.body.error);
+    // A câmera daqui leria o mesmo QR e bateria no mesmo limite, com um aviso a cada leitura: no lugar dela, a foto.
+    expect(page()).toContain(SEFAZ_PHOTO_TITLE);
+    expect(page()).toContain(sefazPhotoMessage(NFCE_QUOTA));
+    expect(cameraShown()).toBe(false);
+    mockPicked.push('topo.jpg', 'rodape.jpg');
+    await press(sefazPhotoLibrary(MAX_RECEIPT_PHOTOS));
+    expect(callsTo('parse-receipt')).toEqual([{ name: 'parse-receipt', body: { image_paths: ['h1/0.jpg', 'h1/1.jpg'], access_key: KEY } }]);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'r1' } });
+    expect(callsTo('nfce')).toHaveLength(1);
+  });
+
+  it('os outros erros (o limite que a função não conseguiu conferir) ficam só no aviso de sempre, com a câmera e o link', async () => {
+    mockSefazFails.value = 'unchecked';
+    await open(<NfceQrScreen />);
+    await scan(QR);
+    expect(notify).toHaveBeenCalledWith('Não deu para ler a nota', SEFAZ_FAILURES.unchecked.body.error);
+    expect(page()).not.toContain(SEFAZ_PHOTO_TITLE);
+    expect(cameraShown()).toBe(true);
   });
 });
 
@@ -329,7 +419,9 @@ describe('nota da Sefaz com "não sou robô"', () => {
     expect(callsTo('parse-receipt')).toEqual([
       { name: 'parse-receipt', body: { image_paths: ['h1/0.jpg', 'h1/1.jpg', 'h1/2.jpg', 'h1/3.jpg', 'h1/4.jpg', 'h1/5.jpg'], access_key: KEY } },
     ]);
+    // A revisão toma o lugar da pendente (quem a abriu fica logo embaixo da revisão).
     expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'r1' } });
+    expect(mockRouter.push).not.toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'r1' } });
     await settle();
     expect(await stored()).toEqual([]);
 

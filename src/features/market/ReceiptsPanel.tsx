@@ -7,7 +7,7 @@ import { formatShortDate, toISODate } from '@/domain/dates';
 import { formatBRL } from '@/domain/money';
 import { receiptsByMonth, receiptsMore } from '@/domain/receiptList';
 import { PendingReceiptRow } from '@/features/PendingReceiptCard';
-import { useReceiptScanner } from '@/features/ReceiptScanner';
+import { openReceiptCamera } from '@/features/scan/receiptCamera';
 import { Columns } from '@/ui/desktop';
 import { FeatureCard } from '@/ui/FeatureCard';
 import { Badge, Button, EmptyState, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Section, Text } from '@/ui/primitives';
@@ -28,7 +28,6 @@ export const MARKET_MONTH_CARD = {
 export function ReceiptsPanel() {
   const drafts = useDraftReceipts();
   const history = useReceiptHistory();
-  const scanner = useReceiptScanner();
   const { pending, storeNames } = usePendingReceipts();
 
   const confirmed = history.data?.pages.flatMap((page) => page.rows) ?? [];
@@ -73,7 +72,8 @@ export function ReceiptsPanel() {
               subtitle={MARKET_MONTH_CARD.subtitle}
               onPress={() => router.push('/mercado')}
             />
-            <Button title="Adicionar nota" icon="camera-outline" onPress={scanner.open} loading={scanner.busy} />
+            {/* A câmera só da nota, direto, sem um menu antes (como o "Escanear" da tela Hoje). */}
+            <Button title="Adicionar nota" icon="camera-outline" onPress={openReceiptCamera} />
           </>
         }>
         {drafts.isPending || history.isPending ? <Loading /> : null}
@@ -128,8 +128,6 @@ export function ReceiptsPanel() {
           </Section>
         ) : null}
       </Columns>
-
-      {scanner.element}
     </View>
   );
 }
