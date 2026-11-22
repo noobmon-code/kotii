@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Platform } from 'react-native';
 
 import { fetchBarcodeOwner, useBarcodes, useLinkBarcode } from '@/data/barcodes';
@@ -65,6 +65,13 @@ export function useProductBarcode({ onProduct, linkTo }: { onProduct: (product: 
   const running = useRef(false);
   const [busy, setBusy] = useState(false);
   const scans = useRef(0);
+  // O produto segue para o onProduct do desenho mais recente, e não para o do desenho em que o código foi lido: o
+  // código que vai ao banco responde depois de a câmera fechar, e a tela pode ter mudado nesse meio-tempo (a lista de
+  // compras confere o item repetido com os itens de agora, e não com os de quando a câmera abriu).
+  const latest = useRef(onProduct);
+  useEffect(() => {
+    latest.current = onProduct;
+  });
 
   const productById = (id: string | null | undefined) => (id ? products.data?.find((p) => p.id === id) : undefined);
 
@@ -88,7 +95,7 @@ export function useProductBarcode({ onProduct, linkTo }: { onProduct: (product: 
     setStep(shown.current);
     const product = arrived.current;
     arrived.current = null;
-    if (product && !shown.current) onProduct(product);
+    if (product && !shown.current) latest.current(product);
   }
 
   /**
@@ -97,7 +104,7 @@ export function useProductBarcode({ onProduct, linkTo }: { onProduct: (product: 
    */
   function deliver(product: Product) {
     if (Platform.OS === 'ios' && closing.current) arrived.current = product;
-    else onProduct(product);
+    else latest.current(product);
   }
 
   /** O produto da casa; o que não está nos guardados (criado há pouco em outro aparelho) vem de uma busca nova. */

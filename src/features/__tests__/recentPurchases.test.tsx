@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import type { ReactElement } from 'react';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, Text as NativeText } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
+import { COMMON_ITEMS } from '@/domain/commonItems';
 import type { RecentItem } from '@/domain/recentPurchases';
 import type { RestockItem } from '@/domain/restock';
 import { RecentPurchases, RestockStrip } from '@/features/RecentPurchases';
@@ -58,6 +61,52 @@ const words = (node: ReactTestInstance) => node.findAllByType(Text).map((text) =
 const tileStyle = (tile: ReactTestInstance) =>
   StyleSheet.flatten(typeof tile.props.style === 'function' ? tile.props.style({ pressed: false }) : tile.props.style);
 
+/**
+ * As larguras de avanço de um arquivo TrueType (tabelas head, hhea, hmtx e o cmap 3/1 de formato 4, o que a Nunito do
+ * @expo-google-fonts traz): quanto a linha anda a cada letra, sem o kerning, que só estreita. A letra que a fonte não
+ * tem (o glifo 0) falha, em vez de medir errado.
+ */
+function fontWidths(file: Buffer) {
+  const tables: Record<string, number> = {};
+  for (let i = 0; i < file.readUInt16BE(4); i++) {
+    tables[file.toString('latin1', 12 + 16 * i, 16 + 16 * i)] = file.readUInt32BE(20 + 16 * i);
+  }
+  const unitsPerEm = file.readUInt16BE(tables.head + 18);
+  const metrics = file.readUInt16BE(tables.hhea + 34);
+  let sub = -1;
+  for (let i = 0; i < file.readUInt16BE(tables.cmap + 2); i++) {
+    const record = tables.cmap + 4 + 8 * i;
+    if (file.readUInt16BE(record) === 3 && file.readUInt16BE(record + 2) === 1) sub = tables.cmap + file.readUInt32BE(record + 4);
+  }
+  if (sub < 0 || file.readUInt16BE(sub) !== 4) throw new Error('fonte sem o cmap 3/1 de formato 4');
+  const segments = file.readUInt16BE(sub + 6);
+  const ends = sub + 14;
+  const starts = ends + segments + 2;
+  const deltas = starts + segments;
+  const offsets = deltas + segments;
+  const glyph = (code: number) => {
+    for (let s = 0; s < segments; s += 2) {
+      if (file.readUInt16BE(ends + s) < code) continue;
+      const start = file.readUInt16BE(starts + s);
+      if (start > code) return 0;
+      const delta = file.readUInt16BE(deltas + s);
+      const offset = file.readUInt16BE(offsets + s);
+      if (!offset) return (code + delta) & 0xffff;
+      const found = file.readUInt16BE(offsets + s + offset + 2 * (code - start));
+      return found ? (found + delta) & 0xffff : 0;
+    }
+    return 0;
+  };
+  return (text: string, size: number) =>
+    ([...text].reduce((sum, letter) => {
+      const id = glyph(letter.codePointAt(0)!);
+      if (!id) throw new Error(`a fonte não tem "${letter}"`);
+      return sum + file.readUInt16BE(tables.hmtx + 4 * Math.min(id, metrics - 1));
+    }, 0) *
+      size) /
+    unitsPerEm;
+}
+
 describe('as faixas de cima da lista', () => {
   it('"Comprados recentemente": só o nome no azulejo; a quantidade, o leitor de tela diz, e o toque põe com ela', async () => {
     const onAdd = jest.fn();
@@ -76,29 +125,39 @@ describe('as faixas de cima da lista', () => {
     expect(tile.props.accessibilityLabel).toBe('Adicionar Café, 1 un. Costuma comprar a cada 10 dias · última há 14 dias');
   });
 
-  it('compactas: azulejo e desenho menores, o nome em até duas linhas, e o toque continua passando dos 44', async () => {
+  it('compactas: desenho menor e menos espaço em cima, o nome em até duas linhas, e o toque continua passando dos 44', async () => {
     const root = await mount(<RecentPurchases items={[milk]} onAdd={jest.fn()} />);
     const [tile] = tiles(root);
     const style = tileStyle(tile);
-    // Antes: 92 de largura, 4 de cada lado, desenho de 44 e 12 em cima.
-    expect(style.width).toBeLessThan(92);
+    // Antes: desenho de 44 e 12 em cima. A largura é a de antes (92), para o nome (ver o teste de baixo).
+    expect(style.width).toBe(92);
     expect(style.minHeight).toBeGreaterThanOrEqual(44);
     expect(style.paddingTop).toBe(8);
     expect(tile.findByType(CategoryIcon).props.size).toBe(36);
     expect(tile.findAllByType(Text)[0].props.numberOfLines).toBe(2);
   });
 
-  it('o nome tem a mesma largura de antes: a palavra mais larga dos itens comuns cabe inteira numa linha', async () => {
-    // Larguras medidas na fonte do nome (Text "small": Nunito SemiBold 12,5), sem o kerning, que só as estreita: a
-    // palavra mais larga que não tem hífen ("Condicionador") e as que vêm logo depois. Uma palavra mais larga que a
-    // linha quebra numa letra ("Condicionado" / "r"); com hífen, quebra no hífen. "Multivitamínico" (87,1) já não
-    // cabia nos 84 de antes.
-    const MEASURED = { Condicionador: 82.1, 'Lustra-móveis': 81.55, Achocolatado: 78.46, Desinfetante: 73.19 };
-    const root = await mount(<RestockStrip items={[{ ...coffee, name: 'Condicionador', category: 'higiene' }]} onAdd={jest.fn()} />);
-    const style = tileStyle(tiles(root)[0]);
+  it('toda palavra dos itens comuns cabe inteira numa linha do nome, medida no arquivo da fonte que o nome usa', async () => {
+    // Uma palavra mais larga que a linha quebra numa letra ("Multivitamíni" / "co"); com hífen, a linha pode quebrar
+    // depois dele, e cada parte ("Lustra-", "móveis") é que precisa caber. A mais larga é "Multivitamínico" (87,1), que
+    // não cabia nos 84 que o nome teve até aqui; depois dela, "Condicionador" (82,1).
+    const root = await mount(<RestockStrip items={[{ ...coffee, name: 'Multivitamínico', category: 'suplementos' }]} onAdd={jest.fn()} />);
+    const [tile] = tiles(root);
+    const style = tileStyle(tile);
     const nameWidth = Number(style.width) - 2 * Number(style.paddingHorizontal);
-    expect(nameWidth).toBeGreaterThanOrEqual(84);
-    for (const width of Object.values(MEASURED)) expect(width).toBeLessThanOrEqual(nameWidth);
+    const name = StyleSheet.flatten(tile.findAllByType(Text)[0].findByType(NativeText).props.style);
+    expect(name.letterSpacing ?? 0).toBe(0);
+    const families: Record<string, string> = { Nunito_600SemiBold: '600SemiBold/Nunito_600SemiBold.ttf' };
+    expect(families[String(name.fontFamily)]).toBeDefined();
+    const fontFile = join(__dirname, '..', '..', '..', 'node_modules', '@expo-google-fonts', 'nunito', families[String(name.fontFamily)]);
+    const width = fontWidths(readFileSync(fontFile));
+    // Cada palavra do catálogo; a que tem hífen, em partes que terminam nele.
+    const parts = (itemName: string) => itemName.replace(/-/g, '- ').split(' ').filter(Boolean);
+    const words = [...new Set(COMMON_ITEMS.flatMap((item) => parts(item.name)))];
+    const measured = words.map((word) => ({ word, width: width(word, Number(name.fontSize)) })).sort((a, b) => b.width - a.width);
+    expect(measured[0].word).toBe('Multivitamínico');
+    expect(measured[0].width).toBeCloseTo(87.11, 2);
+    expect(measured.filter((entry) => entry.width > nameWidth)).toEqual([]);
   });
 
   it('sem item, a faixa não aparece', async () => {

@@ -147,6 +147,8 @@ interface Repeated {
   item: NewListItem;
   otherName: boolean;
   adds: number;
+  /** Veio do código lido: a pergunta não mexe no campo, onde está o que se digitou depois, para outro item. */
+  scanned: boolean;
 }
 
 export default function ShoppingListScreen() {
@@ -322,8 +324,8 @@ export default function ShoppingListScreen() {
     line?.counted ? { quantity: line.quantity, unit: line.unit, counted: true } : { quantity: 1, unit: 'un', counted: false };
 
   /**
-   * A quantidade digitada, no item escolhido nas sugestões (o produto, o item comum, o código lido): a mesma, a não
-   * ser nos ovos, em que vão os mesmos ovos que a linha pede ("30 ovos" é 1 "Ovos (30 un)", e não trinta cartelas;
+   * A quantidade digitada, no item escolhido nas sugestões (o produto, o item comum): a mesma, a não ser nos ovos,
+   * em que vão os mesmos ovos que a linha pede ("30 ovos" é 1 "Ovos (30 un)", e não trinta cartelas;
    * chosenItemQuantity). Sem quantidade digitada, a de sempre.
    */
   const chosenQuantity = (itemName: string, category: string): number => {
@@ -332,8 +334,8 @@ export default function ShoppingListScreen() {
   };
 
   /**
-   * O item que o produto escolhido (na busca, ou pelo código lido) põe: sem a marca (`itemName`, de genericItem), com
-   * ele como dica de preço e com a quantidade que a pessoa digitou antes de escolher.
+   * O item que o produto escolhido na busca põe: sem a marca (`itemName`, de genericItem), com ele como dica de preço
+   * e com a quantidade que a pessoa digitou antes de escolher (o código lido não leva a linha: `scannedItem`).
    */
   const productItem = (product: Product, itemName: string): NewListItem => ({
     name: itemName,
@@ -380,9 +382,21 @@ export default function ShoppingListScreen() {
     put({ name: line.name, category: line.category, productId: null, quantity: amount.quantity, unit: amount.unit }, true);
   }
 
-  // O código de barras lido põe o produto como a sugestão da busca: sem a marca, com ele como dica de preço, e com
-  // as mesmas travas de item repetido.
-  const barcode = useProductBarcode({ onProduct: (product) => add(product, scannedListItem(product).name) });
+  /**
+   * O item que o código de barras lido põe: o produto como a sugestão da busca (sem a marca, com ele como dica de
+   * preço, com as mesmas travas de item repetido), com 1 un, e nunca com a linha do campo. O botão só aparece com o
+   * campo vazio, e o campo não aceita texto com o leitor aberto; o que se digita enquanto o código ainda é procurado no
+   * banco (a câmera já fechou) é o próximo item: não é a quantidade do produto lido, e fica no campo (`put`).
+   */
+  const scannedItem = (product: Product): NewListItem => ({
+    name: scannedListItem(product).name,
+    category: product.category,
+    productId: product.id,
+    quantity: 1,
+    unit: 'un',
+  });
+
+  const barcode = useProductBarcode({ onProduct: (product) => put(scannedItem(product), false, true) });
 
   /** Item comum das sugestões: liga ao produto da casa de mesmo nome, se existir. */
   function addCommon(item: CommonItem) {
@@ -395,25 +409,28 @@ export default function ShoppingListScreen() {
    * de novo sem a pessoa dizer: ela escolhe entre somar a quantidade, pôr como outro item ou deixar como está.
    * `typed`: o nome digitado, que, diferente do pendente ("Leite" com "Leite IL Desnatado"), pode ser outro pedido.
    * Sem quantidade na linha, o item vai com 1 un, que conta como pedida (o cartão sempre pôs 1 un assim): em outra
-   * unidade, a pessoa escolhe entre pôr como outro item ou deixar como está.
+   * unidade, a pessoa escolhe entre pôr como outro item ou deixar como está. `scanned`: o código lido, que não leva
+   * a linha do campo nem limpa o campo, nem aqui nem na pergunta do item repetido (o que está nele foi digitado
+   * depois de ler o código, para outro item).
    */
-  function put(item: NewListItem, typed: boolean) {
+  function put(item: NewListItem, typed: boolean, scanned = false) {
     const listed = pendingSameItem(item, items.data ?? []);
     if (listed) {
       const otherName = typed && listNameKey(listed.name) !== listNameKey(item.name);
       if (repeated) setRepeatedKey((key) => key + 1);
-      setRepeated({ listed, item, otherName, adds: addsTo(listed, item) });
+      setRepeated({ listed, item, otherName, adds: scanned ? item.quantity : addsTo(listed, item), scanned });
       return;
     }
     addItem.add(item, session!.user.id);
-    resetForm();
+    if (!scanned) resetForm();
   }
 
   /**
    * Quanto o item posto soma no mesmo item que já está na lista: a quantidade dele, a não ser quando ela veio da linha
    * digitada e o da lista é de ovos, em que vão os mesmos ovos que a linha pede, nas cartelas do da lista ("30 ovos"
    * num "Ovos (30 un)" é uma cartela a mais, "1 dz ovos" num "Ovos (dúzia)" também; chosenItemQuantity, a conta das
-   * sugestões). Pôr como outro item leva o item como foi posto ("Ovos", 30 un: trinta ovos).
+   * sugestões). Pôr como outro item leva o item como foi posto ("Ovos", 30 un: trinta ovos). O código lido não passa
+   * por aqui: soma o 1 un dele (`put`).
    */
   const addsTo = (listed: ShoppingListItem, item: NewListItem): number =>
     line?.counted && listed.category === 'ovos' ? chosenItemQuantity(line, { name: listed.name, category: listed.category }) : item.quantity;
@@ -428,8 +445,8 @@ export default function ShoppingListScreen() {
   };
 
   /** "Somar", no toque: soma ao item como está agora; sem ele para comprar (ou em outra unidade), um item novo. */
-  function sumRepeated(listed: ShoppingListItem, item: NewListItem, adds: number) {
-    resetForm();
+  function sumRepeated({ listed, item, adds, scanned }: Repeated) {
+    if (!scanned) resetForm();
     const now = currentListed(listed, queryClient.getQueryData<ShoppingListItem[]>(['listItems', id]) ?? items.data);
     const again = now ? repeatedQuantity(now, { quantity: adds, unit: item.unit }) : null;
     if (now && again?.kind === 'sum') {
@@ -438,7 +455,8 @@ export default function ShoppingListScreen() {
   }
 
   /** "Já está na lista": na mesma unidade, somar; em outra unidade (ou com outro nome digitado), pôr como outro item. */
-  function repeatedActions({ listed, item, otherName, adds }: Repeated): SheetAction[] {
+  function repeatedActions(asked: Repeated): SheetAction[] {
+    const { listed, item, otherName, adds, scanned } = asked;
     const choice = repeatedQuantity(currentListed(listed) ?? listed, { quantity: adds, unit: item.unit });
     const actions: SheetAction[] = [];
     if (choice.kind === 'sum') {
@@ -448,7 +466,7 @@ export default function ShoppingListScreen() {
         // A soma sai do item como está no toque, e não de quando a pergunta abriu. A quantidade nova vai pela fila de
         // edições, como nos detalhes do item: aparece na hora, também sem internet. O item que saiu da lista, foi para
         // o carrinho ou mudou de unidade nesse meio-tempo não leva a soma: a quantidade entra como um item novo.
-        onPress: () => sumRepeated(listed, item, adds),
+        onPress: () => sumRepeated(asked),
       });
     }
     if (choice.kind === 'other_unit' || otherName) {
@@ -457,7 +475,7 @@ export default function ShoppingListScreen() {
         icon: 'playlist-plus',
         onPress: () => {
           addItem.add(item, session!.user.id);
-          resetForm();
+          if (!scanned) resetForm();
         },
       });
     }
@@ -1269,9 +1287,10 @@ export default function ShoppingListScreen() {
         message={repeated ? repeatedMessage(repeated) : undefined}
         actions={repeated ? repeatedActions(repeated) : []}
         cancelLabel="Deixar como está"
-        // Deixar como está limpa o campo, como antes; o nome digitado diferente do da lista fica nele, para pôr depois.
+        // Deixar como está limpa o campo, como antes; o nome digitado diferente do da lista fica nele, para pôr depois, e
+        // o código lido não mexe nele (o que está lá foi digitado depois, para outro item).
         onClose={() => {
-          if (repeated && !repeated.otherName) resetForm();
+          if (repeated && !repeated.otherName && !repeated.scanned) resetForm();
           setRepeated(null);
         }}
       />

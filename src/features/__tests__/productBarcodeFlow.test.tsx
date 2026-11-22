@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { ReactElement } from 'react';
+import { useState, type ReactElement } from 'react';
 import { Modal, Platform } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -15,11 +15,19 @@ import { askYesNo, notify } from '@/ui/dialogs';
 
 type Row = Record<string, unknown>;
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
-const mockDb: { products: Row[]; product_barcodes: Row[]; missing: boolean; writes: { table: string; op: string; row?: Row }[] } = {
+const mockDb: {
+  products: Row[];
+  product_barcodes: Row[];
+  missing: boolean;
+  writes: { table: string; op: string; row?: Row }[];
+  /** Segura as leituras dos códigos até a promessa resolver: o banco que demora a responder. */
+  hold: Promise<void> | null;
+} = {
   products: [],
   product_barcodes: [],
   missing: false,
   writes: [],
+  hold: null,
 };
 const mockCamera: { onScan: ((event: { data: string }) => void) | null } = { onScan: null };
 const mockPickers: Record<string, Record<string, unknown>> = {};
@@ -84,6 +92,7 @@ jest.mock('@/lib/supabase', () => {
       },
       then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) =>
         Promise.resolve()
+          .then(() => (name === 'product_barcodes' && !write ? mockDb.hold : undefined))
           .then(() => {
             if (name === 'product_barcodes' && mockDb.missing) return { data: null, count: null, error: MISSING };
             if (write) return write();
@@ -158,6 +167,7 @@ beforeEach(() => {
   mockDb.product_barcodes = [];
   mockDb.missing = false;
   mockDb.writes = [];
+  mockDb.hold = null;
   mockCamera.onScan = null;
   for (const key of Object.keys(mockPickers)) delete mockPickers[key];
   onProduct.mockClear();
@@ -430,6 +440,41 @@ describe('um passo abre depois que o anterior fechou', () => {
     act(() => next.props.onRequestClose());
     act(() => next.props.onDismiss());
     expect(onProduct).toHaveBeenCalledTimes(1);
+  });
+
+  it('o código que o banco responde depois de a tela mudar segue para o onProduct de agora, e não o do desenho em que foi lido', async () => {
+    // A câmera fecha antes de o código voltar do banco, e a tela segue mudando nesse meio-tempo: a lista de compras
+    // confere o item repetido com os itens de agora (e o campo que a pessoa escreveu depois fica com ela).
+    const before = jest.fn<(product: Product) => void>();
+    const now = jest.fn<(product: Product) => void>();
+    let change!: (next: (product: Product) => void) => void;
+    hook = { flow: undefined as unknown as ProductBarcodeFlow };
+    function Harness() {
+      const [callback, setCallback] = useState<(product: Product) => void>(() => before);
+      change = (next) => setCallback(() => next);
+      hook.flow = useProductBarcode({ onProduct: callback });
+      return hook.flow.element as ReactElement;
+    }
+    act(() => {
+      renderer = create(
+        <QueryClientProvider client={client}>
+          <Harness />
+        </QueryClientProvider>,
+      );
+    });
+    await settle();
+    // Fora dos guardados: vai ao banco, que só responde quando o teste deixar.
+    mockDb.product_barcodes = [{ gtin: GTIN, product_id: 'leite' }];
+    let answer!: () => void;
+    mockDb.hold = new Promise((resolve) => (answer = resolve));
+    await scan(EAN);
+    expect(hook.flow.busy).toBe(true);
+    act(() => change(now));
+    await act(async () => answer());
+    await settle();
+    expect(before).not.toHaveBeenCalled();
+    expect(now.mock.calls).toEqual([[LEITE]]);
+    expect(hook.flow.busy).toBe(false);
   });
 
   it('no Android: direto, sem esperar', async () => {

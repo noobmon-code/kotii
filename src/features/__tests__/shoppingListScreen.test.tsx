@@ -187,6 +187,8 @@ const mockBarcode: {
   element: null,
 };
 jest.mock('@/features/ProductBarcode', () => ({
+  // O produto lido vai para o onProduct do desenho mais recente, como no hook de verdade (que o guarda numa ref:
+  // productBarcodeFlow.test.tsx, o código que responde depois de a tela mudar).
   useProductBarcode: ({ onProduct }: { onProduct: (product: Product) => void }) => {
     mockBarcode.onProduct = onProduct;
     return { available: mockBarcode.available, busy: mockBarcode.busy, start: mockBarcode.start, element: mockBarcode.element };
@@ -1162,6 +1164,31 @@ describe('ler o código de barras no cartão de pôr item', () => {
     expect(mockQueue.add).toHaveBeenCalledWith({ name: 'Leite desnatado', category: 'laticinios', productId: 'il', quantity: 1, unit: 'un' }, 'u1');
   });
 
+  it('o que se digita enquanto o código ainda é procurado no banco é o próximo item: não é a quantidade do lido, e fica no campo', async () => {
+    const field = () => renderer!.root.findAllByType(TextField).find((entry) => entry.props.placeholder === ADD_FIELD_PLACEHOLDER)!;
+    mockBarcode.available = true;
+    await mount();
+    act(() => scanButton().props.onPress());
+    // A câmera fechou; o código ainda não voltou do banco, e a pessoa já escreve o próximo item.
+    act(() => field().props.onChangeText('2 kg arroz'));
+    await act(async () => mockBarcode.onProduct!(MILK));
+    expect(mockQueue.add).toHaveBeenCalledTimes(1);
+    expect(mockQueue.add).toHaveBeenCalledWith({ name: 'Leite desnatado', category: 'laticinios', productId: 'il', quantity: 1, unit: 'un' }, 'u1');
+    expect(field().props.value).toBe('2 kg arroz');
+    await act(async () => renderer!.unmount());
+    // Também quando o lido já está na lista em outra unidade: "Pôr 1 un como outro item" não apaga o campo.
+    mockQueue.add.mockClear();
+    mockQueries.items = loaded([{ ...listItem('a', 'Leite desnatado', null, 'laticinios'), quantity: 2, unit: 'l' }]);
+    await mount();
+    act(() => scanButton().props.onPress());
+    act(() => field().props.onChangeText('2 kg arroz'));
+    await act(async () => mockBarcode.onProduct!(MILK));
+    expect(repeatChoices()).toEqual(['Pôr 1 un como outro item']);
+    choose('Pôr 1 un como outro item');
+    expect(mockQueue.add).toHaveBeenCalledWith({ name: 'Leite desnatado', category: 'laticinios', productId: 'il', quantity: 1, unit: 'un' }, 'u1');
+    expect(field().props.value).toBe('2 kg arroz');
+  });
+
   it('enquanto o código anterior ainda está sendo visto, o botão fica carregando', async () => {
     mockBarcode.available = true;
     await mount();
@@ -1366,6 +1393,8 @@ describe('a quantidade vem do que se digita, lida como no "Colar lista"', () => 
   const toolRow = () =>
     renderer!.root.findAllByType(Row).find((row) => row.findAllByType(Button).some((entry) => entry.props.title === 'Colar lista'));
   const suggestion = (title: string) => renderer!.root.findAllByType(ListRow).find((row) => row.props.title === title);
+  const barcodeButton = () =>
+    renderer!.root.findAll((node) => node.type === Button && node.props.accessibilityLabel === BARCODE_BUTTON.label)[0];
 
   beforeEach(() => {
     mockQueue.add.mockClear();
@@ -1462,20 +1491,32 @@ describe('a quantidade vem do que se digita, lida como no "Colar lista"', () => 
     expect(mockQueue.add).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'Ovos (dúzia)', quantity: 2, unit: 'un' }), 'u1');
   });
 
-  it('o produto de ovos sem a conta no nome leva os ovos digitados, e o código lido também', async () => {
+  it('o produto de ovos sem a conta no nome leva os ovos digitados; o código lido não leva o que se digitou depois', async () => {
     const EGGS = { ...product('ov', 'Ovos Brancos Mantiqueira'), category: 'ovos' } as Product;
     mockQueries.products = loaded([EGGS]);
+    mockBarcode.available = true;
     await mount();
     await type('30 ovos');
     const [row] = renderer!.root.findAllByType(ListRow).filter((entry) => entry.props.subtitle === 'Produto com histórico de preço · 30 un');
     expect(row).toBeDefined();
     await act(async () => row.props.onPress());
     expect(mockQueue.add).toHaveBeenLastCalledWith(expect.objectContaining({ productId: 'ov', quantity: 30, unit: 'un' }), 'u1');
-    // O código lido com a linha ainda no campo (a leitura termina depois de a câmera fechar): os mesmos ovos digitados.
+    // O código lido, na ordem em que a tela deixa: o botão só aparece com o campo vazio, a câmera fecha antes de o
+    // código voltar do banco, e o que se digita nesse meio-tempo é o próximo item. A embalagem lida entra com 1 un, e
+    // os ovos digitados ficam no campo, para entrar depois como eles mesmos.
     mockQueue.add.mockClear();
+    mockBarcode.start.mockClear();
+    expect(field().props.value).toBe('');
+    act(() => barcodeButton().props.onPress());
+    expect(mockBarcode.start).toHaveBeenCalledTimes(1);
     await type('30 ovos');
+    expect(barcodeButton()).toBeUndefined();
     await act(async () => mockBarcode.onProduct!(EGGS));
-    expect(mockQueue.add).toHaveBeenLastCalledWith(expect.objectContaining({ productId: 'ov', quantity: 30, unit: 'un' }), 'u1');
+    expect(mockQueue.add).toHaveBeenCalledTimes(1);
+    expect(mockQueue.add).toHaveBeenLastCalledWith(expect.objectContaining({ productId: 'ov', quantity: 1, unit: 'un' }), 'u1');
+    expect(field().props.value).toBe('30 ovos');
+    await submit();
+    expect(mockQueue.add).toHaveBeenLastCalledWith({ name: 'Ovos', category: 'ovos', productId: null, quantity: 30, unit: 'un' }, 'u1');
   });
 
   it('ovos digitados no item de ovos que já está na lista em cartelas somam cartelas, e não ovos', async () => {
@@ -1483,7 +1524,9 @@ describe('a quantidade vem do que se digita, lida como no "Colar lista"', () => 
     const EGGS = { ...product('ov', 'Ovos Mantiqueira'), category: 'ovos' } as Product;
     mockQueries.products = loaded([EGGS]);
     const pick = async () => {
-      const [row] = renderer!.root.findAllByType(ListRow).filter((entry) => entry.props.subtitle === 'Produto com histórico de preço · 30 un');
+      const [row] = renderer!.root
+        .findAllByType(ListRow)
+        .filter((entry) => String(entry.props.subtitle).startsWith('Produto com histórico de preço · '));
       await act(async () => row.props.onPress());
     };
     for (const [listed, text, via, adds, total] of [
@@ -1492,7 +1535,7 @@ describe('a quantidade vem do que se digita, lida como no "Colar lista"', () => 
       ['Ovos (dúzia)', '1 dz ovos', 'campo', '1 un', '2 un'],
       ['Ovos (dúzia)', '30 ovos', 'campo', '3 un', '4 un'],
       ['Ovos (30 un)', '30 ovos', 'produto', '1 un', '2 un'],
-      ['Ovos (30 un)', '30 ovos', 'código', '1 un', '2 un'],
+      ['Ovos (30 un)', '60 ovos', 'produto', '2 un', '3 un'],
     ] as const) {
       mockQueue.add.mockClear();
       mockQueue.edit.mockClear();
@@ -1500,8 +1543,7 @@ describe('a quantidade vem do que se digita, lida como no "Colar lista"', () => 
       await mount();
       await type(text);
       if (via === 'campo') await submit();
-      else if (via === 'produto') await pick();
-      else await act(async () => mockBarcode.onProduct!(EGGS));
+      else await pick();
       expect(mockQueue.add).not.toHaveBeenCalled();
       expect(repeatSheet().props.message).toBe(`${listed} já está na lista (1 un). Somar mais ${adds}?`);
       expect(repeatChoices()[0]).toBe(`Somar: fica ${total}`);
@@ -1509,6 +1551,29 @@ describe('a quantidade vem do que se digita, lida como no "Colar lista"', () => 
       expect(mockQueue.edit).toHaveBeenCalledWith(expect.objectContaining({ id: 'o', values: { quantity: Number(total.split(' ')[0]) } }), expect.anything());
       await act(async () => renderer!.unmount());
     }
+    // O código lido não leva a linha: com o campo vazio quando a câmera abriu, o que se digita enquanto o código ainda
+    // é procurado no banco é o próximo item. A embalagem lida soma 1 un (e não as 2 cartelas de "60 ovos"), e o campo
+    // fica com o que foi digitado, ao somar e ao deixar como está.
+    mockBarcode.available = true;
+    for (const answer of ['Somar: fica 2 un', null] as const) {
+      mockQueue.add.mockClear();
+      mockQueue.edit.mockClear();
+      mockQueries.items = loaded([{ ...listItem('o', 'Ovos (30 un)', null, 'ovos') }]);
+      await mount();
+      act(() => barcodeButton().props.onPress());
+      await type('60 ovos');
+      await act(async () => mockBarcode.onProduct!(EGGS));
+      expect(mockQueue.add).not.toHaveBeenCalled();
+      expect(repeatSheet().props.message).toBe('Ovos (30 un) já está na lista (1 un). Somar mais 1 un?');
+      expect(repeatChoices()).toEqual(['Somar: fica 2 un']);
+      if (answer) {
+        choose(answer);
+        expect(mockQueue.edit).toHaveBeenCalledWith(expect.objectContaining({ id: 'o', values: { quantity: 2 } }), expect.anything());
+      } else act(() => repeatSheet().props.onClose());
+      expect(field().props.value).toBe('60 ovos');
+      await act(async () => renderer!.unmount());
+    }
+    mockBarcode.available = false;
     // Pôr como outro item leva o que foi digitado: "Ovos", 30 un, trinta ovos.
     mockQueries.items = loaded([{ ...listItem('o', 'Ovos (30 un)', null, 'ovos') }]);
     await mount();

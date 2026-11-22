@@ -2,8 +2,13 @@
 // o próprio texto que o app manda pelo WhatsApp, listShare) vira itens, um por
 // linha, com quantidade e unidade quando a linha diz. A tela mostra a prévia
 // antes de pôr qualquer coisa: o que já está para comprar na lista não entra
-// de novo. A mesma leitura serve o campo de pôr item (readListLine): a linha
-// digitada e a linha colada querem dizer sempre a mesma coisa.
+// de novo. A mesma leitura serve o campo de pôr item (readListLine): a mesma
+// quantidade, a mesma unidade e o mesmo nome, com uma diferença só: a observação
+// entre parênteses que diz o que se pode comprar ("Leite (sem lactose)",
+// decidesPurchase) fica no nome digitado, e a colagem a tira, como toda
+// observação, porque é ali que o texto do app escreve a descrição do item. Por
+// isso "Leite (sem lactose)" digitado é o item "Leite (sem lactose)", e colado é
+// "Leite": readListLine e parsePastedList não são trocáveis.
 
 import type { Unit } from '@/lib/types';
 
@@ -278,7 +283,10 @@ function readItem(text: string, typed = false): ReadItem | null {
 /** Os caracteres que não se veem (o espaço de largura zero de um texto copiado) saem antes de ler. */
 const cleanText = (text: string) => text.normalize('NFC').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '');
 
-/** O item de uma linha digitada no campo de pôr item: o da colagem, com o que a linha disse da quantidade. */
+/**
+ * O item de uma linha digitada no campo de pôr item, com o que a linha disse da quantidade: o da colagem, a não ser
+ * pela observação que diz o que se pode comprar, que aqui fica no nome ("Leite (sem lactose)"; colado, "Leite").
+ */
 export interface TypedLine extends PastedItem {
   /** A linha disse a quantidade ("2 kg arroz", "leite x2", "1 dz ovos"); sem ela, 1 un, a de sempre. */
   counted: boolean;
