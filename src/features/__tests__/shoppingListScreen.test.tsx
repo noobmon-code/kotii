@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { AccessibilityInfo, Dimensions, Platform, ScrollView, StyleSheet } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -9,6 +9,7 @@ import { LinkIndex } from '@/domain/listLinks';
 import { FIRST_LIST_SKIP, FIRST_LIST_TEXT } from '@/domain/onboarding';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { PRICE_CALCULATOR_LABEL, WAITING_SENTENCE as WAITING_TEXT } from '@/domain/priceCalculator';
+import { listShareText } from '@/domain/listShare';
 import { SHARED_PRICES_NOTICE, type SharedPrice } from '@/domain/sharedPrices';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -17,7 +18,7 @@ import { CHOSEN_STORE_MS, ESTIMATE_MORE_LABEL } from '@/domain/listEstimate';
 import { ADD_FIELD_PLACEHOLDER, BARCODE_BUTTON, LIST_MENU_LABEL } from '@/domain/listMode';
 import type { MarketTrip } from '@/domain/marketTrips';
 import { CartPantryModal } from '@/features/CartPantryModal';
-import { ListEstimateCard } from '@/features/ListEstimateCard';
+import { ListEstimateCard, StorePicker } from '@/features/ListEstimateCard';
 import { MarketTripAction } from '@/features/MarketTrip';
 import { forgetAddedItems, rememberAdded } from '@/lib/addedItems';
 import { handConfirmedReceipt, stopWaitingForReceipt } from '@/lib/finishPurchase';
@@ -171,19 +172,46 @@ jest.mock('@/ui/dialogs', () => ({ afterPaint: (run: () => void) => run(), askYe
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 // O caminho depois de ler o código de barras tem os testes dele (productBarcodeFlow.test.tsx): aqui, só o botão e o
 // que a lista faz com o produto lido. Sem dizer nada, como num banco ainda sem a tabela: sem o botão.
-const mockBarcode: { available: boolean; busy: boolean; start: jest.Mock; onProduct: ((product: Product) => void) | null } = {
+const mockBarcode: {
+  available: boolean;
+  busy: boolean;
+  start: jest.Mock;
+  onProduct: ((product: Product) => void) | null;
+  /** As janelas do caminho do código (o leitor, "Qual produto é este?"), que a tela desenha onde quiser. */
+  element: ReactNode;
+} = {
   available: false,
   busy: false,
   start: jest.fn(),
   onProduct: null,
+  element: null,
 };
 jest.mock('@/features/ProductBarcode', () => ({
   useProductBarcode: ({ onProduct }: { onProduct: (product: Product) => void }) => {
     mockBarcode.onProduct = onProduct;
-    return { available: mockBarcode.available, busy: mockBarcode.busy, start: mockBarcode.start, element: null };
+    return { available: mockBarcode.available, busy: mockBarcode.busy, start: mockBarcode.start, element: mockBarcode.element };
   },
 }));
-jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
+/** Quantas vezes cada janela foi montada: a que remonta perde o que estava digitado nela. */
+const mockMounts = { barcode: 0, picker: 0 };
+/** No lugar das janelas do código de barras: só conta quando monta. */
+function BarcodeSteps() {
+  useEffect(() => {
+    mockMounts.barcode += 1;
+  }, []);
+  return null;
+}
+jest.mock('@/ui/PickerModal', () => {
+  const { useEffect: onMount } = jest.requireActual<typeof import('react')>('react');
+  return {
+    PickerModal: () => {
+      onMount(() => {
+        mockMounts.picker += 1;
+      }, []);
+      return null;
+    },
+  };
+});
 jest.mock('@/features/CartPantryModal', () => ({
   CartPantryModal: (props: Record<string, unknown>) => {
     mockSeen.cartPantry = props;
@@ -306,6 +334,8 @@ async function mount() {
   return texts(renderer!.toJSON()).join('\n');
 }
 
+/** A escolha do lugar ("Onde você está comprando?"), que o chip do cartão da conta abre: a tela a desenha. */
+const storePicker = () => renderer!.root.findByType(StorePicker);
 /** O "i" do cartão da conta, que abre o resto dela ali mesmo (recolhido ao abrir a lista). */
 const estimateMore = () => renderer!.root.findAllByType(IconButton).find((entry) => entry.props.label === ESTIMATE_MORE_LABEL);
 /** Abre o cartão da conta, quando ele está na tela, e devolve tudo o que a tela escreve. */
@@ -342,6 +372,7 @@ beforeEach(() => {
   mockSeen.cartPantry = undefined;
   mockBarcode.available = false;
   mockBarcode.busy = false;
+  mockBarcode.element = null;
   mockBarcode.onProduct = null;
   mockSeen.hints = undefined;
   mockSeen.restock = undefined;
@@ -1256,6 +1287,25 @@ describe('ajustes da lista: corredores, categoria e colar', () => {
       expect(modal()).toBeUndefined();
     });
 
+    it('o texto que o app mandou desta lista, colado de volta: as descrições saem, e só o que foi acrescentado entra', async () => {
+      // Mandada a quem não tem o app, que acrescenta o café e manda de volta. As descrições (também a que decide o que
+      // se pode comprar, "sem lactose") vêm entre parênteses no texto, e não no nome do que está na lista.
+      const listed = [
+        { ...listItem('l', 'Leite', null, 'laticinios'), quantity: 2, notes: 'sem lactose' },
+        { ...listItem('p', 'Pão de forma', null, 'padaria'), notes: 'o integral' },
+        { ...listItem('r', 'Refrigerante', null, 'bebidas'), notes: 'zero', priority: 'urgente' as const },
+      ];
+      mockQueries.items = loaded(listed);
+      await mount();
+      open();
+      const text = listShareText({ name: 'Mercado' }, listed)!;
+      expect(text).toContain('- 2 un Leite (sem lactose)');
+      act(() => pasteField().props.onChangeText(`${text}\n- Café`));
+      expect(modalButton(/^Adicionar/).props.title).toBe('Adicionar 1 item');
+      act(() => modalButton(/^Adicionar/).props.onPress());
+      expect(mockQueue.add.mock.calls).toEqual([[{ name: 'Café', category: 'cafe_cha', productId: null, quantity: 1, unit: 'un' }, 'u1']]);
+    });
+
     it('"Colar o que copiei" traz o texto da área de transferência; sem nada copiado, avisa', async () => {
       await mount();
       open();
@@ -1408,6 +1458,59 @@ describe('a quantidade vem do que se digita, lida como no "Colar lista"', () => 
     expect(row).toBeDefined();
     await act(async () => row.props.onPress());
     expect(mockQueue.add).toHaveBeenLastCalledWith(expect.objectContaining({ productId: 'ov', quantity: 30, unit: 'un' }), 'u1');
+    // O código lido com a linha ainda no campo (a leitura termina depois de a câmera fechar): os mesmos ovos digitados.
+    mockQueue.add.mockClear();
+    await type('30 ovos');
+    await act(async () => mockBarcode.onProduct!(EGGS));
+    expect(mockQueue.add).toHaveBeenLastCalledWith(expect.objectContaining({ productId: 'ov', quantity: 30, unit: 'un' }), 'u1');
+  });
+
+  it('ovos digitados no item de ovos que já está na lista em cartelas somam cartelas, e não ovos', async () => {
+    // Sem a marca, o produto é o item "Ovos": o mesmo da lista.
+    const EGGS = { ...product('ov', 'Ovos Mantiqueira'), category: 'ovos' } as Product;
+    mockQueries.products = loaded([EGGS]);
+    const pick = async () => {
+      const [row] = renderer!.root.findAllByType(ListRow).filter((entry) => entry.props.subtitle === 'Produto com histórico de preço · 30 un');
+      await act(async () => row.props.onPress());
+    };
+    for (const [listed, text, via, adds, total] of [
+      ['Ovos (30 un)', '30 ovos', 'campo', '1 un', '2 un'],
+      ['Ovos (30 un)', '60 ovos', 'campo', '2 un', '3 un'],
+      ['Ovos (dúzia)', '1 dz ovos', 'campo', '1 un', '2 un'],
+      ['Ovos (dúzia)', '30 ovos', 'campo', '3 un', '4 un'],
+      ['Ovos (30 un)', '30 ovos', 'produto', '1 un', '2 un'],
+      ['Ovos (30 un)', '30 ovos', 'código', '1 un', '2 un'],
+    ] as const) {
+      mockQueue.add.mockClear();
+      mockQueue.edit.mockClear();
+      mockQueries.items = loaded([{ ...listItem('o', listed, null, 'ovos') }]);
+      await mount();
+      await type(text);
+      if (via === 'campo') await submit();
+      else if (via === 'produto') await pick();
+      else await act(async () => mockBarcode.onProduct!(EGGS));
+      expect(mockQueue.add).not.toHaveBeenCalled();
+      expect(repeatSheet().props.message).toBe(`${listed} já está na lista (1 un). Somar mais ${adds}?`);
+      expect(repeatChoices()[0]).toBe(`Somar: fica ${total}`);
+      choose(`Somar: fica ${total}`);
+      expect(mockQueue.edit).toHaveBeenCalledWith(expect.objectContaining({ id: 'o', values: { quantity: Number(total.split(' ')[0]) } }), expect.anything());
+      await act(async () => renderer!.unmount());
+    }
+    // Pôr como outro item leva o que foi digitado: "Ovos", 30 un, trinta ovos.
+    mockQueries.items = loaded([{ ...listItem('o', 'Ovos (30 un)', null, 'ovos') }]);
+    await mount();
+    await type('30 ovos');
+    await submit();
+    expect(repeatChoices()).toEqual(['Somar: fica 2 un', 'Pôr "Ovos" como outro item']);
+    choose('Pôr "Ovos" como outro item');
+    expect(mockQueue.add).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'Ovos', quantity: 30, unit: 'un' }), 'u1');
+    // Fora dos ovos, a soma é a quantidade digitada, como sempre.
+    await act(async () => renderer!.unmount());
+    mockQueries.items = loaded([{ ...listItem('a', 'Arroz', null, 'graos'), unit: 'kg' }]);
+    await mount();
+    await type('2 kg arroz');
+    await submit();
+    expect(repeatChoices()).toEqual(['Somar: fica 3 kg']);
   });
 
   it('a observação que diz o que se pode comprar fica no nome: "Leite (sem lactose)" não soma no "Leite" da lista', async () => {
@@ -1463,7 +1566,6 @@ describe('a quantidade vem do que se digita, lida como no "Colar lista"', () => 
 });
 
 describe('o cartão da conta, recolhido numa linha antes da lista', () => {
-  const card = () => renderer!.root.findByType(ListEstimateCard);
   const page = () => texts(renderer!.toJSON()).join('\n');
 
   beforeEach(() => {
@@ -1511,13 +1613,13 @@ describe('o cartão da conta, recolhido numa linha antes da lista', () => {
 
   it('com o lugar escolhido, a linha recolhida diz qual, para o número não ser lido errado', async () => {
     await mount();
-    await act(async () => card().props.onChangeStore('s1'));
+    await act(async () => storePicker().props.onChangeStore('s1'));
     expect(page()).toContain('Lugar escolhido: Assaí');
     // Aberto, a frase de baixo já diz o lugar: a linha não repete.
     const open = await openEstimate();
     expect(open).toContain('Lugar escolhido: Assaí. Todos os itens têm preço.');
     expect(open.split('Lugar escolhido').length - 1).toBe(1);
-    await act(async () => card().props.onChangeStore(null));
+    await act(async () => storePicker().props.onChangeStore(null));
   });
 
   it('com preço de outras casas na conta, a linha recolhida diz que ele está lá; o aviso inteiro fica no "i"', async () => {
@@ -1643,6 +1745,45 @@ describe('no computador: os itens numa coluna, o cartão de pôr item e a conta 
     expect(side.findAllByType(ListEstimateCard)).toHaveLength(1);
     expect(side.findAllByType(MarketTripAction)).toHaveLength(0);
     expect(main.findAllByType(ShoppingGrid).every((grid) => grid.props.readOnly)).toBe(true);
+  });
+
+  it('a janela do navegador que cruza a largura do computador não fecha as janelas abertas nem recolhe a conta', async () => {
+    // Um iPad no Safari, de pé (820) e deitado (1180), ou a janela do computador redimensionada: as caixas das colunas
+    // mudam (ui/desktop), e o que está dentro delas remonta. As janelas ficam fora delas, e o aberto da conta, na tela.
+    web = jest.replaceProperty(Platform, 'OS', 'web');
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width: 820 } }));
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz')]);
+    mockQueries.products = loaded([product('arroz', 'Arroz')]);
+    mockQueries.prices = loaded([latest('arroz', 25)]);
+    mockBarcode.available = true;
+    mockBarcode.element = <BarcodeSteps />;
+    mockMounts.barcode = 0;
+    mockMounts.picker = 0;
+    await mount();
+    await openEstimate();
+    const chip = () => renderer!.root.findAllByType(Chip).find((entry) => entry.props.label === 'Onde você está comprando?')!;
+    await act(async () => chip().props.onPress());
+    expect(storePicker().props.visible).toBe(true);
+    expect(mockMounts).toEqual({ barcode: 1, picker: 1 });
+    for (const width of [1180, 820, 1440]) {
+      await act(async () => Dimensions.set({ window: { ...WINDOW, width } }));
+      expect(mockMounts).toEqual({ barcode: 1, picker: 1 });
+      expect(storePicker().props.visible).toBe(true);
+      expect(estimateMore()!.props.expanded).toBe(true);
+    }
+    const columns = renderer!.root.findByType(Columns);
+    expect(columns.findAllByType(StorePicker)).toHaveLength(0);
+    expect(columns.findAllByType(BarcodeSteps)).toHaveLength(0);
+    await act(async () => storePicker().props.onClose());
+    expect(storePicker().props.visible).toBe(false);
+    // Aberta, ela sai com o cartão (a lista que ficou sem item), e não volta aberta com ele.
+    await act(async () => chip().props.onPress());
+    mockQueries.items = loaded([]);
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(renderer!.root.findAllByType(StorePicker)).toHaveLength(0);
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz')]);
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(storePicker().props.visible).toBe(false);
   });
 
   it('no celular nada muda: tudo em sequência, na ordem de sempre, sem as caixas das colunas', async () => {
@@ -2375,7 +2516,7 @@ describe('"Finalizar compra": a nota antes de limpar o carrinho', () => {
       /** No mercado s1 ("Onde estou"), "Finalizar compra" pelo QR code. */
       async function atStoreAndFinish() {
         await mount();
-        await act(async () => estimateCard().props.onChangeStore('s1'));
+        await act(async () => storePicker().props.onChangeStore('s1'));
         expect(estimateCard().props.storeId).toBe('s1');
         await tapFinish();
         await pick('Ler o QR code da nota');
@@ -2467,7 +2608,7 @@ describe('"Onde estou" guardado no aparelho', () => {
 
   it('o mercado escolhido volta depois de fechar e abrir a lista', async () => {
     await mount();
-    await act(async () => estimateCard().props.onChangeStore('s1'));
+    await act(async () => storePicker().props.onChangeStore('s1'));
     expect(estimateCard().props.storeId).toBe('s1');
     expect(JSON.parse((await AsyncStorage.getItem('kotii:store-choice:l1'))!).storeId).toBe('s1');
     await act(async () => renderer!.unmount());
@@ -2477,11 +2618,11 @@ describe('"Onde estou" guardado no aparelho', () => {
 
   it('tirar o mercado e limpar o carrinho apagam a escolha', async () => {
     await mount();
-    await act(async () => estimateCard().props.onChangeStore('s1'));
-    await act(async () => estimateCard().props.onChangeStore(null));
+    await act(async () => storePicker().props.onChangeStore('s1'));
+    await act(async () => storePicker().props.onChangeStore(null));
     expect(estimateCard().props.storeId).toBeNull();
     expect(await AsyncStorage.getItem('kotii:store-choice:l1')).toBeNull();
-    await act(async () => estimateCard().props.onChangeStore('s1'));
+    await act(async () => storePicker().props.onChangeStore('s1'));
     await act(async () => button('Limpar')!.props.onPress());
     await act(async () => (mockSeen.cartPantry!.onConfirm as (rows: unknown[]) => void)([]));
     expect(estimateCard().props.storeId).toBeNull();
@@ -2490,7 +2631,7 @@ describe('"Onde estou" guardado no aparelho', () => {
 
   it('o limpar que falha devolve o mercado escolhido', async () => {
     await mount();
-    await act(async () => estimateCard().props.onChangeStore('s1'));
+    await act(async () => storePicker().props.onChangeStore('s1'));
     await act(async () => button('Limpar')!.props.onPress());
     await act(async () => (mockSeen.cartPantry!.onConfirm as (rows: unknown[]) => void)([]));
     expect(estimateCard().props.storeId).toBeNull();
@@ -2502,7 +2643,7 @@ describe('"Onde estou" guardado no aparelho', () => {
   it('a escolha de mais de 6 horas atrás já não vale', async () => {
     await mount();
     const spy = jest.spyOn(Date, 'now').mockReturnValue(Date.now() - CHOSEN_STORE_MS - 1000);
-    await act(async () => estimateCard().props.onChangeStore('s1'));
+    await act(async () => storePicker().props.onChangeStore('s1'));
     spy.mockRestore();
     await act(async () => renderer!.unmount());
     await mount();

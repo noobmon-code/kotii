@@ -8,9 +8,12 @@ import { normalizeSearch } from '@/domain/search';
 import { CategoryIcon, Icon, Section, Text, useCategoryTint } from '@/ui/primitives';
 import { radius, space } from '@/ui/theme';
 
-// As faixas ficam acima da lista: compactas, para ela começar mais cedo. O azulejo ainda leva o nome em duas linhas
-// ("Achocolatado" cabe inteiro numa) e o toque passa dos 44.
-const TILE = 84;
+// As faixas ficam acima da lista: compactas, para ela começar mais cedo (o desenho menor, menos espaço em volta). O
+// nome vai em duas linhas, com os mesmos 84 pontos de antes (o azulejo menos os 2 de cada lado): a palavra mais larga
+// dos itens comuns sem hífen, "Condicionador" (82,1 em Nunito SemiBold 12,5), cabe inteira numa, em vez de quebrar
+// numa letra. O toque passa dos 44.
+const TILE = 88;
+const TILE_PADDING = 2;
 const ART = 36;
 
 /**
@@ -135,7 +138,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: space.xs,
     borderRadius: radius.lg,
-    paddingHorizontal: 2,
+    paddingHorizontal: TILE_PADDING,
     paddingTop: space.sm,
     paddingBottom: space.sm,
   },

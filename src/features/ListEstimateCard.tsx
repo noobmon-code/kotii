@@ -2,8 +2,13 @@
 // preços do mercado em que a pessoa está, com os de outras casas onde a casa
 // não tem preço) e o que está na despensa. Antes da lista, recolhido numa
 // linha (o total e o "i"); o "i" abre o resto ali mesmo.
+//
+// O aberto e a escolha do lugar ficam com a tela, e a escolha (StorePicker) é
+// desenhada por ela fora das colunas do computador (ui/desktop): no navegador,
+// a janela que cruza a largura do computador troca as caixas das colunas e
+// remonta o que está nelas; assim o cartão não recolhe sozinho e a busca
+// digitada na escolha aberta não some.
 
-import { useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 
 import {
@@ -30,39 +35,38 @@ const RETRY_HINT = Platform.OS === 'web' ? 'Recarregue a página para tentar de 
 
 export function ListEstimateCard({
   estimate,
-  kind,
   storeId,
   storeNames,
   sourcesLoaded,
-  onChangeStore,
   inPantry,
+  open,
+  onToggle,
+  onChooseStore,
 }: {
   estimate: ListEstimate;
-  /** Lista de farmácia fala em farmácia, não em mercado. */
-  kind: ListKind;
   /** O mercado em que a pessoa está; null: qualquer um (último preço pago). */
   storeId: string | null;
   /** Os nomes dos mercados; sem eles (ainda não carregaram), não há como dizer onde se está. */
   storeNames?: ReadonlyMap<string, string>;
   /** false: as ligações ou os produtos não chegaram, e item sem preço pode ser só item que não deu para conferir. */
   sourcesLoaded: boolean;
-  onChangeStore: (storeId: string | null) => void;
   /** Nomes dos itens a comprar que estão na despensa. */
   inPantry: string[];
+  /** Aberto pelo "i": recolhido ao abrir a lista (só na memória, como o resto da tela). */
+  open: boolean;
+  onToggle: () => void;
+  /** O chip "Onde estou" abre a escolha do lugar (StorePicker, desenhada pela tela). */
+  onChooseStore: () => void;
 }) {
-  const [choosing, setChoosing] = useState(false);
-  // Recolhido ao abrir a lista: a linha do total, e o resto no "i" (só na memória, como o resto da tela).
-  const [open, setOpen] = useState(false);
   const priced = estimate.pricedCount > 0;
   const unchecked = uncheckedPricesNote(estimate, sourcesLoaded);
   // Sem conta e sem nada na despensa, o cartão só aparece para dizer que não deu para conferir os preços.
   if (!priced && !inPantry.length && !unchecked) return null;
   const cartSplit = cartSplitLine(estimate);
   const storeName = storeId ? storeNames?.get(storeId) : undefined;
-  const place = kind === 'farmacia' ? 'farmácia' : 'mercado';
   // Recolhido, o total diz o lugar escolhido e que há preço de outras casas nele: aberto, a frase de baixo já diz.
   const marker = open ? null : estimateMarker(estimate, storeName ?? null);
-  const more = <IconButton icon="information-outline" label={ESTIMATE_MORE_LABEL} color="primary" expanded={open} onPress={() => setOpen(!open)} />;
+  const more = <IconButton icon="information-outline" label={ESTIMATE_MORE_LABEL} color="primary" expanded={open} onPress={onToggle} />;
 
   return (
     <Card style={styles.card}>
@@ -99,7 +103,7 @@ export function ListEstimateCard({
                 label={storeName ? `Onde estou: ${storeName}` : 'Onde você está comprando?'}
                 icon="store-outline"
                 selected={Boolean(storeName)}
-                onPress={() => setChoosing(true)}
+                onPress={onChooseStore}
               />
             </Row>
           ) : null}
@@ -113,41 +117,64 @@ export function ListEstimateCard({
           ) : null}
         </>
       ) : null}
-
-      {storeNames ? (
-        <PickerModal
-          visible={choosing}
-          title="Onde você está comprando?"
-          placeholder={`Buscar ${place}`}
-          options={estimate.stores
-            .flatMap((store) => {
-              const title = storeNames.get(store.storeId);
-              return title ? [{ id: store.storeId, title, known: store.knownCount, subtitle: storeOptionNote(store.knownCount) }] : [];
-            })
-            // Quem tem preço para mais itens da lista primeiro; no empate (os sem nenhum, por exemplo), pelo nome.
-            .sort((a, b) => b.known - a.known || a.title.localeCompare(b.title, 'pt-BR'))}
-          onClose={() => setChoosing(false)}
-          onSelect={(id) => {
-            onChangeStore(id);
-            setChoosing(false);
-          }}
-          extraActions={() =>
-            storeId ? (
-              <Button
-                title={`Qualquer ${place} (último preço pago)`}
-                icon="store-off-outline"
-                variant="ghost"
-                compact
-                onPress={() => {
-                  onChangeStore(null);
-                  setChoosing(false);
-                }}
-              />
-            ) : null
-          }
-        />
-      ) : null}
     </Card>
+  );
+}
+
+/** "Onde você está comprando?": a escolha do lugar que o chip do cartão da conta abre. */
+export function StorePicker({
+  estimate,
+  kind,
+  storeId,
+  storeNames,
+  visible,
+  onChangeStore,
+  onClose,
+}: {
+  estimate: ListEstimate;
+  /** Lista de farmácia fala em farmácia, não em mercado. */
+  kind: ListKind;
+  storeId: string | null;
+  /** Sem os nomes dos mercados (ainda não carregaram), não há o que escolher. */
+  storeNames?: ReadonlyMap<string, string>;
+  visible: boolean;
+  onChangeStore: (storeId: string | null) => void;
+  onClose: () => void;
+}) {
+  if (!storeNames) return null;
+  const place = kind === 'farmacia' ? 'farmácia' : 'mercado';
+  return (
+    <PickerModal
+      visible={visible}
+      title="Onde você está comprando?"
+      placeholder={`Buscar ${place}`}
+      options={estimate.stores
+        .flatMap((store) => {
+          const title = storeNames.get(store.storeId);
+          return title ? [{ id: store.storeId, title, known: store.knownCount, subtitle: storeOptionNote(store.knownCount) }] : [];
+        })
+        // Quem tem preço para mais itens da lista primeiro; no empate (os sem nenhum, por exemplo), pelo nome.
+        .sort((a, b) => b.known - a.known || a.title.localeCompare(b.title, 'pt-BR'))}
+      onClose={onClose}
+      onSelect={(id) => {
+        onChangeStore(id);
+        onClose();
+      }}
+      extraActions={() =>
+        storeId ? (
+          <Button
+            title={`Qualquer ${place} (último preço pago)`}
+            icon="store-off-outline"
+            variant="ghost"
+            compact
+            onPress={() => {
+              onChangeStore(null);
+              onClose();
+            }}
+          />
+        ) : null
+      }
+    />
   );
 }
 

@@ -80,11 +80,25 @@ describe('as faixas de cima da lista', () => {
     const root = await mount(<RecentPurchases items={[milk]} onAdd={jest.fn()} />);
     const [tile] = tiles(root);
     const style = tileStyle(tile);
-    expect(style.width).toBe(84);
+    // Antes: 92 de largura, 4 de cada lado, desenho de 44 e 12 em cima.
+    expect(style.width).toBeLessThan(92);
     expect(style.minHeight).toBeGreaterThanOrEqual(44);
     expect(style.paddingTop).toBe(8);
     expect(tile.findByType(CategoryIcon).props.size).toBe(36);
     expect(tile.findAllByType(Text)[0].props.numberOfLines).toBe(2);
+  });
+
+  it('o nome tem a mesma largura de antes: a palavra mais larga dos itens comuns cabe inteira numa linha', async () => {
+    // Larguras medidas na fonte do nome (Text "small": Nunito SemiBold 12,5), sem o kerning, que só as estreita: a
+    // palavra mais larga que não tem hífen ("Condicionador") e as que vêm logo depois. Uma palavra mais larga que a
+    // linha quebra numa letra ("Condicionado" / "r"); com hífen, quebra no hífen. "Multivitamínico" (87,1) já não
+    // cabia nos 84 de antes.
+    const MEASURED = { Condicionador: 82.1, 'Lustra-móveis': 81.55, Achocolatado: 78.46, Desinfetante: 73.19 };
+    const root = await mount(<RestockStrip items={[{ ...coffee, name: 'Condicionador', category: 'higiene' }]} onAdd={jest.fn()} />);
+    const style = tileStyle(tiles(root)[0]);
+    const nameWidth = Number(style.width) - 2 * Number(style.paddingHorizontal);
+    expect(nameWidth).toBeGreaterThanOrEqual(84);
+    for (const width of Object.values(MEASURED)) expect(width).toBeLessThanOrEqual(nameWidth);
   });
 
   it('sem item, a faixa não aparece', async () => {

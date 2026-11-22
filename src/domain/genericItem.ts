@@ -41,9 +41,9 @@ const NEVER_DROP = new Set([
 
 /**
  * O texto tem uma palavra que decide o que se pode comprar (NEVER_DROP: "sem lactose", "zero", "integral",
- * "infantil", "Ninho"). A leitura da lista (domain/listPaste: o campo de pôr item e o "Colar lista") não tira do nome
- * a observação entre parênteses que diz isso ("Leite (sem lactose)"): sem ela, quem vai ao mercado traria o leite
- * comum.
+ * "infantil", "Ninho"). A linha digitada no campo de pôr item (domain/listPaste, readListLine) não tira do nome a
+ * observação entre parênteses que diz isso ("Leite (sem lactose)"): sem ela, quem vai ao mercado traria o leite
+ * comum. O "Colar lista" tira, porque é ali que o texto do app escreve a descrição do item.
  */
 export function decidesPurchase(text: string): boolean {
   return normalizeSearch(text)

@@ -93,7 +93,7 @@ import { sharedQuotes } from '@/domain/sharedPrices';
 import { CartPantryModal } from '@/features/CartPantryModal';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
 import { useFinishPurchase } from '@/features/FinishPurchase';
-import { ListEstimateCard } from '@/features/ListEstimateCard';
+import { ListEstimateCard, StorePicker } from '@/features/ListEstimateCard';
 import { ListItemEditor, type ItemDetails, type PhotoChange } from '@/features/ListItemEditor';
 import { ListMenu, ListMenuButton } from '@/features/ListMenu';
 import { ListShareSheet } from '@/features/ListShareSheet';
@@ -139,12 +139,14 @@ const STALE_OFFLINE = 'Sem internet agora. Mostrando a lista como estava da últ
 
 /**
  * O item que a pessoa pôs e que já está para comprar: a tela pergunta se soma a quantidade. `otherName`: digitado
- * com outro nome ("Leite" com "Leite IL Desnatado" na lista), que pode ser outro pedido.
+ * com outro nome ("Leite" com "Leite IL Desnatado" na lista), que pode ser outro pedido. `adds`: quanto a soma põe
+ * no da lista, na medida dele ("30 ovos" no "Ovos (30 un)" é uma cartela a mais, e não trinta).
  */
 interface Repeated {
   listed: ShoppingListItem;
   item: NewListItem;
   otherName: boolean;
+  adds: number;
 }
 
 export default function ShoppingListScreen() {
@@ -224,6 +226,11 @@ export default function ShoppingListScreen() {
   );
   // "Onde estou": guardado por lista neste aparelho (lib/storeChoice), também escolhido em "Onde comprar".
   const storeChoice = useStoreChoice(id);
+  // O cartão da conta aberto pelo "i" e a escolha do lugar aberta pelo chip dele: aqui, e a escolha desenhada fora das
+  // colunas, para a janela do navegador que cruza a largura do computador (ui/desktop: as caixas das colunas mudam,
+  // e o que está nelas remonta) não recolher o cartão nem fechar a escolha com a busca digitada.
+  const [estimateOpen, setEstimateOpen] = useState(false);
+  const [choosingStore, setChoosingStore] = useState(false);
   // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
   const justAdded = useJustListed(items.data);
 
@@ -393,12 +400,21 @@ export default function ShoppingListScreen() {
     if (listed) {
       const otherName = typed && listNameKey(listed.name) !== listNameKey(item.name);
       if (repeated) setRepeatedKey((key) => key + 1);
-      setRepeated({ listed, item, otherName });
+      setRepeated({ listed, item, otherName, adds: addsTo(listed, item) });
       return;
     }
     addItem.add(item, session!.user.id);
     resetForm();
   }
+
+  /**
+   * Quanto o item posto soma no mesmo item que já está na lista: a quantidade dele, a não ser quando ela veio da linha
+   * digitada e o da lista é de ovos, em que vão os mesmos ovos que a linha pede, nas cartelas do da lista ("30 ovos"
+   * num "Ovos (30 un)" é uma cartela a mais, "1 dz ovos" num "Ovos (dúzia)" também; chosenItemQuantity, a conta das
+   * sugestões). Pôr como outro item leva o item como foi posto ("Ovos", 30 un: trinta ovos).
+   */
+  const addsTo = (listed: ShoppingListItem, item: NewListItem): number =>
+    line?.counted && listed.category === 'ovos' ? chosenItemQuantity(line, { name: listed.name, category: listed.category }) : item.quantity;
 
   /**
    * O item repetido como está agora na lista (outra pessoa pode ter mudado a quantidade); null se saiu ou foi para o
@@ -410,18 +426,18 @@ export default function ShoppingListScreen() {
   };
 
   /** "Somar", no toque: soma ao item como está agora; sem ele para comprar (ou em outra unidade), um item novo. */
-  function sumRepeated(listed: ShoppingListItem, item: NewListItem) {
+  function sumRepeated(listed: ShoppingListItem, item: NewListItem, adds: number) {
     resetForm();
     const now = currentListed(listed, queryClient.getQueryData<ShoppingListItem[]>(['listItems', id]) ?? items.data);
-    const again = now ? repeatedQuantity(now, item) : null;
+    const again = now ? repeatedQuantity(now, { quantity: adds, unit: item.unit }) : null;
     if (now && again?.kind === 'sum') {
       edit.mutate({ id: now.id, listId: id, userId: session!.user.id, values: { quantity: again.quantity } }, { onError });
     } else addItem.add(item, session!.user.id);
   }
 
   /** "Já está na lista": na mesma unidade, somar; em outra unidade (ou com outro nome digitado), pôr como outro item. */
-  function repeatedActions({ listed, item, otherName }: Repeated): SheetAction[] {
-    const choice = repeatedQuantity(currentListed(listed) ?? listed, item);
+  function repeatedActions({ listed, item, otherName, adds }: Repeated): SheetAction[] {
+    const choice = repeatedQuantity(currentListed(listed) ?? listed, { quantity: adds, unit: item.unit });
     const actions: SheetAction[] = [];
     if (choice.kind === 'sum') {
       actions.push({
@@ -430,7 +446,7 @@ export default function ShoppingListScreen() {
         // A soma sai do item como está no toque, e não de quando a pergunta abriu. A quantidade nova vai pela fila de
         // edições, como nos detalhes do item: aparece na hora, também sem internet. O item que saiu da lista, foi para
         // o carrinho ou mudou de unidade nesse meio-tempo não leva a soma: a quantidade entra como um item novo.
-        onPress: () => sumRepeated(listed, item),
+        onPress: () => sumRepeated(listed, item, adds),
       });
     }
     if (choice.kind === 'other_unit' || otherName) {
@@ -446,13 +462,12 @@ export default function ShoppingListScreen() {
     return actions;
   }
 
-  function repeatedMessage({ listed: asked, item }: Repeated): string {
+  function repeatedMessage({ listed: asked, item, adds }: Repeated): string {
     const listed = currentListed(asked) ?? asked;
     const now = formatQuantity(Number(listed.quantity), listed.unit);
-    const more = formatQuantity(item.quantity, item.unit);
     return repeatedQuantity(listed, item).kind === 'sum'
-      ? `${listed.name} já está na lista (${now}). Somar mais ${more}?`
-      : `${listed.name} já está na lista com ${now}, e ${more} é outra unidade. Pôr como outro item ou deixar como está?`;
+      ? `${listed.name} já está na lista (${now}). Somar mais ${formatQuantity(adds, item.unit)}?`
+      : `${listed.name} já está na lista com ${now}, e ${formatQuantity(item.quantity, item.unit)} é outra unidade. Pôr como outro item ou deixar como está?`;
   }
 
   /**
@@ -943,6 +958,9 @@ export default function ShoppingListScreen() {
     <EmptyState icon="cart-outline" title="Lista vazia" message={emptyListMessage(mode, desktop, stripsShown)} />
   ) : null;
   const addButton = line ? addLineButton(line) : null;
+  // O cartão da conta só nas listas de compra com item (a de "outros" não tem preço). A escolha do lugar sai com ele.
+  const estimateShown = list.data.kind !== 'outros' && pending.length + checked.length > 0;
+  if (choosingStore && !estimateShown) setChoosingStore(false);
 
   return (
     <Screen
@@ -1093,8 +1111,6 @@ export default function ShoppingListScreen() {
                     </>
                   ) : null}
                 </Card>
-                {barcode.element}
-
                 {/* Para montar a lista; no modo compra (e enquanto se digita) saem da frente, e a lista sobe. */}
                 {showsSuggestions(mode, Boolean(name.trim())) ? (
                   <>
@@ -1107,15 +1123,16 @@ export default function ShoppingListScreen() {
 
             {desktop ? null : emptyList}
 
-            {list.data.kind !== 'outros' && (pending.length || checked.length) ? (
+            {estimateShown ? (
               <ListEstimateCard
                 estimate={market.estimate}
-                kind={list.data.kind}
                 storeId={storeId}
                 storeNames={storeNames}
                 sourcesLoaded={sourcesLoaded}
-                onChangeStore={(store) => chooseStore(id, store)}
                 inPantry={pending.filter((i) => market.inPantry.has(i.id)).map((i) => i.name)}
+                open={estimateOpen}
+                onToggle={() => setEstimateOpen((open) => !open)}
+                onChooseStore={() => setChoosingStore(true)}
               />
             ) : null}
 
@@ -1189,6 +1206,21 @@ export default function ShoppingListScreen() {
           </Text>
         ) : null}
       </Columns>
+      {/* As janelas que o cartão de pôr item e o da conta abrem ficam fora das colunas: a janela do navegador que cruza
+          a largura do computador remonta o que está nelas (ui/desktop), e o código digitado no leitor, a busca de "Qual
+          produto é este?" e a de "Onde você está comprando?" sumiriam. */}
+      {archived ? null : barcode.element}
+      {estimateShown ? (
+        <StorePicker
+          estimate={market.estimate}
+          kind={list.data.kind}
+          storeId={storeId}
+          storeNames={storeNames}
+          visible={choosingStore}
+          onChangeStore={(store) => chooseStore(id, store)}
+          onClose={() => setChoosingStore(false)}
+        />
+      ) : null}
       {editing ? (
         <ListItemEditor
           item={editing}
