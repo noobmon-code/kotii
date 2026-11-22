@@ -316,19 +316,22 @@ export function scanHint(state: ScanState): string {
 export const SCAN_SHUTTER = 'Tirar foto';
 export const SCAN_MORE = 'Mais opções';
 export const SCAN_ALLOW_CAMERA = 'Permitir a câmera';
-export const SCAN_NEEDS_CAMERA = 'Para ler códigos e tirar fotos, o Kotii precisa usar a câmera. Sem ela, dá para usar as opções abaixo.';
-const SCAN_NEEDS_CAMERA_RECEIPT =
-  'Para ler o QR code e fotografar a nota, o Kotii precisa usar a câmera. Sem ela, dá para usar as opções abaixo.';
-const SCAN_NEEDS_CAMERA_QR =
-  'Para ler o QR code aqui, o Kotii precisa usar a câmera. Sem ela, dá para tirar a foto da nota, com a câmera do celular, ou usar as opções abaixo.';
+const SCAN_NEEDS_CAMERA_ANY = 'Para ler códigos e tirar fotos, o Kotii precisa usar a câmera.';
+const SCAN_NEEDS_CAMERA_RECEIPT = 'Para ler o QR code e fotografar a nota, o Kotii precisa usar a câmera.';
+const SCAN_NEEDS_CAMERA_QR = 'Para ler o QR code aqui, o Kotii precisa usar a câmera.';
+const SCAN_PHONE_SHUTTER = 'Sem ela, dá para tirar a foto da nota, com a câmera do celular';
+export const SCAN_NEEDS_CAMERA = `${SCAN_NEEDS_CAMERA_ANY} Sem ela, dá para usar as opções abaixo.`;
 
 /**
  * O pedido da câmera, pelo modo. `phoneShutter`: a foto vai pela câmera do celular (shutterUsesPhoneCamera), que não
- * precisa da permissão da prévia; sem ela, falta só o QR ao vivo, e "Tirar foto" fica na tela.
+ * precisa da permissão da prévia; sem ela, falta só o QR ao vivo, e "Tirar foto" fica na tela. `options`: se as outras
+ * opções estão na tela (scanOptions). Com partes da nota esperando, não estão, e o texto não manda procurar por elas.
  */
-export function scanNeedsCamera(mode: ScanMode, phoneShutter = false): string {
-  if (mode !== 'nota') return SCAN_NEEDS_CAMERA;
-  return phoneShutter ? SCAN_NEEDS_CAMERA_QR : SCAN_NEEDS_CAMERA_RECEIPT;
+export function scanNeedsCamera(mode: ScanMode, phoneShutter = false, options = true): string {
+  const others = options ? ' Sem ela, dá para usar as opções abaixo.' : '';
+  if (mode !== 'nota') return `${SCAN_NEEDS_CAMERA_ANY}${others}`;
+  if (!phoneShutter) return `${SCAN_NEEDS_CAMERA_RECEIPT}${others}`;
+  return `${SCAN_NEEDS_CAMERA_QR} ${SCAN_PHONE_SHUTTER}${options ? ', ou usar as opções abaixo.' : '.'}`;
 }
 
 export type ScanOption = 'galeria' | 'link' | 'codigo' | 'manual';

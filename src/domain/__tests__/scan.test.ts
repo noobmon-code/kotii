@@ -148,6 +148,26 @@ describe('depois da foto', () => {
     expect(scanNeedsCamera('tudo', true)).toBe(scanNeedsCamera('tudo'));
   });
 
+  it('o pedido da câmera só fala das opções abaixo quando elas estão na tela (com partes da nota esperando, não estão)', () => {
+    for (const mode of ['tudo', 'despensa', 'nota'] as const) {
+      for (const phoneShutter of [true, false]) {
+        expect(scanNeedsCamera(mode, phoneShutter, true)).toBe(scanNeedsCamera(mode, phoneShutter));
+        expect(scanNeedsCamera(mode, phoneShutter)).toContain('opções abaixo');
+        const alone = scanNeedsCamera(mode, phoneShutter, false);
+        expect(alone).not.toMatch(/opç/);
+        expect(alone).toMatch(/\.$/);
+        expect(alone).toContain('precisa usar a câmera');
+      }
+    }
+    // A foto pela câmera do celular segue dita: é o que tira as próximas partes.
+    expect(scanNeedsCamera('nota', true, false)).toBe(
+      'Para ler o QR code aqui, o Kotii precisa usar a câmera. Sem ela, dá para tirar a foto da nota, com a câmera do celular.',
+    );
+    expect(scanNeedsCamera('nota', true)).toBe(
+      'Para ler o QR code aqui, o Kotii precisa usar a câmera. Sem ela, dá para tirar a foto da nota, com a câmera do celular, ou usar as opções abaixo.',
+    );
+  });
+
   it('a galeria deixa escolher as partes de uma nota, ou uma foto só quando são produtos', () => {
     expect(galleryLimit(EMPTY)).toBe(MAX_RECEIPT_PHOTOS);
     expect(galleryLimit(WITH_PRODUCTS)).toBe(1);
@@ -313,6 +333,8 @@ describe('os textos', () => {
       scanReadFailedTitle(RECEIPT),
       scanNeedsCamera('nota'),
       scanNeedsCamera('nota', true),
+      scanNeedsCamera('nota', false, false),
+      scanNeedsCamera('nota', true, false),
     ];
     for (const text of texts) expect(text).not.toMatch(/produto|prateleira|código de barras/i);
     expect(scanHint(RECEIPT)).toContain('QR code');

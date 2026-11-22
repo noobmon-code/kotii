@@ -542,11 +542,22 @@ describe('o modo da nota (o "Adicionar nota" de Compras → Notas e o "Finalizar
     expect(button(root, 'Tirar foto')!.props.variant).toBe('primary');
     expect(button(root, 'Permitir a câmera')!.props.variant).toBe('secondary');
     expect(screenText()).toContain('câmera do celular');
+    expect(screenText()).toContain('opções abaixo');
     // A nota comprida, em partes, como com a câmera: "Mais uma foto" e "Ler (2 fotos)".
     mockPick.mockResolvedValue(['blob:topo']);
     await shoot(root);
     expect(mockPick).toHaveBeenLastCalledWith('camera', 1);
     expect(mockReceiptScan.mutate).not.toHaveBeenCalled();
+    // Com a parte esperando, as outras opções saem da tela, e o texto do cartão não manda procurar por elas.
+    expect(root.findAllByType(Button).map((b) => b.props.title)).toEqual(['Mais uma foto', 'Permitir a câmera', 'Ler', 'Descartar']);
+    expect(screenText()).toContain('câmera do celular');
+    expect(screenText()).not.toMatch(/opções/);
+    // Descartada a parte, as opções voltam, e o texto com elas.
+    await act(async () => button(root, 'Descartar')!.props.onPress());
+    expect(button(root, 'Escolher da galeria')).toBeDefined();
+    expect(screenText()).toContain('opções abaixo');
+    mockPick.mockResolvedValue(['blob:topo']);
+    await shoot(root);
     mockPick.mockResolvedValue(['blob:rodape']);
     await shoot(root, 'Mais uma foto');
     await act(async () => button(root, 'Ler (2 fotos)')!.props.onPress());

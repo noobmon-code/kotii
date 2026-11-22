@@ -447,7 +447,8 @@ export function Scanner({ mode }: { mode: ScanMode }) {
         </>
       ) : (
         <Card style={styles.gap}>
-          <Text variant="body">{scanNeedsCamera(mode, phoneShutter)}</Text>
+          {/* Com partes da nota esperando, as outras opções saem da tela: o texto não manda procurar por elas. */}
+          <Text variant="body">{scanNeedsCamera(mode, phoneShutter, options.length > 0)}</Text>
           {/* A câmera do celular não precisa da permissão da prévia: a foto da nota, em partes, fica na tela. */}
           {phoneShutter ? shutter() : null}
           {/* O navegador sem câmera também responde "negado": o botão fica, e as outras opções vêm logo abaixo. */}
