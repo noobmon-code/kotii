@@ -98,7 +98,7 @@ import { ListItemEditor, type ItemDetails, type PhotoChange } from '@/features/L
 import { ListMenu, ListMenuButton } from '@/features/ListMenu';
 import { ListShareSheet } from '@/features/ListShareSheet';
 import { FirstListFlow } from '@/features/onboarding/FirstListFlow';
-import { MarketTripAction, MarketTripBanner } from '@/features/MarketTrip';
+import { MarketTripAction, MarketTripBanner, MarketTripConfirm } from '@/features/MarketTrip';
 import { OfflineNotice } from '@/features/OfflineNotice';
 import { PasteListModal } from '@/features/PasteListModal';
 import { PriceCalculator, PriceCalculatorButton } from '@/features/PriceCalculator';
@@ -231,6 +231,8 @@ export default function ShoppingListScreen() {
   // e o que está nelas remonta) não recolher o cartão nem fechar a escolha com a busca digitada.
   const [estimateOpen, setEstimateOpen] = useState(false);
   const [choosingStore, setChoosingStore] = useState(false);
+  // A confirmação de "Estou indo ao mercado" aberta: aqui, e desenhada fora das colunas, pelo mesmo motivo.
+  const [askingTrip, setAskingTrip] = useState(false);
   // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
   const justAdded = useJustListed(items.data);
 
@@ -961,6 +963,8 @@ export default function ShoppingListScreen() {
   // O cartão da conta só nas listas de compra com item (a de "outros" não tem preço). A escolha do lugar sai com ele.
   const estimateShown = list.data.kind !== 'outros' && pending.length + checked.length > 0;
   if (choosingStore && !estimateShown) setChoosingStore(false);
+  // Arquivada (aqui ou em outro aparelho), a ida sai com a confirmação aberta, que não volta aberta ao reabrir.
+  if (askingTrip && archived) setAskingTrip(false);
 
   return (
     <Screen
@@ -1137,7 +1141,7 @@ export default function ShoppingListScreen() {
             ) : null}
 
             {/* Vale com a lista vazia também: é para os outros porem o que falta. Arquivada, não. */}
-            {archived ? null : <MarketTripAction list={list.data} />}
+            {archived ? null : <MarketTripAction list={list.data} onPress={() => setAskingTrip(true)} />}
           </>
         }>
         {desktop ? emptyList : null}
@@ -1206,10 +1210,11 @@ export default function ShoppingListScreen() {
           </Text>
         ) : null}
       </Columns>
-      {/* As janelas que o cartão de pôr item e o da conta abrem ficam fora das colunas: a janela do navegador que cruza
-          a largura do computador remonta o que está nelas (ui/desktop), e o código digitado no leitor, a busca de "Qual
-          produto é este?" e a de "Onde você está comprando?" sumiriam. */}
+      {/* As janelas que o cartão de pôr item, o da conta e a ida abrem ficam fora das colunas: a janela do navegador que
+          cruza a largura do computador remonta o que está nelas (ui/desktop), e o código digitado no leitor, a busca de
+          "Qual produto é este?" e a de "Onde você está comprando?" sumiriam, e a pergunta de avisar a casa fecharia. */}
       {archived ? null : barcode.element}
+      {archived ? null : <MarketTripConfirm list={list.data} visible={askingTrip} onClose={() => setAskingTrip(false)} />}
       {estimateShown ? (
         <StorePicker
           estimate={market.estimate}

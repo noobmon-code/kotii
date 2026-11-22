@@ -19,7 +19,7 @@ import { ADD_FIELD_PLACEHOLDER, BARCODE_BUTTON, LIST_MENU_LABEL } from '@/domain
 import type { MarketTrip } from '@/domain/marketTrips';
 import { CartPantryModal } from '@/features/CartPantryModal';
 import { ListEstimateCard, StorePicker } from '@/features/ListEstimateCard';
-import { MarketTripAction } from '@/features/MarketTrip';
+import { MarketTripAction, MarketTripConfirm } from '@/features/MarketTrip';
 import { forgetAddedItems, rememberAdded } from '@/lib/addedItems';
 import { handConfirmedReceipt, stopWaitingForReceipt } from '@/lib/finishPurchase';
 import { pickReceiptImages } from '@/data/receipts';
@@ -193,7 +193,7 @@ jest.mock('@/features/ProductBarcode', () => ({
   },
 }));
 /** Quantas vezes cada janela foi montada: a que remonta perde o que estava digitado nela. */
-const mockMounts = { barcode: 0, picker: 0 };
+const mockMounts = { barcode: 0, picker: 0, trip: 0 };
 /** No lugar das janelas do código de barras: só conta quando monta. */
 function BarcodeSteps() {
   useEffect(() => {
@@ -246,7 +246,20 @@ jest.mock('@/data/marketTrips', () => ({
   useMarketTrips: () => ({ data: mockTrips.list }),
   useRefreshMarketTrips: () => mockRefreshTrips,
 }));
-jest.mock('@/features/MarketTrip', () => ({ MarketTripAction: () => null, MarketTripBanner: () => null }));
+jest.mock('@/features/MarketTrip', () => {
+  const { useEffect: onMount } = jest.requireActual<typeof import('react')>('react');
+  return {
+    MarketTripAction: () => null,
+    MarketTripBanner: () => null,
+    // A pergunta de avisar a casa: só conta quando monta.
+    MarketTripConfirm: () => {
+      onMount(() => {
+        mockMounts.trip += 1;
+      }, []);
+      return null;
+    },
+  };
+});
 jest.mock('@/features/RecentPurchases', () => ({
   ...jest.requireActual<typeof import('@/features/RecentPurchases')>('@/features/RecentPurchases'),
   RecentPurchases: ({ items, onAdd }: { items: { name: string }[]; onAdd: (item: unknown) => void }) => {
@@ -1757,23 +1770,23 @@ describe('no computador: os itens numa coluna, o cartão de pôr item e a conta 
     mockQueries.prices = loaded([latest('arroz', 25)]);
     mockBarcode.available = true;
     mockBarcode.element = <BarcodeSteps />;
-    mockMounts.barcode = 0;
-    mockMounts.picker = 0;
+    Object.assign(mockMounts, { barcode: 0, picker: 0, trip: 0 });
     await mount();
     await openEstimate();
     const chip = () => renderer!.root.findAllByType(Chip).find((entry) => entry.props.label === 'Onde você está comprando?')!;
     await act(async () => chip().props.onPress());
     expect(storePicker().props.visible).toBe(true);
-    expect(mockMounts).toEqual({ barcode: 1, picker: 1 });
+    expect(mockMounts).toEqual({ barcode: 1, picker: 1, trip: 1 });
     for (const width of [1180, 820, 1440]) {
       await act(async () => Dimensions.set({ window: { ...WINDOW, width } }));
-      expect(mockMounts).toEqual({ barcode: 1, picker: 1 });
+      expect(mockMounts).toEqual({ barcode: 1, picker: 1, trip: 1 });
       expect(storePicker().props.visible).toBe(true);
       expect(estimateMore()!.props.expanded).toBe(true);
     }
     const columns = renderer!.root.findByType(Columns);
     expect(columns.findAllByType(StorePicker)).toHaveLength(0);
     expect(columns.findAllByType(BarcodeSteps)).toHaveLength(0);
+    expect(columns.findAllByType(MarketTripConfirm)).toHaveLength(0);
     await act(async () => storePicker().props.onClose());
     expect(storePicker().props.visible).toBe(false);
     // Aberta, ela sai com o cartão (a lista que ficou sem item), e não volta aberta com ele.
@@ -1784,6 +1797,37 @@ describe('no computador: os itens numa coluna, o cartão de pôr item e a conta 
     mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz')]);
     await act(async () => renderer!.update(<ShoppingListScreen />));
     expect(storePicker().props.visible).toBe(false);
+  });
+
+  it('a pergunta de "Estou indo ao mercado" também fica aberta ao cruzar a largura, e sai com a lista arquivada', async () => {
+    // O botão fica na coluna do lado, que remonta; a pergunta, aberta pelo botão, é da tela e fica fora das colunas.
+    web = jest.replaceProperty(Platform, 'OS', 'web');
+    await act(async () => Dimensions.set({ window: { ...WINDOW, width: 820 } }));
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz')]);
+    Object.assign(mockMounts, { barcode: 0, picker: 0, trip: 0 });
+    await mount();
+    const confirm = () => renderer!.root.findByType(MarketTripConfirm);
+    expect(confirm().props.visible).toBe(false);
+    await act(async () => renderer!.root.findByType(MarketTripAction).props.onPress());
+    expect(confirm().props.visible).toBe(true);
+    for (const width of [1180, 820, 1440]) {
+      await act(async () => Dimensions.set({ window: { ...WINDOW, width } }));
+      expect(confirm().props.visible).toBe(true);
+      expect(mockMounts.trip).toBe(1);
+    }
+    expect(renderer!.root.findByType(Columns).findAllByType(MarketTripConfirm)).toHaveLength(0);
+    expect(renderer!.root.findByType(Columns).findAllByType(MarketTripAction)).toHaveLength(1);
+    await act(async () => confirm().props.onClose());
+    expect(confirm().props.visible).toBe(false);
+    // Aberta, ela sai com a lista arquivada (em outro aparelho), e não volta aberta quando a lista é reaberta.
+    await act(async () => renderer!.root.findByType(MarketTripAction).props.onPress());
+    const open = mockQueries.list;
+    mockQueries.list = loaded({ id: 'l1', name: 'Churrasco', kind: 'mercado', archived_at: '2026-10-20T12:00:00Z', created_at: '2026-10-01T12:00:00Z' });
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(renderer!.root.findAllByType(MarketTripConfirm)).toHaveLength(0);
+    mockQueries.list = open;
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(confirm().props.visible).toBe(false);
   });
 
   it('no celular nada muda: tudo em sequência, na ordem de sempre, sem as caixas das colunas', async () => {
