@@ -1,4 +1,4 @@
-import { router, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
@@ -8,6 +8,7 @@ import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { parseDecimal } from '@/domain/money';
 import { estimateExpiry } from '@/domain/pantry';
 import { guessCategory } from '@/domain/search';
+import { closeWindow } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type PantryItem, type Unit } from '@/lib/types';
 import { notify } from '@/ui/dialogs';
@@ -85,7 +86,7 @@ function PantryForm({ item }: { item?: PantryItem }) {
           expiry_source: !expiresISO ? null : typed ? 'manual' : item ? item.expiry_source : (estimate?.source ?? null),
         },
       },
-      { onSuccess: () => router.back(), onError: (err) => notify('Erro', errorMessage(err)) },
+      { onSuccess: () => closeWindow('despensa/[id]'), onError: (err) => notify('Erro', errorMessage(err)) },
     );
   }
 

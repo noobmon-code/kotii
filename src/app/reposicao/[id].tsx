@@ -1,4 +1,4 @@
-import { router, Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
@@ -20,6 +20,7 @@ import {
   type SupplyStart,
 } from '@/domain/supplies';
 import { SuppliesReminderHint } from '@/features/SuppliesSection';
+import { closeWindow } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import type { Supply } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -97,7 +98,7 @@ function SupplyForm({ supply }: { supply?: Supply }) {
       notify('Confira a data', started.message);
       return;
     }
-    save.mutate({ id: supply?.id, values: checked.value, startedOn: started.value }, { onSuccess: () => router.back(), onError });
+    save.mutate({ id: supply?.id, values: checked.value, startedOn: started.value }, { onSuccess: () => closeWindow('reposicao/[id]'), onError });
   }
 
   return (
@@ -176,7 +177,7 @@ function SupplyForm({ supply }: { supply?: Supply }) {
             icon="trash-can-outline"
             onPress={() =>
               confirmAction('Excluir', `Excluir "${supply.name}"? O histórico de trocas vai junto.`, 'Excluir', () =>
-                remove.mutate(supply.id, { onSuccess: () => router.back(), onError }),
+                remove.mutate(supply.id, { onSuccess: () => closeWindow('reposicao/[id]'), onError }),
               )
             }
           />

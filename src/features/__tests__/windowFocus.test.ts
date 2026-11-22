@@ -1,6 +1,16 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
-import { OTHER_WINDOW, restoreFocus, tabStops, trapWindowFocus, WINDOW_TEST_ID, windowOpener, wrapFocus } from '@/features/desktop/windowFocus';
+import {
+  liveOpener,
+  OTHER_WINDOW,
+  rememberOpener,
+  restoreFocus,
+  tabStops,
+  trapWindowFocus,
+  WINDOW_TEST_ID,
+  windowOpener,
+  wrapFocus,
+} from '@/features/desktop/windowFocus';
 
 // O teclado numa tela em janela do computador (RouteWindow), sobre uma página de mentira: o Esc, a volta do Tab e do
 // Shift+Tab dentro da caixa, o foco que escapa e volta, e o foco de volta para quem abriu. O Jest não tem navegador:
@@ -19,9 +29,17 @@ class FakeElement {
   modal = false;
   constructor(
     readonly name: string,
-    readonly parent: FakeElement | null = null,
+    public parent: FakeElement | null = null,
   ) {
     parent?.children.push(this);
+  }
+  get parentElement() {
+    return this.parent;
+  }
+  /** Sai da página, como a tela que sai da pilha: só a caixa de cima perde o pai; o que está dentro continua nela. */
+  remove() {
+    if (this.parent) this.parent.children = this.parent.children.filter((child) => child !== this);
+    this.parent = null;
   }
   focus() {
     page.focusOn(this);
@@ -252,6 +270,79 @@ describe('ao fechar, o foco volta para quem abriu a janela', () => {
     restoreFocus(doc, null);
     restoreFocus(doc, el(new FakeElement('fora da página')));
     expect(focused()).toBe('Salvar');
+  });
+});
+
+describe('a janela que tomou o lugar de outra tela (router.replace): o foco volta para quem abriu aquela tela', () => {
+  /** Uma tela na pilha, com quem a abriu: a caixa dela (a da janela, ou a sem desenho de uma página) e o que tem dentro. */
+  function screenOf(name: string, opener: FakeElement | null) {
+    const root = new FakeElement(`tela ${name}`, page.body);
+    const layer = new FakeElement(`caixa ${name}`, root);
+    rememberOpener(layer, el(opener ?? page.body));
+    return { root, layer };
+  }
+
+  it('a vacina aberta pela linha, trocada pela vacina nova ("Registrar próxima dose"): ao fechar, a linha da vacina', () => {
+    const row = new FakeElement('Gripe', behind);
+    const first = screenOf('vacina/v1', row);
+    const nextDose = new FakeElement('Registrar próxima dose', first.layer);
+    // A janela nova lê o foco no primeiro desenho dela, com a de antes ainda na página: o botão de dentro da de antes.
+    page.activeElement = nextDose;
+    const opener = windowOpener(doc, null);
+    expect(opener).toBe(nextDose);
+    first.root.remove();
+    const second = screenOf('vacina/nova', nextDose);
+    page.activeElement = second.layer;
+    expect(liveOpener(doc, el(nextDose))).toBe(row);
+    restoreFocus(doc, opener);
+    expect(focused()).toBe('Gripe');
+  });
+
+  it('trocas seguidas (o QR code que vira a nota pendente, aberto pela página do Escanear): quem abriu a primeira tela', () => {
+    const tile = new FakeElement('Escanear', behind);
+    const scan = screenOf('escanear', tile);
+    const read = new FakeElement('Ler o link', scan.layer);
+    scan.root.remove();
+    const qr = screenOf('nota/qrcode', read);
+    const pending = new FakeElement('Enviar os prints', qr.layer);
+    qr.root.remove();
+    screenOf('nota/pendente', pending);
+    page.activeElement = save;
+    restoreFocus(doc, el(pending));
+    expect(focused()).toBe('Escanear');
+  });
+
+  it('quem abriu continua na página: ele mesmo (a janela aberta por cima, e não no lugar, da outra)', () => {
+    const first = screenOf('tarefa', behind);
+    const inside = new FakeElement('Abrir o Nuke', first.layer);
+    screenOf('nuke', inside);
+    expect(liveOpener(doc, el(inside))).toBe(inside);
+  });
+
+  it('sem a quem: fora de qualquer tela, a tela de antes aberta direto na janela (o corpo da página), ou quem a abriu também saiu', () => {
+    page.activeElement = save;
+    expect(liveOpener(doc, el(new FakeElement('fora da página')))).toBeNull();
+    const direct = screenOf('vacina/v1', null);
+    const inside = new FakeElement('Registrar próxima dose', direct.layer);
+    direct.root.remove();
+    expect(liveOpener(doc, el(inside))).toBe(page.body);
+    restoreFocus(doc, el(inside));
+    const gone = new FakeElement('linha que saiu');
+    const lost = screenOf('consulta', gone);
+    const button = new FakeElement('Salvar', lost.layer);
+    lost.root.remove();
+    expect(liveOpener(doc, el(button))).toBeNull();
+    restoreFocus(doc, el(button));
+    expect(focused()).toBe('Salvar');
+  });
+
+  it('só a primeira vez conta: a caixa é a mesma enquanto a tela está montada', () => {
+    const row = new FakeElement('Gripe', behind);
+    const first = screenOf('vacina/v1', row);
+    rememberOpener(first.layer, el(sidebar));
+    const inside = new FakeElement('Registrar próxima dose', first.layer);
+    first.root.remove();
+    expect(liveOpener(doc, el(inside))).toBe(row);
   });
 });
 

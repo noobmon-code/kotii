@@ -30,6 +30,9 @@ import { space } from '@/ui/theme';
 
 type Params = { aba?: string; dia?: string; financas?: string };
 
+/** O que as Tarefas mostram, além delas: as ordens do rodízio e as fichas (os nomes de quem tem a vez). */
+const CHORES_QUERY_KEYS = ['chores', 'choreRotations', 'people'];
+
 /**
  * Casa: o que mantém a casa funcionando. O Dia a dia (as Tarefas, com os pontos das crianças, que é a parte que
  * abre, e a Agenda, com os compromissos e o que vence em cada dia, num seletor próprio), Finanças (o Resumo e as
@@ -68,8 +71,10 @@ function HouseTabs({ aba, dia, financas }: Params) {
   const setTab = (value: CasaTab) => router.setParams({ aba: value });
   const setDay = (value: DiaADia) => router.setParams({ aba: 'dia', dia: value });
   const setMoney = (value: Financas) => router.setParams({ aba: 'financas', financas: value });
-  const showsChores = tab === 'dia' && day === 'tarefas';
-  const showsAgenda = tab === 'dia' && day === 'agenda';
+  // No computador o Dia a dia mostra as tarefas e a agenda lado a lado (o ?dia= não decide nada); no celular, a que o
+  // seletor abriu.
+  const showsChores = tab === 'dia' && (desktop || day === 'tarefas');
+  const showsAgenda = tab === 'dia' && (desktop || day === 'agenda');
 
   const chores = useChores();
   const equipment = useEquipmentList();
@@ -88,24 +93,27 @@ function HouseTabs({ aba, dia, financas }: Params) {
   // prestadores, que volta quando o banco ganha as tabelas. Na Agenda, tudo o que ela junta; em Finanças, o que o
   // Resumo ou as Contas mostram; nos Documentos, eles e as fichas (os donos). Só as que a parte está mostrando (type
   // 'active': as outras partes nem as buscam), e dos serviços só a lista da casa toda (a de um prestador ou de um
-  // aparelho é de outra tela).
+  // aparelho é de outra tela). No computador, o que as duas metades lado a lado mostram: no Dia a dia, as tarefas com
+  // as ordens e as fichas e tudo o que a agenda junta, numa leva só (a agenda também lê as tarefas e as fichas); em
+  // Finanças, o Resumo e as Contas (financeQueryKeys). O "girando" acompanha a leva inteira.
   const refresh = () => {
-    if (showsChores) {
+    if (showsChores && showsAgenda) refetchAll([...new Set([...CHORES_QUERY_KEYS, ...agendaQueryKeys(finance)])]);
+    else if (showsChores) {
       chores.refetch();
       queryClient.refetchQueries({ queryKey: ['choreRotations'], type: 'active' });
       queryClient.refetchQueries({ queryKey: ['people'], type: 'active' });
-    }
+    } else if (showsAgenda) refetchAll(agendaQueryKeys(finance));
     if (tab === 'aparelhos') {
       equipment.refetch();
       chores.refetch();
       queryClient.refetchQueries({ queryKey: [JOBS_KEY], exact: true, type: 'active' });
       queryClient.refetchQueries({ queryKey: [PROVIDERS_KEY], exact: true, type: 'active' });
     }
-    if (showsAgenda) refetchAll(agendaQueryKeys(finance));
-    if (tab === 'financas') refetchAll(financeQueryKeys(money));
+    if (tab === 'financas') refetchAll(financeQueryKeys(money, desktop));
     if (tab === 'documentos') refetchAll(['documents', 'people']);
   };
-  const refreshing = showsChores ? chores.isRefetching : tab === 'aparelhos' ? equipment.isRefetching : refreshingMany;
+  const refreshing =
+    showsChores && !showsAgenda ? chores.isRefetching : tab === 'aparelhos' ? equipment.isRefetching : refreshingMany;
 
   return (
     <Screen fab wide heading="Casa" refreshing={refreshing} onRefresh={refresh}>

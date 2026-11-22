@@ -1,4 +1,4 @@
-import { router, Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
@@ -10,6 +10,7 @@ import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { FINANCE_CATEGORIES, type FinanceCategory } from '@/domain/finance';
 import { formatTaxDoc, parseTaxDoc } from '@/domain/incomeTax';
 import { parseMoney } from '@/domain/money';
+import { closeWindow } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import type { Expense } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -75,7 +76,7 @@ function ExpenseForm({ expense }: { expense?: Expense }) {
           ...(paidBy ? { paid_by: paidBy } : {}),
         },
       },
-      { onSuccess: () => router.back(), onError },
+      { onSuccess: () => closeWindow('gasto/[id]'), onError },
     );
   }
 
@@ -144,7 +145,7 @@ function ExpenseForm({ expense }: { expense?: Expense }) {
           icon="trash-can-outline"
           onPress={() =>
             confirmAction('Excluir gasto', `Excluir "${expense.description}"?`, 'Excluir', () =>
-              remove.mutate(expense.id, { onSuccess: () => router.back(), onError }),
+              remove.mutate(expense.id, { onSuccess: () => closeWindow('gasto/[id]'), onError }),
             )
           }
         />

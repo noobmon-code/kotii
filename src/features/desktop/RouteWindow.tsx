@@ -26,7 +26,7 @@ import { menuOpener } from '@/ui/focus';
 import { IconButton, Row, Text } from '@/ui/primitives';
 import { radius, shadows, space, useColors } from '@/ui/theme';
 
-import { restoreFocus, trapWindowFocus, WINDOW_TEST_ID, windowOpener } from './windowFocus';
+import { rememberOpener, restoreFocus, trapWindowFocus, WINDOW_TEST_ID, windowOpener } from './windowFocus';
 
 /** O que a tela diz de si no Stack (as opções dela) e que a caixa usa. */
 interface WindowScreenOptions {
@@ -114,13 +114,29 @@ function useCovered(): boolean {
 const inert = (covered: boolean) => ({ inert: covered }) as object;
 
 /**
+ * Quem tinha o foco quando a tela abriu (lido no primeiro desenho dela, antes de um campo com foco automático tomá-lo;
+ * aberta pela opção de um menu de ações, quem abriu o menu: windowFocus), guardado com a caixa dela (`layer`): é para
+ * lá que o foco volta quando uma janela que tomou o lugar desta tela fecha (windowFocus: liveOpener).
+ */
+function useOpener(layer: { current: unknown }): Element | null {
+  const [opener] = useState(() => (typeof document === 'undefined' ? null : windowOpener(document, menuOpener())));
+  useEffect(() => {
+    rememberOpener(layer.current as object | null, opener);
+  }, [layer, opener]);
+  return opener;
+}
+
+/**
  * Uma tela que não é janela, no navegador: uma caixa que não desenha nada (`display: contents`, a tela fica com os
- * mesmos pixels) e que a deixa `inert` enquanto está coberta (useCovered).
+ * mesmos pixels) e que a deixa `inert` enquanto está coberta (useCovered). Ela guarda quem abriu a tela (useOpener),
+ * para a janela que tomar o lugar dela (a do QR code, aberta pelo Escanear) devolver o foco para lá ao fechar.
  */
 function ScreenLayer({ children }: { children: ReactNode }) {
   const covered = useCovered();
+  const layer = useRef<View>(null);
+  useOpener(layer);
   return (
-    <View style={loose} {...inert(covered)}>
+    <View ref={layer} style={loose} {...inert(covered)}>
       {children}
     </View>
   );
@@ -140,7 +156,8 @@ export function routeWindowLayout({ route, navigation, options, children }: Wind
       titleBar={options.headerShown !== false}
       onClose={() => {
         // Sem tela para onde voltar (a página aberta direto pelo endereço, ou recarregada), a parte da aba onde fica o
-        // que a tela mostra: o mesmo lugar para onde as telas que têm o próprio "Voltar" vão (windowFallback).
+        // que a tela mostra (windowFallback): o mesmo lugar para onde vai o que a própria tela desenha para fechar (o
+        // "Fechar" do Nuke, o salvar, o excluir: lib/navigation, closeWindow).
         if (navigation.canGoBack()) navigation.goBack();
         else router.replace(windowFallback(route.name, route.params as Record<string, unknown> | undefined) as Href);
       }}>
@@ -180,9 +197,9 @@ export function RouteWindow({
     close.current = onClose;
   });
 
-  // Quem tinha o foco quando a janela abriu (lido no primeiro desenho, antes de um campo com foco automático tomá-lo):
-  // ao fechar, ele volta para lá. Aberta pela opção de um menu de ações, é quem abriu o menu (windowFocus).
-  const [opener] = useState(() => (typeof document === 'undefined' ? null : windowOpener(document, menuOpener())));
+  // Quem tinha o foco quando a janela abriu (useOpener): ao fechar, ele volta para lá. Se ele saiu da página com a
+  // tela que esta janela trocou (router.replace), quem abriu aquela tela (windowFocus: liveOpener).
+  const opener = useOpener(box);
   const live = useRef({ desktop });
   useEffect(() => {
     live.current.desktop = desktop;

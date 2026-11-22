@@ -1,5 +1,5 @@
 import * as Clipboard from 'expo-clipboard';
-import { router, Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
@@ -23,6 +23,7 @@ import { billSubtitle } from '@/features/finance/BillsPanel';
 import { BoletoScanner } from '@/features/finance/BoletoScanner';
 import { PayBillModal } from '@/features/finance/PayBillModal';
 import { useHousehold } from '@/lib/auth';
+import { closeWindow } from '@/lib/navigation';
 import { settledData } from '@/lib/settledData';
 import { errorMessage } from '@/lib/supabase';
 import type { Bill } from '@/lib/types';
@@ -165,7 +166,7 @@ function BillForm({ bill }: { bill?: Bill }) {
         // Boleto e data são da parcela que a tela mostra: só gravam se ela ainda for a atual.
         expectDueOn: bill && (boletoChanged || dueChanged) ? bill.next_due_on : undefined,
       },
-      { onSuccess: () => router.back(), onError },
+      { onSuccess: () => closeWindow('conta/[id]'), onError },
     );
   }
 
@@ -305,7 +306,7 @@ function BillForm({ bill }: { bill?: Bill }) {
               icon="archive-outline"
               onPress={() =>
                 confirmAction('Encerrar conta', `${bill.name} para de aparecer nos vencimentos. Os pagamentos continuam no resumo.`, 'Encerrar', () =>
-                  save.mutate({ id: bill.id, values: { active: false } }, { onSuccess: () => router.back(), onError }),
+                  save.mutate({ id: bill.id, values: { active: false } }, { onSuccess: () => closeWindow('conta/[id]'), onError }),
                 )
               }
             />
@@ -327,7 +328,7 @@ function BillForm({ bill }: { bill?: Bill }) {
                 'Excluir conta',
                 `Excluir ${bill.name} e todos os pagamentos? Eles saem do resumo de gastos. Para só parar de acompanhar, encerre a conta.`,
                 'Excluir',
-                () => remove.mutate(bill.id, { onSuccess: () => router.back(), onError }),
+                () => remove.mutate(bill.id, { onSuccess: () => closeWindow('conta/[id]'), onError }),
               )
             }
           />

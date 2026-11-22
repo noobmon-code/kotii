@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { Text as RNText } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+import { router } from 'expo-router';
 
 import NukeScreen from '@/app/nuke';
 import type { NukeAction, NukeMessage } from '@/domain/nuke';
@@ -39,7 +40,7 @@ jest.mock('@/lib/auth', () => ({
 }));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: unknown) => String(error) }));
 jest.mock('@/ui/dialogs', () => ({ confirmAction: jest.fn(), notify: jest.fn() }));
-jest.mock('expo-router', () => ({ router: { back: jest.fn(), navigate: jest.fn() } }));
+jest.mock('expo-router', () => ({ router: { back: jest.fn(), navigate: jest.fn(), canGoBack: jest.fn(() => true), replace: jest.fn() } }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/NukeLive', () => ({ NukeLive: () => null }));
 jest.mock('@/ui/NukeArt', () => ({ NukeAvatar: () => null }));
@@ -111,5 +112,30 @@ describe('as ações guardadas na conversa e a chave de Finanças (lib/features)
     await mount();
     expect(page()).toEqual(expect.arrayContaining(['Registrar o gasto da feira', 'Ver as contas', 'Ver Finanças', 'Criar a tarefa', 'Ver a despensa']));
     expect(buttons().map((button) => button.props.title)).toEqual(['Fazer', 'Abrir', 'Abrir', 'Fazer', 'Abrir']);
+  });
+});
+
+describe('o "Fechar" do Nuke', () => {
+  const close = () => renderer!.root.findAll((node) => node.props.label === 'Fechar' && typeof node.props.onPress === 'function')[0];
+  beforeEach(() => {
+    jest.mocked(router.back).mockClear();
+    jest.mocked(router.replace).mockClear();
+  });
+
+  it('volta para a tela de antes', async () => {
+    jest.mocked(router.canGoBack).mockReturnValue(true);
+    await mount();
+    await act(async () => close().props.onPress());
+    expect(router.back).toHaveBeenCalledTimes(1);
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  it('aberto direto pelo endereço (nada para onde voltar): leva à Hoje, em vez de não fazer nada', async () => {
+    // No computador o Nuke é uma caixa sem a barra do título: este é o único "Fechar" dela.
+    jest.mocked(router.canGoBack).mockReturnValue(false);
+    await mount();
+    await act(async () => close().props.onPress());
+    expect(router.back).not.toHaveBeenCalled();
+    expect(router.replace).toHaveBeenCalledWith({ pathname: '/' });
   });
 });

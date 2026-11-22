@@ -5,6 +5,7 @@ import { StyleSheet, View } from 'react-native';
 import { useDeleteVaccine, usePeople, useSaveVaccine, useVaccines } from '@/data/health';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { openNewPerson, PersonChips } from '@/features/health/PersonChips';
+import { closeWindow } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import type { Person, Vaccine } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -90,7 +91,7 @@ function VaccineForm({
           notes: notes.trim() || null,
         },
       },
-      { onSuccess: () => router.back(), onError },
+      { onSuccess: () => closeWindow('vacina/[id]'), onError },
     );
   }
 
@@ -145,7 +146,7 @@ function VaccineForm({
           icon="trash-can-outline"
           onPress={() =>
             confirmAction('Apagar registro', `Apagar ${vaccine.name}?`, 'Apagar', () =>
-              remove.mutate(vaccine.id, { onSuccess: () => router.back(), onError }),
+              remove.mutate(vaccine.id, { onSuccess: () => closeWindow('vacina/[id]'), onError }),
             )
           }
         />

@@ -1,10 +1,11 @@
-import { router, Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { useDeletePerson, usePeople, useSavePerson } from '@/data/health';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { BLOOD_TYPES } from '@/domain/health';
+import { closeWindow } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import type { Person } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -75,7 +76,7 @@ function PersonForm({ person, initialKind }: { person?: Person; initialKind: Per
         },
       },
       {
-        onSuccess: () => router.back(),
+        onSuccess: () => closeWindow('pessoa/[id]'),
         onError: (err) =>
           notify('Erro', /duplicate|unique/i.test(errorMessage(err)) ? 'Já existe alguém com esse nome na casa.' : errorMessage(err)),
       },
@@ -158,7 +159,7 @@ function PersonForm({ person, initialKind }: { person?: Person; initialKind: Per
               'Remover',
               () =>
                 remove.mutate(person.id, {
-                  onSuccess: () => router.back(),
+                  onSuccess: () => closeWindow('pessoa/[id]'),
                   onError: (err) => notify('Erro', errorMessage(err)),
                 }),
             )

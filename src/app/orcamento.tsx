@@ -1,4 +1,3 @@
-import { router } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
@@ -6,6 +5,7 @@ import { useBudgets, useSaveBudgets, useSpending } from '@/data/finance';
 import { todayISO } from '@/domain/dates';
 import { FINANCE_CATEGORIES, monthRange, shiftMonth, summarize } from '@/domain/finance';
 import { formatBRL, parseMoney } from '@/domain/money';
+import { closeWindow } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { Button, Card, ErrorNotice, Icon, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
@@ -44,11 +44,11 @@ export default function BudgetScreen() {
       limits[key] = Math.round(value * 100) / 100;
     }
     if (!Object.keys(limits).length) {
-      router.back();
+      closeWindow('orcamento');
       return;
     }
     save.mutate(limits, {
-      onSuccess: () => router.back(),
+      onSuccess: () => closeWindow('orcamento'),
       onError: (err) => notify('Não deu para salvar', errorMessage(err)),
     });
   }

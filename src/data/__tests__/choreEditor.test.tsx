@@ -85,7 +85,8 @@ const mockConfirm = jest.fn();
 const mockRefetchHousehold = jest.fn();
 
 jest.mock('expo-router', () => ({
-  router: { back: () => mockBack(), push: jest.fn() },
+  // A tarefa foi aberta de outra tela: fechar volta para ela (lib/navigation: closeWindow).
+  router: { back: () => mockBack(), canGoBack: () => true, replace: jest.fn(), push: jest.fn() },
   Stack: { Screen: () => null },
   useLocalSearchParams: () => ({ id: mockDevice.id }),
 }));

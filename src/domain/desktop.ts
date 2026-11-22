@@ -90,9 +90,10 @@ export interface AppAddress {
 
 /**
  * Para onde vai cada tela em janela quando é fechada sem ter para onde voltar (a página aberta direto pelo endereço,
- * ou recarregada): a parte da aba onde fica o que ela mostra, e não só a aba (que abriria na primeira parte). As duas
- * da nota fecham assim também pelo próprio "Voltar" (nota/qrcode, nota/pendente: as notas pendentes ficam em Compras →
- * Notas). Uma tela que não está aqui vai para a aba da área dela (SCREEN_AREAS).
+ * ou recarregada): a parte da aba onde fica o que ela mostra, e não só a aba (que abriria na primeira parte). As
+ * telas fecham assim também pelo que elas mesmas desenham (o "Voltar" da nota, o "Fechar" do Nuke, o salvar e o
+ * excluir: lib/navigation, closeWindow), menos o serviço, que depois de salvar ou excluir vai para o prestador dele.
+ * Uma tela que não está aqui vai para a aba da área dela (SCREEN_AREAS).
  */
 const WINDOW_FALLBACKS: Record<string, AppAddress> = {
   'nota/qrcode': { pathname: '/compras', params: { aba: 'notas' } },

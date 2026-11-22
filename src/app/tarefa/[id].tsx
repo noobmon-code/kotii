@@ -1,4 +1,4 @@
-import { router, Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
@@ -50,6 +50,7 @@ import { CHORE_GONE, isChoreGone, isChoreGoneOnSave, RECURRENCE_OPTIONS, type Re
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { kidsOf } from '@/domain/points';
 import { useHousehold } from '@/lib/auth';
+import { closeWindow } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import type { Chore } from '@/lib/types';
 import { confirmAction, notify, notifyAfterPaint } from '@/ui/dialogs';
@@ -339,7 +340,7 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
         onSuccess: (result) => {
           // Banco que ainda não tem o rodízio: a tarefa ficou salva, e a ordem pedida, de fora.
           if (result.rotationUnavailable) notify('A tarefa foi salva, sem o rodízio', ROTATION_UNAVAILABLE);
-          router.back();
+          closeWindow('tarefa/[id]');
         },
         onError: (err) => {
           // O banco recusou: a tarefa ganhou um rodízio depois da conferência acima. Nada deste formulário foi salvo,
@@ -490,7 +491,7 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
           icon="trash-can-outline"
           onPress={() =>
             confirmAction('Excluir tarefa', `Excluir "${chore.title}" e seu histórico?`, 'Excluir', () =>
-              remove.mutate(chore.id, { onSuccess: () => router.back(), onError }),
+              remove.mutate(chore.id, { onSuccess: () => closeWindow('tarefa/[id]'), onError }),
             )
           }
         />
