@@ -18,6 +18,10 @@
 //   lactose)", decidesPurchase) fica no nome digitado, e a colagem a tira, como
 //   toda observação, porque é ali que o texto do app escreve a descrição do item
 //   ("Leite (sem lactose)" digitado é esse item; colado, "Leite").
+// Fora essas três, os dois caminhos dão o mesmo item, também com marcadores e
+// emojis no começo: a caixinha sai inteira mesmo depois de um emoji ou de outro
+// marcador ("✅ [x] 2 kg arroz" é 2 kg de "Arroz" digitado ou colado;
+// stripLeading), e listPaste.test.ts varre linhas ao acaso para conferir.
 // Por isso readListLine e parsePastedList não são trocáveis: "Pão, de
 // preferência integral" digitado é um item; colado, seriam dois, "Pão" e "De
 // preferência integral".
@@ -131,17 +135,26 @@ function leadingFraction(s: string): { text: string } | { keep: true } | null {
 /** Letra ou número: o que começa e termina um nome. Emoji, marcador e pontuação não. */
 const isWordChar = (char: string) => /[\p{L}\p{N}]/u.test(char);
 
-/** Tira do começo os marcadores ("-", "•", "*", "[ ]", "✅", "1.", o número em emoji), emojis e espaços. */
+/** A caixinha de marcar no começo ("[ ]", "[x]", "[✓]"), com o espaço depois. */
+const CHECKBOX = /^\[[\sxX✓✔]?\]\s*/;
+
+/**
+ * Tira do começo os marcadores ("-", "•", "*", "[ ]", "✅", "1.", o número em emoji), emojis e espaços. A caixinha sai
+ * inteira também depois de outro marcador ou de um emoji ("- [x] arroz", "✅ [x] 2 kg arroz"): tirando um caractere
+ * de cada vez, o "[" sairia sozinho e o "x] " ficaria no nome. É o que faz a linha digitada (readListLine, que não
+ * passa pela limpeza dos emojis que a colagem faz antes do título) e a colada darem o mesmo item aqui.
+ */
 function stripLeading(text: string): string {
   let s = text;
   for (;;) {
     const before = s;
-    s = s.replace(/^\[[\sxX✓✔]?\]\s*/, '');
+    s = s.replace(CHECKBOX, '');
     // Numeração ("1.", "2)"), com espaço depois ou colada no nome ("1.Arroz"): "1.5 kg" é quantidade.
     s = s.replace(/^\d{1,3}[.)](?:\s+(?=\S)|(?=\p{L}))/u, '');
     // Número em emoji (o 1 a 9 dos emojis, e o 10): sempre numeração.
     s = s.replace(/^(?:\d{1,2}\u{FE0F}?\u{20E3}|\u{1F51F})\s*/u, '');
-    while (s && !isWordChar(s[0]) && s[0] !== '(') s = s.slice(1);
+    // Para na caixinha, que a volta seguinte tira inteira.
+    while (s && !isWordChar(s[0]) && s[0] !== '(' && !CHECKBOX.test(s)) s = s.slice(1);
     if (s === before) return s;
   }
 }
@@ -300,7 +313,8 @@ const cleanText = (text: string) => text.normalize('NFC').replace(/[\u200B-\u200
  * colagem, com três diferenças (o cabeçalho do arquivo as conta): a linha toda é um item só, e a vírgula, que na
  * colagem separa itens, fica no nome ("arroz, feijão" é o item "Arroz, feijão"); nada nela é título ("*Arroz*" é
  * "Arroz"; colado sozinho, é o título e não dá item); e a observação que diz o que se pode comprar fica no nome
- * ("Leite (sem lactose)"; colado, "Leite").
+ * ("Leite (sem lactose)"; colado, "Leite"). Fora essas três, dá o mesmo item que a linha colada, também com
+ * marcadores e emojis no começo ("✅ [x] 2 kg arroz" é 2 kg de "Arroz" nos dois).
  */
 export interface TypedLine extends PastedItem {
   /** A linha disse a quantidade ("2 kg arroz", "leite x2", "1 dz ovos"); sem ela, 1 un, a de sempre. */

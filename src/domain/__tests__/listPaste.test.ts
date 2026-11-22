@@ -114,6 +114,48 @@ describe('readListLine: a linha digitada no campo de pôr item', () => {
     expect(read('Leite (sem lactose)')).toEqual([['Leite', 1, 'un']]);
   });
 
+  it('a caixinha sai inteira depois de um emoji ou de outro marcador, digitada e colada', () => {
+    // Antes, digitada, o "[" saía sozinho com o emoji e o "x] " ficava no nome: "X] 2 kg arroz" a 1 un.
+    expect(typed('✅ [x] 2 kg arroz')).toEqual(['Arroz', 2, 'kg', true]);
+    expect(read('✅ [x] 2 kg arroz')).toEqual([['Arroz', 2, 'kg']]);
+    expect(typed('✅ [x] Arroz')).toEqual(['Arroz', 1, 'un', false]);
+    expect(typed('☑ [x] leite')).toEqual(['Leite', 1, 'un', false]);
+    expect(typed('🛒 [X] pão')).toEqual(['Pão', 1, 'un', false]);
+    // A lista de tarefas do Markdown ("- [x] arroz") e a numerada também: antes, nos dois caminhos, "X] arroz".
+    for (const text of ['- [x] arroz', '* [x] arroz', '1. [x] arroz', '- ✅ [x] arroz', '✅ - [x] arroz', '• [✓] arroz']) {
+      expect(typed(text)).toEqual(['Arroz', 1, 'un', false]);
+      expect(read(text)).toEqual([['Arroz', 1, 'un']]);
+    }
+  });
+
+  it('fora as três diferenças, as duas leituras dão o mesmo item: linhas ao acaso com marcadores, emojis e quantidades', () => {
+    const tokens = ['✅', '☑', '🛒', '🍌', '1️⃣', '🔟', '©', '-', '•', '*', '_', '>', '—', '[x]', '[X]', '[ ]', '[✓]', '[', ']',
+      'x', '×', '2', '1.', '2)', '1,5', '½', 'kg', 'g', 'un', 'dz', 'pacotes', 'de', 'em', 'arroz', 'leite', 'pão', 'Ovos',
+      '(2)', '(2 kg)', '(marca X)', '(', ')', 'x2', '2x', '·', 'urgente', ':', '!', '#', '*Arroz*', '_Feira_'];
+    // Sorteio com semente (mulberry32): as mesmas linhas a cada rodada.
+    let state = 20261122;
+    const next = () => {
+      state = (state + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(state ^ (state >>> 15), state | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const differ: string[] = [];
+    for (let n = 0; n < 20000; n++) {
+      const parts = Array.from({ length: 1 + Math.floor(next() * 6) }, () => tokens[Math.floor(next() * tokens.length)]);
+      const text = parts.join(next() < 0.7 ? ' ' : '');
+      // A primeira diferença (a vírgula, o ponto e vírgula) não entra: nenhum token os tem.
+      // A segunda: o título, como a colagem o vê numa linha só (a primeira), depois dos emojis do começo.
+      const shown = text.replace(/^[\s\p{Extended_Pictographic}\uFE0F\u20E3]+/u, '').trim();
+      if (/^\*[^*]+\*\s*·.*$/.test(shown) || /^\*[^*]+\*$/.test(shown) || /^_[^_]+_$/.test(shown)) continue;
+      // A terceira (a observação que decide a compra) não entra: nenhum token a tem.
+      const line = readListLine(text);
+      const one = line ? [{ name: line.name, quantity: line.quantity, unit: line.unit, category: line.category }] : [];
+      if (JSON.stringify(one) !== JSON.stringify(parsePastedList(text).items)) differ.push(text);
+    }
+    expect(differ).toEqual([]);
+  });
+
   it('o cabeçalho de listPaste.ts e o TypedLine contam as três diferenças, e não uma só', () => {
     const source = readFileSync(join(__dirname, '..', 'listPaste.ts'), 'utf8');
     const header = source.slice(0, source.indexOf('\nimport ')).toLowerCase();
