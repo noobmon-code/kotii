@@ -222,19 +222,38 @@ export const NFCE_SEFAZ_DOWN = 'sefaz_down';
 export const NFCE_NO_ITEMS = 'no_items';
 
 /**
+ * Código (só do app, nunca da função) do limite do mês das notas pelo QR code: a função `nfce` responde 429 sem
+ * código (takeAiQuota com o tipo `nfce`, o único 429 dela), e a frase dela já diz "até lá, dá para tirar foto da nota".
+ * A foto tem o limite dela (o tipo `photo`, separado do `nfce`), então ela vai.
+ */
+export const NFCE_QUOTA = 'nfce_quota';
+
+/** O código de uma falha da função `nfce`: o que ela respondeu ou, no 429 sem código, o limite do mês (NFCE_QUOTA). */
+export function nfceFailureCode(code: string | null, status: number | null): string | null {
+  return code ?? (status === 429 ? NFCE_QUOTA : null);
+}
+
+/**
  * Depois de uma busca que fica na tela do QR (nfceFailureRoute 'stay'): a Sefaz não trouxe a nota (fora do ar, ou a
- * página sem os itens), e a resposta dela já diz para tirar foto da nota. A leitura pela foto, com a chave do QR, toma
- * então o lugar da câmera daqui, que leria o mesmo QR e iria de novo à mesma Sefaz: quem chegou pela câmera do
- * "Escanear" (que deu lugar a esta tela) não tem uma câmera para onde voltar e fotografar. Os outros erros (sem
- * internet, o limite do mês) ficam só no aviso de sempre: a foto também não iria.
+ * página sem os itens), ou as leituras pelo QR do mês acabaram, e a resposta já diz para tirar foto da nota. A leitura
+ * pela foto, com a chave do QR, toma então o lugar da câmera daqui, que leria o mesmo QR e iria de novo à mesma Sefaz
+ * (ou ao mesmo limite), com um aviso a cada leitura: quem chegou pela câmera do "Escanear" (que deu lugar a esta
+ * tela) não tem uma câmera para onde voltar e fotografar. O limite do mês é só o das notas pelo QR: a foto conta no
+ * limite dela, separado. Os outros erros (sem internet, a função que não conferiu o limite) ficam só no aviso de
+ * sempre: a pessoa tenta de novo.
  */
 export function photoAfterSefazFailure(code: string | null): boolean {
-  return code === NFCE_SEFAZ_DOWN || code === NFCE_NO_ITEMS;
+  return code === NFCE_SEFAZ_DOWN || code === NFCE_NO_ITEMS || code === NFCE_QUOTA;
 }
 
 export const SEFAZ_PHOTO_TITLE = 'Leia esta nota pela foto';
 export const SEFAZ_PHOTO_MESSAGE =
   'A Sefaz não trouxe esta nota agora. Pela foto, a IA lê a nota, e você revisa antes de salvar. Se a nota for comprida, vai em partes.';
+const SEFAZ_PHOTO_QUOTA_MESSAGE =
+  'As leituras de nota pelo QR code deste mês acabaram, mas a foto tem um limite à parte. Pela foto, a IA lê a nota, e você revisa antes de salvar. Se a nota for comprida, vai em partes.';
+
+/** A frase do cartão da foto, pelo que aconteceu: a Sefaz que não trouxe a nota, ou o limite do mês do QR. */
+export const sefazPhotoMessage = (code: string | null) => (code === NFCE_QUOTA ? SEFAZ_PHOTO_QUOTA_MESSAGE : SEFAZ_PHOTO_MESSAGE);
 export const SEFAZ_PHOTO_CAMERA = 'Tirar foto da nota';
 export const sefazPhotoLibrary = (limit: number) => `Escolher da galeria (até ${limit} fotos)`;
 export const SEFAZ_PHOTO_AGAIN = 'Ler o QR code de novo';

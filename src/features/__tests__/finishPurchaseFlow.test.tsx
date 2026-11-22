@@ -82,7 +82,11 @@ jest.mock('expo-camera', () => {
       return null;
     }
   }
-  return { CameraView: MockCameraView, useCameraPermissions: () => [{ granted: true }, jest.fn()], scanFromURLAsync: async () => mockPhotoCodes };
+  // A permissão, o pedido e a leitura dela (a câmera da nota a lê ela mesma, para pegar a falha): os mesmos a cada desenho.
+  const permission = { granted: true };
+  const request = jest.fn(async () => permission);
+  const read = async () => permission;
+  return { CameraView: MockCameraView, useCameraPermissions: () => [permission, request, read], scanFromURLAsync: async () => mockPhotoCodes };
 });
 jest.mock('@/lib/barcodeReader', () => ({ prepareBarcodeReader: async () => undefined }));
 // O código de barras de produto, que o modo da nota nem procura: tem os testes dele (productBarcodeFlow.test).

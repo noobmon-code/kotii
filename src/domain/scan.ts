@@ -56,12 +56,13 @@ export const warnsUnusedCode = (state: ScanState) => state.mode === 'nota';
  * Se "Tirar foto" abre a câmera do próprio celular em vez de tirar a foto da prévia da tela. No navegador, a foto da
  * prévia é um quadro do vídeo (o expo-camera não pede um tamanho ao navegador, que costuma dar 640 × 480): pouco para
  * a letra miúda de uma nota comprida. A câmera do celular (o campo de arquivo com `capture`, como era o "Tirar foto da
- * nota" de Compras → Notas) tira a foto inteira, que a leitura reduz como sempre. Só no modo da nota: nos outros a
- * foto é também a de um produto, e a câmera da tela Hoje segue como era. No aparelho, a foto da câmera da tela já é a
- * foto inteira.
+ * nota" de Compras → Notas) tira a foto inteira, que a leitura reduz como sempre. Só no navegador de toque (`touch`: o
+ * dedo é o ponteiro principal, o do celular e o do tablet): o do computador ignora o `capture` e abriria a escolha de
+ * um arquivo embaixo da prévia da webcam, que é então a foto. Só no modo da nota: nos outros a foto é também a de um
+ * produto, e a câmera da tela Hoje segue como era. No aparelho, a foto da câmera da tela já é a foto inteira.
  */
-export function shutterUsesPhoneCamera(mode: ScanMode, os: string): boolean {
-  return os === 'web' && mode === 'nota';
+export function shutterUsesPhoneCamera(mode: ScanMode, os: string, touch: boolean): boolean {
+  return os === 'web' && touch && mode === 'nota';
 }
 
 /** Um código lido que serve para alguma coisa. */
@@ -318,9 +319,17 @@ export const SCAN_ALLOW_CAMERA = 'Permitir a câmera';
 export const SCAN_NEEDS_CAMERA = 'Para ler códigos e tirar fotos, o Kotii precisa usar a câmera. Sem ela, dá para usar as opções abaixo.';
 const SCAN_NEEDS_CAMERA_RECEIPT =
   'Para ler o QR code e fotografar a nota, o Kotii precisa usar a câmera. Sem ela, dá para usar as opções abaixo.';
+const SCAN_NEEDS_CAMERA_QR =
+  'Para ler o QR code aqui, o Kotii precisa usar a câmera. Sem ela, dá para tirar a foto da nota, com a câmera do celular, ou usar as opções abaixo.';
 
-/** O pedido da câmera, pelo modo. */
-export const scanNeedsCamera = (mode: ScanMode) => (mode === 'nota' ? SCAN_NEEDS_CAMERA_RECEIPT : SCAN_NEEDS_CAMERA);
+/**
+ * O pedido da câmera, pelo modo. `phoneShutter`: a foto vai pela câmera do celular (shutterUsesPhoneCamera), que não
+ * precisa da permissão da prévia; sem ela, falta só o QR ao vivo, e "Tirar foto" fica na tela.
+ */
+export function scanNeedsCamera(mode: ScanMode, phoneShutter = false): string {
+  if (mode !== 'nota') return SCAN_NEEDS_CAMERA;
+  return phoneShutter ? SCAN_NEEDS_CAMERA_QR : SCAN_NEEDS_CAMERA_RECEIPT;
+}
 
 export type ScanOption = 'galeria' | 'link' | 'codigo' | 'manual';
 

@@ -8,7 +8,9 @@ import {
   NFCE_CAPTCHA,
   NFCE_CAPTCHA_STATE,
   NFCE_NO_ITEMS,
+  NFCE_QUOTA,
   NFCE_SEFAZ_DOWN,
+  nfceFailureCode,
   nfceFailureRoute,
   nfceItemsToDraft,
   nfceStoreCodes,
@@ -16,6 +18,7 @@ import {
   parseNfceQr,
   photoAfterSefazFailure,
   qrReadStep,
+  sefazPhotoMessage,
 } from '../nfce';
 import { hasNoValue } from '../receiptItem';
 
@@ -165,12 +168,38 @@ describe('quando a Sefaz não mostra a nota', () => {
     expect(nfceFailureRoute(null)).toBe('stay');
   });
 
-  it('a Sefaz fora do ar, ou sem os itens, oferece a foto na tela do QR; o "não sou robô" e os outros erros, não', () => {
+  it('a Sefaz fora do ar, sem os itens, ou o limite do QR do mês oferece a foto na tela do QR; o "não sou robô" e os outros erros, não', () => {
     // A resposta da função já diz "tire foto da nota": a tela do QR põe a foto no lugar da câmera dela.
     expect(photoAfterSefazFailure(NFCE_SEFAZ_DOWN)).toBe(true);
     expect(photoAfterSefazFailure(NFCE_NO_ITEMS)).toBe(true);
-    // O "não sou robô" vai para a pendente (nfceFailureRoute); sem internet ou o limite do mês, a foto também não iria.
-    for (const code of [NFCE_CAPTCHA, NFCE_CAPTCHA_STATE, null, 'quota', 'not_found']) expect(photoAfterSefazFailure(code)).toBe(false);
+    // O limite do mês é o das notas pelo QR: a foto tem o dela, à parte.
+    expect(photoAfterSefazFailure(NFCE_QUOTA)).toBe(true);
+    // O "não sou robô" vai para a pendente (nfceFailureRoute); sem internet, a pessoa tenta de novo.
+    for (const code of [NFCE_CAPTCHA, NFCE_CAPTCHA_STATE, null, 'not_found']) expect(photoAfterSefazFailure(code)).toBe(false);
+  });
+
+  it('o 429 sem código da função nfce é o limite do mês do QR (só do app); o código que a função deu vale', () => {
+    expect(nfceFailureCode(null, 429)).toBe(NFCE_QUOTA);
+    expect(nfceFailureCode(NFCE_SEFAZ_DOWN, 502)).toBe(NFCE_SEFAZ_DOWN);
+    expect(nfceFailureCode(NFCE_CAPTCHA, 422)).toBe(NFCE_CAPTCHA);
+    // Sem conferir o limite (503), sem acesso (403), sem resposta: nada de foto.
+    for (const status of [503, 403, 400, null]) expect(nfceFailureCode(null, status)).toBeNull();
+    // A frase do cartão diz o que aconteceu: o limite do QR (a foto tem o dela), ou a Sefaz que não trouxe a nota.
+    expect(sefazPhotoMessage(NFCE_QUOTA)).toContain('limite à parte');
+    expect(sefazPhotoMessage(NFCE_SEFAZ_DOWN)).toContain('A Sefaz não trouxe');
+    expect(sefazPhotoMessage(NFCE_NO_ITEMS)).toBe(sefazPhotoMessage(NFCE_SEFAZ_DOWN));
+  });
+
+  it('a função nfce responde o limite do mês com 429, sem código, e a cota dela é outra que a da foto', () => {
+    const nfce = readFileSync(join(__dirname, '../../../supabase/functions/nfce/index.ts'), 'utf8');
+    expect(nfce).toContain("takeAiQuota(db, 'nfce')");
+    expect(nfce).toContain('if (err instanceof QuotaError) return json({ error: err.message }, err.status);');
+    const photo = readFileSync(join(__dirname, '../../../supabase/functions/parse-receipt/index.ts'), 'utf8');
+    expect(photo).toContain("takeAiQuota(db, 'photo')");
+    expect(photo).not.toContain("takeAiQuota(db, 'nfce')");
+    // A frase do limite do QR manda tirar a foto: a tela tem de oferecê-la.
+    const quota = readFileSync(join(__dirname, '../../../supabase/functions/_shared/aiQuota.ts'), 'utf8');
+    expect(quota).toMatch(/nfce: \(limit\) =>\s*`[^`]*tirar foto da nota/);
   });
 
   it('os códigos da Sefaz que falhou são os que a função nfce responde', () => {

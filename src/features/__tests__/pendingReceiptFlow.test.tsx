@@ -7,7 +7,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import NfceQrScreen from '@/app/nota/qrcode';
 import PendingReceiptScreen from '@/app/nota/pendente';
-import { accessKeyCheckDigit, SEFAZ_PHOTO_AGAIN, SEFAZ_PHOTO_CAMERA, SEFAZ_PHOTO_TITLE, sefazPhotoLibrary } from '@/domain/nfce';
+import { accessKeyCheckDigit, NFCE_QUOTA, SEFAZ_PHOTO_AGAIN, SEFAZ_PHOTO_CAMERA, SEFAZ_PHOTO_TITLE, sefazPhotoLibrary, sefazPhotoMessage } from '@/domain/nfce';
 import { MAX_RECEIPT_PHOTOS } from '@/domain/receiptPhotos';
 import { ReceiptsPanel } from '@/features/market/ReceiptsPanel';
 import { openExternal } from '@/lib/openLink';
@@ -41,12 +41,18 @@ const mockPicked: string[] = [];
 const mockSefazReads = { value: false };
 // A parse-receipt que não achou itens nos prints (só o topo ou o rodapé).
 const mockReadsNoItems = { value: false };
-// A Sefaz que não trouxe a nota (fora do ar, ou a página sem os itens), ou outro erro da função (o limite do mês).
-const mockSefazFails: { value: 'sefaz_down' | 'no_items' | 'quota' | null } = { value: null };
+// A Sefaz que não trouxe a nota (fora do ar, ou a página sem os itens), o limite do mês das notas pelo QR, ou outro
+// erro da função (o limite que ela não conseguiu conferir).
+const mockSefazFails: { value: 'sefaz_down' | 'no_items' | 'quota' | 'unchecked' | null } = { value: null };
 const SEFAZ_FAILURES = {
   sefaz_down: { status: 502, body: { code: 'sefaz_down', error: 'A Sefaz não respondeu agora. Tente de novo em alguns minutos ou tire foto da nota.' } },
   no_items: { status: 422, body: { code: 'no_items', error: 'A Sefaz não mostrou os itens desta nota. Tente de novo mais tarde ou tire foto da nota.' } },
-  quota: { status: 429, body: { error: 'A casa já usou as leituras de nota deste mês.' } },
+  // A resposta de verdade do limite (supabase/functions/_shared/aiQuota.ts, o tipo `nfce`): 429, sem código.
+  quota: {
+    status: 429,
+    body: { error: 'A casa já leu 200 notas pelo QR code este mês. O limite volta no dia 1º; até lá, dá para tirar foto da nota ou digitar.' },
+  },
+  unchecked: { status: 503, body: { error: 'Não consegui conferir o limite de uso da IA agora. Tente de novo.' } },
 };
 
 jest.mock('@react-native-async-storage/async-storage', () =>
@@ -294,7 +300,7 @@ describe('o QR que a câmera do "Escanear" já leu (?qr=)', () => {
   });
 });
 
-describe('a Sefaz que não trouxe a nota (fora do ar, ou sem os itens)', () => {
+describe('a Sefaz que não trouxe a nota (fora do ar, ou sem os itens), e o limite do mês do QR', () => {
   const cameraShown = () => renderer!.root.findAllByType(CameraView).length > 0;
 
   it('vindo da câmera do "Escanear" (?qr=): a foto daquela nota, com a chave do QR, toma o lugar da câmera daqui', async () => {
@@ -336,11 +342,28 @@ describe('a Sefaz que não trouxe a nota (fora do ar, ou sem os itens)', () => {
     expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'r1' } });
   });
 
-  it('os outros erros (o limite do mês) ficam só no aviso de sempre, com a câmera e o link', async () => {
+  it('o limite do mês das notas pelo QR (que manda tirar foto): a foto, que tem o limite dela, toma o lugar da câmera', async () => {
     mockSefazFails.value = 'quota';
+    mockParams.qr = QR;
+    await open(<NfceQrScreen />);
+    expect(callsTo('nfce')).toHaveLength(1);
+    expect(notify).toHaveBeenCalledWith('Não deu para ler a nota', SEFAZ_FAILURES.quota.body.error);
+    // A câmera daqui leria o mesmo QR e bateria no mesmo limite, com um aviso a cada leitura: no lugar dela, a foto.
+    expect(page()).toContain(SEFAZ_PHOTO_TITLE);
+    expect(page()).toContain(sefazPhotoMessage(NFCE_QUOTA));
+    expect(cameraShown()).toBe(false);
+    mockPicked.push('topo.jpg', 'rodape.jpg');
+    await press(sefazPhotoLibrary(MAX_RECEIPT_PHOTOS));
+    expect(callsTo('parse-receipt')).toEqual([{ name: 'parse-receipt', body: { image_paths: ['h1/0.jpg', 'h1/1.jpg'], access_key: KEY } }]);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'r1' } });
+    expect(callsTo('nfce')).toHaveLength(1);
+  });
+
+  it('os outros erros (o limite que a função não conseguiu conferir) ficam só no aviso de sempre, com a câmera e o link', async () => {
+    mockSefazFails.value = 'unchecked';
     await open(<NfceQrScreen />);
     await scan(QR);
-    expect(notify).toHaveBeenCalledWith('Não deu para ler a nota', SEFAZ_FAILURES.quota.body.error);
+    expect(notify).toHaveBeenCalledWith('Não deu para ler a nota', SEFAZ_FAILURES.unchecked.body.error);
     expect(page()).not.toContain(SEFAZ_PHOTO_TITLE);
     expect(cameraShown()).toBe(true);
   });

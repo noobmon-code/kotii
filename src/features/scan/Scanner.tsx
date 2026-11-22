@@ -1,4 +1,4 @@
-import { CameraView, scanFromURLAsync, useCameraPermissions } from 'expo-camera';
+import { CameraView, scanFromURLAsync } from 'expo-camera';
 import { router, useNavigation } from 'expo-router';
 import { usePreventRemove } from 'expo-router/react-navigation';
 import { useEffect, useRef, useState } from 'react';
@@ -58,10 +58,12 @@ import {
   type ScanState,
 } from '@/domain/scan';
 import { useProductBarcode } from '@/features/ProductBarcode';
+import { useScanCameraPermission } from '@/features/scan/cameraPermission';
 import { FoundList } from '@/features/scan/FoundList';
 import { useHouseholdId } from '@/lib/auth';
 import { prepareBarcodeReader } from '@/lib/barcodeReader';
 import { goBackOr } from '@/lib/navigation';
+import { primaryPointerIsTouch } from '@/lib/pointer';
 import { errorMessage } from '@/lib/supabase';
 import { ActionSheet } from '@/ui/ActionSheet';
 import { BusyOverlay } from '@/ui/BusyOverlay';
@@ -105,14 +107,15 @@ async function codeInPhoto(uri: string, types: readonly ScanBarcodeType[]): Prom
  * No modo da nota (`?para=nota`: o "Adicionar nota" e o "Finalizar compra"), só a nota: o QR ao vivo segue como
  * sempre (e o QR que não é de uma NFC-e ganha um aviso), o código de barras não é nada, e a foto e a galeria vão para
  * a leitura de sempre da nota (useScanReceipt, sem `classify`), sem procurar antes o QR nelas: a foto é o caminho de
- * quando a Sefaz não trouxe a nota pelo QR. No navegador, ali, "Tirar foto" abre a câmera do celular, que tira a foto
- * inteira (a da prévia da tela é um quadro pequeno do vídeo).
+ * quando a Sefaz não trouxe a nota pelo QR. No navegador do celular, ali, "Tirar foto" abre a câmera do celular, que
+ * tira a foto inteira (a da prévia da tela é um quadro pequeno do vídeo) e não precisa da permissão da prévia: sem
+ * ela, "Tirar foto" fica no cartão das outras opções.
  */
 export function Scanner({ mode }: { mode: ScanMode }) {
   const c = useColors();
   const navigation = useNavigation();
   const householdId = useHouseholdId();
-  const [permission, requestPermission] = useCameraPermissions();
+  const [permission, requestPermission] = useScanCameraPermission();
   const camera = useRef<CameraView>(null);
   const scan = useScanPhotos(householdId);
   // Só a nota: a leitura de sempre, a do leitor de nota, que não pergunta à IA se é produto.
@@ -147,7 +150,9 @@ export function Scanner({ mode }: { mode: ScanMode }) {
   const busy = reading || savePantry.isPending || listing || manual.isPending || shooting;
   const barcodeTypes = scanBarcodeTypes(mode);
   const photoTypes = photoCodeTypes(mode);
-  const phoneShutter = shutterUsesPhoneCamera(mode, Platform.OS);
+  // O ponteiro do navegador não muda com a tela aberta: lido uma vez.
+  const [touch] = useState(primaryPointerIsTouch);
+  const phoneShutter = shutterUsesPhoneCamera(mode, Platform.OS, touch);
   const hasCamera = Boolean(permission?.granted);
 
   useEffect(() => {
@@ -400,6 +405,19 @@ export function Scanner({ mode }: { mode: ScanMode }) {
     />
   );
 
+  /** "Tirar foto" (ou, com partes da nota esperando, "Mais uma foto"). */
+  const shutter = (style?: typeof styles.flex) => (
+    <Button
+      title={parts.length ? PARTS_MORE : SCAN_SHUTTER}
+      icon="camera-outline"
+      variant={parts.length ? 'secondary' : 'primary'}
+      loading={shooting}
+      disabled={busy}
+      onPress={() => void shoot()}
+      style={style}
+    />
+  );
+
   return (
     <Screen edges={[]}>
       <Text variant="muted">{scanHint(state)}</Text>
@@ -418,15 +436,7 @@ export function Scanner({ mode }: { mode: ScanMode }) {
             />
           </View>
           <Row>
-            <Button
-              title={parts.length ? PARTS_MORE : SCAN_SHUTTER}
-              icon="camera-outline"
-              variant={parts.length ? 'secondary' : 'primary'}
-              loading={shooting}
-              disabled={busy}
-              onPress={() => void shoot()}
-              style={styles.flex}
-            />
+            {shutter(styles.flex)}
             <IconButton
               icon="dots-horizontal"
               label={SCAN_MORE}
@@ -437,9 +447,16 @@ export function Scanner({ mode }: { mode: ScanMode }) {
         </>
       ) : (
         <Card style={styles.gap}>
-          <Text variant="body">{scanNeedsCamera(mode)}</Text>
+          <Text variant="body">{scanNeedsCamera(mode, phoneShutter)}</Text>
+          {/* A câmera do celular não precisa da permissão da prévia: a foto da nota, em partes, fica na tela. */}
+          {phoneShutter ? shutter() : null}
           {/* O navegador sem câmera também responde "negado": o botão fica, e as outras opções vêm logo abaixo. */}
-          <Button title={SCAN_ALLOW_CAMERA} icon="camera-outline" onPress={() => void requestPermission()} />
+          <Button
+            title={SCAN_ALLOW_CAMERA}
+            icon="camera-outline"
+            variant={phoneShutter ? 'secondary' : 'primary'}
+            onPress={() => void requestPermission()}
+          />
           {options.map(optionButton)}
         </Card>
       )}

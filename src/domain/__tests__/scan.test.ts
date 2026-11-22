@@ -127,12 +127,25 @@ describe('depois da foto', () => {
     expect(photoCodeTypes('despensa')).toEqual(SCAN_BARCODE_TYPES);
   });
 
-  it('no navegador, a foto da nota é da câmera do celular, não um quadro da prévia; no aparelho e nos outros modos, não', () => {
-    expect(shutterUsesPhoneCamera('nota', 'web')).toBe(true);
-    for (const os of ['ios', 'android']) expect(shutterUsesPhoneCamera('nota', os)).toBe(false);
-    for (const mode of ['tudo', 'despensa'] as const) {
-      for (const os of ['web', 'ios', 'android']) expect(shutterUsesPhoneCamera(mode, os)).toBe(false);
+  it('no navegador de toque, a foto da nota é da câmera do celular, não um quadro da prévia; no aparelho e nos outros modos, não', () => {
+    expect(shutterUsesPhoneCamera('nota', 'web', true)).toBe(true);
+    // O navegador do computador ignora o `capture` e abriria a escolha de um arquivo: a foto é a da prévia da webcam.
+    expect(shutterUsesPhoneCamera('nota', 'web', false)).toBe(false);
+    for (const os of ['ios', 'android']) {
+      for (const touch of [true, false]) expect(shutterUsesPhoneCamera('nota', os, touch)).toBe(false);
     }
+    for (const mode of ['tudo', 'despensa'] as const) {
+      for (const os of ['web', 'ios', 'android']) expect(shutterUsesPhoneCamera(mode, os, true)).toBe(false);
+    }
+  });
+
+  it('sem a permissão da prévia, o pedido da câmera da nota diz que a foto vai pela câmera do celular, quando vai', () => {
+    expect(scanNeedsCamera('nota', true)).toContain('câmera do celular');
+    expect(scanNeedsCamera('nota', true)).toContain('QR code');
+    expect(scanNeedsCamera('nota')).toContain('fotografar a nota');
+    expect(scanNeedsCamera('nota', false)).toBe(scanNeedsCamera('nota'));
+    // Fora do modo da nota, a foto é sempre a da prévia: o pedido de sempre.
+    expect(scanNeedsCamera('tudo', true)).toBe(scanNeedsCamera('tudo'));
   });
 
   it('a galeria deixa escolher as partes de uma nota, ou uma foto só quando são produtos', () => {
@@ -299,6 +312,7 @@ describe('os textos', () => {
       scanReading(RECEIPT).message,
       scanReadFailedTitle(RECEIPT),
       scanNeedsCamera('nota'),
+      scanNeedsCamera('nota', true),
     ];
     for (const text of texts) expect(text).not.toMatch(/produto|prateleira|código de barras/i);
     expect(scanHint(RECEIPT)).toContain('QR code');

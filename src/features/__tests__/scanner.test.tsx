@@ -27,9 +27,13 @@ import { Button, IconButton, ListRow, TextField } from '@/ui/primitives';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 
+type MockPermission = { granted: boolean; status?: string; canAskAgain?: boolean };
 const mockCamera = {
-  permission: { granted: true } as { granted: boolean; status?: string; canAskAgain?: boolean } | null,
-  request: jest.fn(),
+  permission: { granted: true } as MockPermission | null,
+  request: jest.fn(async (): Promise<MockPermission | null> => null),
+  // A leitura da permissão (a tela a faz, com `get: false`, para pegar a falha dela) e as opções que o gancho recebeu.
+  read: jest.fn(async (): Promise<MockPermission | null> => mockCamera.permission),
+  hookOptions: [] as unknown[],
   take: jest.fn(async (_options?: unknown) => ({ uri: 'file://foto.jpg' })),
   // O que a leitura local acha numa foto (QR ou código de barras), e os tipos que a tela pediu a ela.
   codes: [] as { data: string }[],
@@ -45,7 +49,10 @@ jest.mock('expo-camera', () => {
   }
   return {
     CameraView: MockCameraView,
-    useCameraPermissions: () => [mockCamera.permission, mockCamera.request],
+    useCameraPermissions: (options?: unknown) => {
+      mockCamera.hookOptions.push(options);
+      return [mockCamera.permission, mockCamera.request, mockCamera.read];
+    },
     scanFromURLAsync: async (_uri: string, types: unknown) => {
       mockCamera.photoTypes.push(types);
       return mockCamera.codes;
@@ -84,6 +91,9 @@ jest.mock('@/lib/auth', () => ({ useHouseholdId: () => 'casa-1' }));
 jest.mock('@/lib/barcodeReader', () => ({ prepareBarcodeReader: jest.fn(async () => undefined) }));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)) }));
 jest.mock('@/lib/navigation', () => ({ goBackOr: jest.fn() }));
+// O navegador de toque (o celular), ou o do computador: decide se a foto da nota é a da câmera do celular.
+const mockPointer = { touch: true };
+jest.mock('@/lib/pointer', () => ({ primaryPointerIsTouch: () => mockPointer.touch }));
 const mockDispatch = jest.fn();
 jest.mock('expo-router', () => ({ router: { replace: jest.fn() }, useNavigation: () => ({ dispatch: mockDispatch }) }));
 // O aviso de sair: a tela diz se segura a saída e o que fazer quando alguém tenta sair.
@@ -116,6 +126,11 @@ beforeEach(() => {
   jest.spyOn(Date, 'now').mockImplementation(() => clock);
   clock = 1_000_000;
   mockCamera.permission = { granted: true };
+  mockCamera.read.mockReset();
+  mockCamera.read.mockImplementation(async () => mockCamera.permission);
+  mockCamera.hookOptions = [];
+  mockCamera.request.mockReset();
+  mockPointer.touch = true;
   mockCamera.codes = [];
   mockCamera.photoTypes = [];
   mockCamera.take.mockClear();
@@ -510,6 +525,57 @@ describe('o modo da nota (o "Adicionar nota" de Compras → Notas e o "Finalizar
     expect(mockPick).not.toHaveBeenCalled();
   });
 
+  it('no navegador do celular sem a permissão da prévia, "Tirar foto" fica: a câmera do celular não precisa dela', async () => {
+    jest.replaceProperty(Platform, 'OS', 'web');
+    // O site que teve a câmera bloqueada uma vez (o Safari não pergunta de novo), ou o navegador sem getUserMedia.
+    mockCamera.permission = { granted: false, status: 'denied', canAskAgain: false };
+    const root = await mount('nota');
+    expect(root.findAllByType(CameraView)).toHaveLength(0);
+    expect(root.findAllByType(Button).map((b) => b.props.title)).toEqual([
+      'Tirar foto',
+      'Permitir a câmera',
+      'Escolher da galeria',
+      'Colar o link do QR code',
+      'Digitar a nota manualmente',
+    ]);
+    // Uma ação principal só: a foto; o pedido da câmera fica para o QR ao vivo.
+    expect(button(root, 'Tirar foto')!.props.variant).toBe('primary');
+    expect(button(root, 'Permitir a câmera')!.props.variant).toBe('secondary');
+    expect(screenText()).toContain('câmera do celular');
+    // A nota comprida, em partes, como com a câmera: "Mais uma foto" e "Ler (2 fotos)".
+    mockPick.mockResolvedValue(['blob:topo']);
+    await shoot(root);
+    expect(mockPick).toHaveBeenLastCalledWith('camera', 1);
+    expect(mockReceiptScan.mutate).not.toHaveBeenCalled();
+    mockPick.mockResolvedValue(['blob:rodape']);
+    await shoot(root, 'Mais uma foto');
+    await act(async () => button(root, 'Ler (2 fotos)')!.props.onPress());
+    expect(lastReceiptScan()[0]).toEqual({ uris: ['blob:topo', 'blob:rodape'] });
+    expect(mockCamera.take).not.toHaveBeenCalled();
+    expect(mockScan.mutate).not.toHaveBeenCalled();
+  });
+
+  it('no computador, "Tirar foto" tira a foto da prévia da webcam: o navegador dele não abre a câmera pelo campo de arquivo', async () => {
+    jest.replaceProperty(Platform, 'OS', 'web');
+    mockPointer.touch = false;
+    const root = await mount('nota');
+    const firstPreview = root.findByType(CameraView).instance;
+    await shoot(root);
+    expect(mockCamera.take).toHaveBeenCalledTimes(1);
+    expect(mockPick).not.toHaveBeenCalled();
+    // A prévia segue a mesma: nada de câmera do celular que tome o vídeo dela.
+    expect(root.findByType(CameraView).instance).toBe(firstPreview);
+    expect(button(root, 'Ler')).toBeDefined();
+    await act(async () => renderer!.unmount());
+    // Sem a webcam (ou com ela negada), a foto não tem como ser tirada aqui: ficam a galeria, o link e a nota à mão.
+    mockCamera.permission = { granted: false, status: 'denied', canAskAgain: false };
+    const noWebcam = await mount('nota');
+    expect(button(noWebcam, 'Tirar foto')).toBeUndefined();
+    expect(button(noWebcam, 'Permitir a câmera')!.props.variant).toBe('primary');
+    expect(button(noWebcam, 'Escolher da galeria')).toBeDefined();
+    expect(screenText()).toContain('fotografar a nota');
+  });
+
   it('a tela que saiu enquanto a galeria estava aberta (a câmera leu o QR por trás dela) não lê as imagens', async () => {
     const root = await mount('nota');
     let choose: (uris: string[]) => void = () => undefined;
@@ -622,6 +688,39 @@ describe('sem a câmera, e as outras opções', () => {
     mockCamera.permission = { granted: false, status: 'denied', canAskAgain: false };
     await mount();
     expect(mockCamera.request).not.toHaveBeenCalled();
+  });
+
+  it.each(['nota', 'tudo'] as const)(
+    'no navegador sem a API de permissões (o Safari antes do 16), a leitura que falha vale como a de quem não respondeu (%s)',
+    async (mode) => {
+      jest.replaceProperty(Platform, 'OS', 'web');
+      // O expo-camera lê a permissão por navigator.permissions.query e, sem ela, falha: o gancho dele ficaria em null.
+      mockCamera.permission = null;
+      mockCamera.read.mockRejectedValue(new Error('navigator.permissions API is not available'));
+      const root = await mount(mode);
+      // A tela lê a permissão ela mesma, para pegar a falha.
+      expect(mockCamera.hookOptions[0]).toEqual({ get: false });
+      expect(mockCamera.read).toHaveBeenCalled();
+      // A câmera é pedida ao abrir (getUserMedia não precisa daquela API), e as opções ficam na tela.
+      expect(mockCamera.request).toHaveBeenCalledTimes(1);
+      expect(button(root, 'Permitir a câmera')).toBeDefined();
+      expect(button(root, 'Escolher da galeria')).toBeDefined();
+      expect(button(root, 'Digitar a nota manualmente')).toBeDefined();
+      if (mode === 'nota') expect(button(root, 'Tirar foto')).toBeDefined();
+      // Permitida, a câmera aparece.
+      mockCamera.permission = { granted: true };
+      await act(async () => renderer!.update(<Scanner mode={mode} />));
+      expect(root.findAllByType(CameraView)).toHaveLength(1);
+      expect(mockCamera.request).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('o pedido da câmera que falha não sobe como erro: a tela segue com as opções', async () => {
+    mockCamera.permission = { granted: false };
+    mockCamera.request.mockRejectedValue(new Error('falhou'));
+    const root = await mount();
+    await act(async () => button(root, 'Permitir a câmera')!.props.onPress());
+    expect(button(root, 'Escolher da galeria')).toBeDefined();
   });
 
   it('enquanto a permissão é lida, nem a câmera nem o pedido aparecem', async () => {
