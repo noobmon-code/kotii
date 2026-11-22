@@ -26,7 +26,7 @@ import { menuOpener } from '@/ui/focus';
 import { IconButton, Row, Text } from '@/ui/primitives';
 import { radius, shadows, space, useColors } from '@/ui/theme';
 
-import { rememberOpener, restoreFocus, trapWindowFocus, WINDOW_TEST_ID, windowOpener } from './windowFocus';
+import { currentTopLayer, markTopLayer, rememberOpener, restoreFocus, trapWindowFocus, WINDOW_TEST_ID, windowOpener } from './windowFocus';
 
 /** O que a tela diz de si no Stack (as opções dela) e que a caixa usa. */
 interface WindowScreenOptions {
@@ -113,28 +113,54 @@ function useCovered(): boolean {
 /** O `inert` do navegador (o react-native-web o passa adiante; não está nos tipos do React Native). */
 const inert = (covered: boolean) => ({ inert: covered }) as object;
 
+/** Quem tinha o foco quando a tela abriu, e a caixa da tela que estava por cima naquela hora. */
+interface Opened {
+  opener: Element | null;
+  below: object | null;
+}
+
 /**
  * Quem tinha o foco quando a tela abriu (lido no primeiro desenho dela, antes de um campo com foco automático tomá-lo;
- * aberta pela opção de um menu de ações, quem abriu o menu: windowFocus), guardado com a caixa dela (`layer`): é para
- * lá que o foco volta quando uma janela que tomou o lugar desta tela fecha (windowFocus: liveOpener).
+ * aberta pela opção de um menu de ações, quem abriu o menu: windowFocus) e a tela que estava por cima naquela hora (a
+ * de antes, ainda na página: a que esta troca, num `router.replace`), guardados com a caixa dela (`layer`): é para lá
+ * que o foco volta quando esta tela, ou uma janela que tomou o lugar dela, fecha (windowFocus: liveOpener).
  */
-function useOpener(layer: { current: unknown }): Element | null {
-  const [opener] = useState(() => (typeof document === 'undefined' ? null : windowOpener(document, menuOpener())));
+function useOpener(layer: { current: unknown }): Opened {
+  const [opened] = useState<Opened>(() =>
+    typeof document === 'undefined'
+      ? { opener: null, below: null }
+      : { opener: windowOpener(document, menuOpener()), below: currentTopLayer() },
+  );
   useEffect(() => {
-    rememberOpener(layer.current as object | null, opener);
-  }, [layer, opener]);
-  return opener;
+    rememberOpener(layer.current as object | null, opened.opener, opened.below);
+  }, [layer, opened]);
+  return opened;
+}
+
+/**
+ * Enquanto esta tela é a de cima da pilha, a caixa dela é a que a próxima tela lê como a de baixo (useOpener). No
+ * desenho (useLayoutEffect), antes do primeiro desenho da próxima: a de antes de uma troca ainda está marcada quando a
+ * nova a lê.
+ */
+function useTopLayer(layer: { current: unknown }, focused: boolean): void {
+  useLayoutEffect(() => {
+    if (!focused) return;
+    return markTopLayer(layer.current as object | null);
+  }, [layer, focused]);
 }
 
 /**
  * Uma tela que não é janela, no navegador: uma caixa que não desenha nada (`display: contents`, a tela fica com os
  * mesmos pixels) e que a deixa `inert` enquanto está coberta (useCovered). Ela guarda quem abriu a tela (useOpener),
- * para a janela que tomar o lugar dela (a do QR code, aberta pelo Escanear) devolver o foco para lá ao fechar.
+ * para a janela que tomar o lugar dela (a do QR code, aberta pelo Escanear) devolver o foco para lá ao fechar, e diz
+ * enquanto é a de cima da pilha (useTopLayer): a janela que a trocar sabe de que tela veio, também quando o foco não
+ * estava em nada dela (a câmera do Escanear lê o QR code sozinha).
  */
 function ScreenLayer({ children }: { children: ReactNode }) {
   const covered = useCovered();
   const layer = useRef<View>(null);
   useOpener(layer);
+  useTopLayer(layer, useIsFocused());
   return (
     <View ref={layer} style={loose} {...inert(covered)}>
       {children}
@@ -198,8 +224,10 @@ export function RouteWindow({
   });
 
   // Quem tinha o foco quando a janela abriu (useOpener): ao fechar, ele volta para lá. Se ele saiu da página com a
-  // tela que esta janela trocou (router.replace), quem abriu aquela tela (windowFocus: liveOpener).
-  const opener = useOpener(box);
+  // tela que esta janela trocou (router.replace), ou não diz de onde veio (o corpo da página, o aviso "Buscando…" que
+  // saiu com a tela), quem abriu aquela tela (windowFocus: liveOpener).
+  const opened = useOpener(box);
+  useTopLayer(box, focused);
   const live = useRef({ desktop });
   useEffect(() => {
     live.current.desktop = desktop;
@@ -208,9 +236,9 @@ export function RouteWindow({
     const state = live.current;
     return () => {
       // Só no computador: na janela estreita a tela é uma página, como sempre foi.
-      if (state.desktop && typeof document !== 'undefined') restoreFocus(document, opener);
+      if (state.desktop && typeof document !== 'undefined') restoreFocus(document, opened.opener, opened.below);
     };
-  }, [opener]);
+  }, [opened]);
 
   // Aberta no computador e por cima de tudo: as telas de baixo ficam como estão, atrás do fundo escurecido (sem o
   // `inert` das telas cobertas). No desenho, antes de a tela aparecer: a de baixo nunca chega a ficar fora do teclado

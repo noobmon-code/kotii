@@ -109,33 +109,85 @@ export function windowOpener(doc: Document, handed: { menu: unknown; opener: unk
   return active;
 }
 
-// Quem tinha o foco quando cada tela da pilha abriu, pela caixa dela na página: a caixa de uma tela em janela e a
-// caixa sem desenho de uma página (as duas em RouteWindow). Só a primeira vez conta (o elemento é o mesmo enquanto a
-// tela está montada, também quando a janela cruza a largura do computador). WeakMap: a tela que sai leva a dela.
-const layerOpeners = new WeakMap<object, Element | null>();
+// Quem tinha o foco quando cada tela da pilha abriu, e a tela que estava por cima naquela hora (a de baixo dela), pela
+// caixa de cada uma na página: a caixa de uma tela em janela e a caixa sem desenho de uma página (as duas em
+// RouteWindow). Só a primeira vez conta (o elemento é o mesmo enquanto a tela está montada, também quando a janela
+// cruza a largura do computador). WeakMap: a tela que sai leva a dela.
+interface Opened {
+  opener: Element | null;
+  below: object | null;
+}
+const layerOpeners = new WeakMap<object, Opened>();
 
-/** A tela (pela caixa dela) diz quem tinha o foco quando ela abriu (lido no primeiro desenho dela, windowOpener). */
-export function rememberOpener(layer: object | null | undefined, opener: Element | null): void {
-  if (layer && !layerOpeners.has(layer)) layerOpeners.set(layer, opener);
+// A caixa da tela de cima da pilha agora (no navegador): a tela que abre em seguida a lê no primeiro desenho dela,
+// quando a de antes ainda está na página, e a guarda como a de baixo dela (rememberOpener).
+let topLayer: object | null = null;
+
+/**
+ * A tela desta caixa passou a ser a de cima da pilha (no desenho, antes de os efeitos das outras rodarem). Devolve o
+ * que desfaz, quando ela deixa de ser: só se nenhuma outra tomou o lugar dela nesse meio tempo.
+ */
+export function markTopLayer(layer: object | null | undefined): () => void {
+  if (!layer) return () => undefined;
+  topLayer = layer;
+  return () => {
+    if (topLayer === layer) topLayer = null;
+  };
+}
+
+/** A caixa da tela de cima da pilha agora (lida no primeiro desenho da tela que abre, é a de antes dela). */
+export function currentTopLayer(): object | null {
+  return topLayer;
 }
 
 /**
- * Para onde o foco volta, de fato, quando a janela aberta por `opener` fecha. Ele mesmo, se ainda está na página. Se
- * saiu dela junto com a tela onde estava, porque a janela tomou o lugar daquela tela (`router.replace`: o "Registrar
- * próxima dose" da vacina abre a vacina nova no lugar da de antes, a do QR code vira a nota pendente, a página do
- * Escanear abre a do QR code), quem abriu aquela tela, e assim por diante: a janela que trocou a outra devolve o foco
- * a quem abriu a primeira (a linha da vacina), e não ao começo da página. A tela que saiu continua inteira fora da
- * página (só a caixa de cima sai dela), e o elemento ainda sabe em que caixa estava. `null` quando não há a quem.
+ * A tela (pela caixa dela) diz quem tinha o foco quando ela abriu (lido no primeiro desenho dela, windowOpener) e qual
+ * tela estava por cima naquela hora (currentTopLayer).
  */
-export function liveOpener(doc: Document, opener: Element | null): Element | null {
+export function rememberOpener(layer: object | null | undefined, opener: Element | null, below: object | null = null): void {
+  if (layer && !layerOpeners.has(layer)) layerOpeners.set(layer, { opener, below: below === layer ? null : below });
+}
+
+/**
+ * A tela que saiu da página e cujo lugar a tela aberta por `opener` (com `below` por baixo quando abriu) tomou, ou
+ * `null`. Quem abriu saiu da página junto com a tela onde estava (um botão de dentro dela): aquela tela (o elemento
+ * ainda sabe em que caixa estava). Quem abriu não diz de que tela veio, porque é o corpo da página (o foco caiu nele:
+ * a câmera do Escanear lê o QR code sozinha, com nada da página focado) ou um elemento fora de qualquer tela que saiu
+ * da página (o aviso "Buscando a nota na Sefaz…", um Modal do react-native-web, que toma o foco num portal no fim da
+ * página e sai com a tela do QR code): a tela que estava por cima quando esta abriu, se ela saiu da página (esta
+ * tomou o lugar dela). Uma tela de baixo que continua na página (a janela aberta por cima dela, e não no lugar) não
+ * conta: quem a abriu não é quem abriu esta.
+ */
+function replacedScreen(doc: Document, opener: Element | null, below: object | null): object | null {
+  if (opener && opener !== doc.body) {
+    for (let node: Element | null = opener; node; node = node.parentElement) {
+      if (layerOpeners.has(node)) return doc.contains(node) ? null : node;
+    }
+  }
+  return below && !doc.contains(below as Node) ? below : null;
+}
+
+/**
+ * Para onde o foco volta, de fato, quando a janela aberta por `opener` (com a tela `below` por cima de todas quando
+ * ela abriu) fecha. Ele mesmo, se ainda está na página. Se a janela tomou o lugar de outra tela (`router.replace`: o
+ * "Registrar próxima dose" da vacina abre a vacina nova no lugar da de antes, a do QR code vira a nota pendente, a
+ * página do Escanear abre a do QR code), e quem abriu saiu da página com aquela tela ou não diz de onde veio
+ * (replacedScreen), quem abriu aquela tela, e assim por diante: a janela que trocou a outra devolve o foco a quem
+ * abriu a primeira (a linha da vacina, o "Adicionar nota", o "Escanear" de Hoje), e não ao começo da página. A tela
+ * que saiu continua inteira fora da página (só a caixa de cima sai dela). O corpo da página quando ninguém abriu
+ * (a página aberta direto na janela), `null` quando quem abriu saiu e não há a quem.
+ */
+export function liveOpener(doc: Document, opener: Element | null, below: object | null = null): Element | null {
   const seen = new Set<object>();
   let current = opener;
-  while (current && current !== doc.body && !doc.contains(current)) {
-    let layer: Element | null = null;
-    for (let node: Element | null = current; node && !layer; node = node.parentElement) if (layerOpeners.has(node)) layer = node;
-    if (!layer || seen.has(layer)) return null;
-    seen.add(layer);
-    current = layerOpeners.get(layer) ?? null;
+  let under = below;
+  while (!current || current === doc.body || !doc.contains(current)) {
+    const gone = replacedScreen(doc, current, under);
+    if (!gone || seen.has(gone)) return current === doc.body ? current : null;
+    seen.add(gone);
+    const opened = layerOpeners.get(gone);
+    current = opened?.opener ?? null;
+    under = opened?.below ?? null;
   }
   return current;
 }
@@ -143,11 +195,11 @@ export function liveOpener(doc: Document, opener: Element | null): Element | nul
 /**
  * Ao fechar a caixa, o foco volta para quem a abriu (o "Nova tarefa", a linha do Nuke na barra lateral), como nas
  * janelas de formulário: sem isto, ele cairia no começo da página. Quem abriu e já saiu da página com a tela que a
- * janela trocou dá o lugar a quem abriu aquela tela (liveOpener). Não quando ninguém assim está na página, ou quando
- * a página foi aberta direto na janela (o foco estava no corpo da página).
+ * janela trocou, ou não diz de onde veio, dá o lugar a quem abriu aquela tela (liveOpener). Não quando ninguém assim
+ * está na página, ou quando a página foi aberta direto na janela (o foco estava no corpo da página).
  */
-export function restoreFocus(doc: Document, opener: Element | null): void {
-  const target = liveOpener(doc, opener);
+export function restoreFocus(doc: Document, opener: Element | null, below: object | null = null): void {
+  const target = liveOpener(doc, opener, below);
   if (!target || target === doc.body || !doc.contains(target)) return;
   (target as HTMLElement).focus?.();
 }

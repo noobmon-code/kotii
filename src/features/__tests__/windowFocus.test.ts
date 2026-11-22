@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 import {
+  currentTopLayer,
   liveOpener,
+  markTopLayer,
   OTHER_WINDOW,
   rememberOpener,
   restoreFocus,
@@ -274,11 +276,14 @@ describe('ao fechar, o foco volta para quem abriu a janela', () => {
 });
 
 describe('a janela que tomou o lugar de outra tela (router.replace): o foco volta para quem abriu aquela tela', () => {
-  /** Uma tela na pilha, com quem a abriu: a caixa dela (a da janela, ou a sem desenho de uma página) e o que tem dentro. */
-  function screenOf(name: string, opener: FakeElement | null) {
+  /**
+   * Uma tela na pilha, com quem a abriu e a tela que estava por cima quando ela abriu: a caixa dela (a da janela, ou a
+   * sem desenho de uma página) e o que tem dentro.
+   */
+  function screenOf(name: string, opener: FakeElement | null, below: FakeElement | null = null) {
     const root = new FakeElement(`tela ${name}`, page.body);
     const layer = new FakeElement(`caixa ${name}`, root);
-    rememberOpener(layer, el(opener ?? page.body));
+    rememberOpener(layer, el(opener ?? page.body), below);
     return { root, layer };
   }
 
@@ -312,6 +317,64 @@ describe('a janela que tomou o lugar de outra tela (router.replace): o foco volt
     expect(focused()).toBe('Escanear');
   });
 
+  it('o aviso "Buscando a nota na Sefaz…" tinha o foco quando o QR code virou a nota pendente: ao fechar, o "Adicionar nota"', () => {
+    const addNote = new FakeElement('Adicionar nota', behind);
+    const tabs = new FakeElement('caixa das abas', behind);
+    const qr = screenOf('nota/qrcode', addNote, tabs);
+    // O Modal do react-native-web toma o foco num portal no fim da página, fora da caixa da tela do QR code.
+    const portal = new FakeElement('portal', page.body);
+    const busy = new FakeElement('Buscando a nota na Sefaz…', portal);
+    busy.tabIndex = -1;
+    page.activeElement = busy;
+    // A nota pendente lê, no primeiro desenho dela, o aviso como quem a abriu, e a do QR code como a de baixo.
+    const opener = windowOpener(doc, null);
+    expect(opener).toBe(busy);
+    qr.root.remove();
+    portal.remove();
+    screenOf('nota/pendente', busy, qr.layer);
+    page.activeElement = save;
+    expect(liveOpener(doc, el(busy), qr.layer)).toBe(addNote);
+    restoreFocus(doc, opener, qr.layer);
+    expect(focused()).toBe('Adicionar nota');
+  });
+
+  it('a câmera do Escanear leu o QR code sozinha (o foco no corpo da página): ao fechar, o "Escanear" de Hoje', () => {
+    const tile = new FakeElement('Escanear', behind);
+    const scan = screenOf('escanear', tile);
+    page.activeElement = page.body;
+    scan.root.remove();
+    const qr = screenOf('nota/qrcode', page.body, scan.layer);
+    page.activeElement = save;
+    expect(liveOpener(doc, el(page.body), scan.layer)).toBe(tile);
+    restoreFocus(doc, el(page.body), scan.layer);
+    expect(focused()).toBe('Escanear');
+    // E a nota pendente que tomou o lugar desse QR code, aberta com o aviso "Buscando…" no foco: o mesmo "Escanear".
+    const portal = new FakeElement('portal', page.body);
+    const busy = new FakeElement('Buscando a nota na Sefaz…', portal);
+    qr.root.remove();
+    portal.remove();
+    screenOf('nota/pendente', busy, qr.layer);
+    page.activeElement = save;
+    restoreFocus(doc, el(busy), qr.layer);
+    expect(focused()).toBe('Escanear');
+  });
+
+  it('a tela de baixo continua na página (a janela abriu por cima dela, e não no lugar): ela não diz para onde o foco vai', () => {
+    const tile = new FakeElement('Preços', behind);
+    const prices = screenOf('precos', tile);
+    page.activeElement = save;
+    // O foco no corpo da página quando a janela abriu: nada a devolver, como sempre.
+    expect(liveOpener(doc, el(page.body), prices.layer)).toBe(page.body);
+    restoreFocus(doc, el(page.body), prices.layer);
+    // Quem abriu saiu da página sem tela que tenha saído com ele.
+    const portal = new FakeElement('portal', page.body);
+    const busy = new FakeElement('Buscando…', portal);
+    portal.remove();
+    expect(liveOpener(doc, el(busy), prices.layer)).toBeNull();
+    restoreFocus(doc, el(busy), prices.layer);
+    expect(focused()).toBe('Salvar');
+  });
+
   it('quem abriu continua na página: ele mesmo (a janela aberta por cima, e não no lugar, da outra)', () => {
     const first = screenOf('tarefa', behind);
     const inside = new FakeElement('Abrir o Nuke', first.layer);
@@ -343,6 +406,36 @@ describe('a janela que tomou o lugar de outra tela (router.replace): o foco volt
     const inside = new FakeElement('Registrar próxima dose', first.layer);
     first.root.remove();
     expect(liveOpener(doc, el(inside))).toBe(row);
+  });
+});
+
+describe('a tela de cima da pilha (a de baixo da próxima que abrir)', () => {
+  it('a que abre por último fica marcada; a que deixa de ser só desmarca quando ninguém tomou o lugar dela', () => {
+    const tabs = new FakeElement('caixa das abas');
+    const scan = new FakeElement('caixa do escanear');
+    const untab = markTopLayer(tabs);
+    expect(currentTopLayer()).toBe(tabs);
+    // A página abre por cima das abas: ela é a de cima, e o desmarcar das abas, que vem depois, não a tira.
+    const unscan = markTopLayer(scan);
+    untab();
+    expect(currentTopLayer()).toBe(scan);
+    unscan();
+    expect(currentTopLayer()).toBeNull();
+    // Sem caixa (a tela ainda sem elemento), nada muda.
+    markTopLayer(null)();
+    expect(currentTopLayer()).toBeNull();
+  });
+
+  it('a tela não é a de baixo dela mesma', () => {
+    const tile = new FakeElement('Escanear', behind);
+    const layer = new FakeElement('caixa', page.body);
+    rememberOpener(layer, el(tile), layer);
+    layer.remove();
+    expect(liveOpener(doc, el(page.body), layer)).toBe(tile);
+    const alone = new FakeElement('caixa sozinha', page.body);
+    rememberOpener(alone, el(page.body), alone);
+    alone.remove();
+    expect(liveOpener(doc, el(page.body), alone)).toBe(page.body);
   });
 });
 

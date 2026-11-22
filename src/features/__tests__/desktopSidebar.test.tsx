@@ -590,6 +590,24 @@ describe('as telas em janela (no celular sobem por cima das outras)', () => {
       delete (global as { document?: unknown }).document;
     });
 
+    /** A tela que estava por cima quando a desta caixa abriu (o que a caixa guardou com quem a abriu: rememberOpener). */
+    const belowOf = (layer: unknown) => jest.mocked(rememberOpener).mock.calls.find(([which]) => which === layer)?.[2];
+    /**
+     * A caixa sem desenho em volta da página com esse texto (ScreenLayer), como a caixa da janela (`box`): o View dela,
+     * que no navegador é o elemento da página e é o que ela guardou com quem a abriu.
+     */
+    const layerOf = (label: string) => {
+      // O texto da tela, e não o título dela no cabeçalho do Stack (que fica fora da caixa).
+      for (const text of renderer!.root.findAll((entry) => (entry.type as unknown) === 'Text' && entry.props.children === label)) {
+        for (let node: ReactTestInstance | null = text; node; node = node.parent) {
+          if ((node.type as unknown) === 'View' && flat(node).display === 'contents') return node.parent!.instance as unknown;
+        }
+      }
+      return undefined;
+    };
+    /** O Esc na caixa de cima (o que a caixa aberta por último deu ao ligar o teclado). */
+    const onEscapeOfTop = () => jest.mocked(trapWindowFocus).mock.calls.at(-1)![2]();
+
     it('no computador, a caixa aberta liga o teclado; o Esc fecha a janela, e o foco volta para quem a abriu', async () => {
       await web(true);
       await open('/', WINDOWS);
@@ -601,12 +619,16 @@ describe('as telas em janela (no celular sobem por cima das outras)', () => {
       // A caixa de verdade (a que tem o nome e o papel de janela): o View dela, que no navegador é o elemento da página.
       expect(node).toBeTruthy();
       expect(node).toBe(box().parent!.instance);
+      // A caixa guardou, com quem a abriu, a tela que estava por cima naquela hora: as abas, que continuam na página
+      // (a janela abriu por cima delas, e não no lugar).
+      expect(belowOf(node)).toBeTruthy();
+      expect(belowOf(node)).toBe(layerOf('hoje'));
       await act(async () => onEscape());
       await settle();
       expect(where().pathname).toBe('/');
       expect(stacked()).toEqual(['(tabs)']);
       expect(mockUntrap).toHaveBeenCalledTimes(1);
-      expect(restoreFocus).toHaveBeenCalledWith(document, opener);
+      expect(restoreFocus).toHaveBeenCalledWith(document, opener, belowOf(node));
     });
 
     it('aberta pela opção de um menu de ações, o foco volta para quem abriu o menu, e não para a opção, que sai com ele', async () => {
@@ -630,31 +652,37 @@ describe('as telas em janela (no celular sobem por cima das outras)', () => {
         await web(true);
         await open('/', WINDOWS);
         await openTask();
+        const first = box().parent!.instance;
         await act(async () => closeButton().props.onPress());
         await settle();
-        expect(restoreFocus).toHaveBeenCalledWith(page, adicionar);
+        expect(restoreFocus).toHaveBeenCalledWith(page, adicionar, belowOf(first));
         // Aberta de outro jeito (o foco fora do menu de antes, que já fechou): quem tinha o foco, como sempre.
         jest.mocked(restoreFocus).mockClear();
         page.activeElement = { name: 'Nova tarefa' };
         await openTask();
+        const second = box().parent!.instance;
         await act(async () => closeButton().props.onPress());
         await settle();
-        expect(restoreFocus).toHaveBeenCalledWith(page, page.activeElement);
+        expect(restoreFocus).toHaveBeenCalledWith(page, page.activeElement, belowOf(second));
       } finally {
         handMenuOpener(null);
       }
     });
 
-    /** Uma página de mentira onde só `still` continua (quem saiu com a tela trocada não está mais nela). */
-    const pageWith = (still: unknown) => ({ body: {}, contains: (node: unknown) => node === still }) as unknown as Document;
+    /**
+     * Uma página de mentira onde só `still` continua (quem saiu com a tela trocada não está mais nela), com o corpo da
+     * página de mentira do teste.
+     */
+    const pageWith = (still: unknown) =>
+      ({ body: (document as { body: unknown }).body, contains: (node: unknown) => node === still }) as unknown as Document;
 
     it('a janela que toma o lugar de outra (router.replace): ao fechar, o foco volta para quem abriu a primeira', async () => {
       await web(true);
       await open('/', WINDOWS);
       await openTask();
       const firstBox = box().parent!.instance;
-      // A caixa guarda quem abriu a janela (o registro que o foco consulta ao fechar).
-      expect(rememberOpener).toHaveBeenCalledWith(firstBox, opener);
+      // A caixa guarda quem abriu a janela e a tela que estava por cima (o registro que o foco consulta ao fechar).
+      expect(rememberOpener).toHaveBeenCalledWith(firstBox, opener, layerOf('hoje'));
       // O botão de dentro da janela que tem o foco quando ela é trocada (o "Registrar próxima dose" da vacina).
       const inside = { name: 'Registrar próxima dose', parentElement: firstBox };
       (document as { activeElement: unknown }).activeElement = inside;
@@ -663,14 +691,15 @@ describe('as telas em janela (no celular sobem por cima das outras)', () => {
       expect(stacked()).toEqual(['(tabs)', 'tarefa/[id]']);
       const secondBox = box().parent!.instance;
       expect(secondBox).not.toBe(firstBox);
-      expect(rememberOpener).toHaveBeenCalledWith(secondBox, inside);
+      // A janela nova leu a de antes como a de cima, no primeiro desenho dela (a de antes ainda estava na página).
+      expect(rememberOpener).toHaveBeenCalledWith(secondBox, inside, firstBox);
       jest.mocked(restoreFocus).mockClear();
       await act(async () => closeButton().props.onPress());
       await settle();
       expect(where().pathname).toBe('/');
-      expect(restoreFocus).toHaveBeenCalledWith(document, inside);
+      expect(restoreFocus).toHaveBeenCalledWith(document, inside, firstBox);
       // O botão saiu da página com a primeira janela: o foco vai para quem abriu a primeira, que continua nela.
-      expect(liveOpener(pageWith(opener), inside as unknown as Element)).toBe(opener);
+      expect(liveOpener(pageWith(opener), inside as unknown as Element, firstBox)).toBe(opener);
     });
 
     it('a janela que toma o lugar de uma página (o Escanear que abre a do QR code): o foco volta para quem abriu a página', async () => {
@@ -692,18 +721,73 @@ describe('as telas em janela (no celular sobem por cima das outras)', () => {
       await act(async () => closeButton().props.onPress());
       await settle();
       expect(where().pathname).toBe('/');
-      expect(restoreFocus).toHaveBeenCalledWith(document, inside);
-      expect(liveOpener(pageWith(tile), inside as unknown as Element)).toBe(tile);
+      expect(restoreFocus).toHaveBeenCalledWith(document, inside, layer);
+      expect(liveOpener(pageWith(tile), inside as unknown as Element, layer as object)).toBe(tile);
+    });
+
+    it('a câmera do Escanear lê o QR code sozinha (nada da página com o foco): a janela, e a que toma o lugar dela, devolvem o foco a quem abriu a página', async () => {
+      await web(true);
+      await open('/', WINDOWS);
+      const tile = { name: 'Escanear' };
+      (document as { activeElement: unknown }).activeElement = tile;
+      await act(async () => router.push('/precos'));
+      await settle();
+      const layer = jest.mocked(rememberOpener).mock.calls.find(([, who]) => who === (tile as unknown))?.[0];
+      expect(layer).toBeTruthy();
+      expect(layer).toBe(layerOf('precos'));
+      // A Hoje ficou escondida e fora do teclado (`inert`): o navegador tira o foco do "Escanear", e ele cai no corpo da
+      // página. A câmera lê o QR code e troca a página pela janela sem que nada da página tenha o foco.
+      const body = (document as { body: unknown }).body;
+      (document as { activeElement: unknown }).activeElement = body;
+      await act(async () => router.replace({ pathname: '/tarefa/[id]', params: { id: 'nova' } }));
+      await settle();
+      expect(stacked()).toEqual(['(tabs)', 'tarefa/[id]']);
+      const qrBox = box().parent!.instance;
+      // A janela lê o corpo da página como quem a abriu, e a página que ela trocou como a de cima naquela hora.
+      expect(rememberOpener).toHaveBeenCalledWith(qrBox, body, layer);
+      jest.mocked(restoreFocus).mockClear();
+      await act(async () => onEscapeOfTop());
+      await settle();
+      expect(where().pathname).toBe('/');
+      expect(restoreFocus).toHaveBeenCalledWith(document, body, layer);
+      // O corpo da página não diz de onde a janela veio: a página que ela trocou saiu, e quem abriu a página continua.
+      expect(liveOpener(pageWith(tile), body as Element, layer as object)).toBe(tile);
+
+      // De novo, e agora a janela do QR code vira a nota pendente (o aviso "Buscando a nota na Sefaz…" com o foco).
+      (document as { activeElement: unknown }).activeElement = tile;
+      await act(async () => router.push('/precos'));
+      await settle();
+      const again = layerOf('precos');
+      (document as { activeElement: unknown }).activeElement = body;
+      await act(async () => router.replace({ pathname: '/tarefa/[id]', params: { id: 'nova' } }));
+      await settle();
+      const firstBox = box().parent!.instance;
+      expect(rememberOpener).toHaveBeenCalledWith(firstBox, body, again);
+      // O Modal do react-native-web toma o foco num portal no fim da página, fora da caixa da janela.
+      const busy = { name: 'Buscando a nota na Sefaz…', parentElement: { name: 'portal' } };
+      (document as { activeElement: unknown }).activeElement = busy;
+      await act(async () => router.replace({ pathname: '/tarefa/[id]', params: { id: 'pendente' } }));
+      await settle();
+      expect(stacked()).toEqual(['(tabs)', 'tarefa/[id]']);
+      const pendingBox = box().parent!.instance;
+      expect(rememberOpener).toHaveBeenCalledWith(pendingBox, busy, firstBox);
+      jest.mocked(restoreFocus).mockClear();
+      await act(async () => closeButton().props.onPress());
+      await settle();
+      expect(where().pathname).toBe('/');
+      expect(restoreFocus).toHaveBeenCalledWith(document, busy, firstBox);
+      expect(liveOpener(pageWith(tile), busy as unknown as Element, firstBox as object)).toBe(tile);
     });
 
     it('o "Fechar" também devolve o foco a quem abriu', async () => {
       await web(true);
       await open('/', WINDOWS);
       await openTask();
+      const node = box().parent!.instance;
       await act(async () => closeButton().props.onPress());
       await settle();
       expect(where().pathname).toBe('/');
-      expect(restoreFocus).toHaveBeenCalledWith(document, opener);
+      expect(restoreFocus).toHaveBeenCalledWith(document, opener, belowOf(node));
     });
 
     it('uma janela por cima de outra: só a de cima responde ao teclado', async () => {
