@@ -4,10 +4,10 @@
 // linha (o total e o "i"); o "i" abre o resto ali mesmo.
 //
 // O aberto e a escolha do lugar ficam com a tela, e a escolha (StorePicker) é
-// desenhada por ela fora das colunas do computador (ui/desktop): no navegador,
-// a janela que cruza a largura do computador troca as caixas das colunas e
-// remonta o que está nelas; assim o cartão não recolhe sozinho e a busca
-// digitada na escolha aberta não some.
+// desenhada por ela fora das colunas do computador (ui/desktop): o que está
+// aberto não depende de como as colunas se arrumam em cada largura, e a janela
+// do navegador que cruza a largura do computador não recolhe o cartão nem
+// apaga a busca digitada na escolha aberta.
 
 import { Platform, StyleSheet, View } from 'react-native';
 

@@ -5,6 +5,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'rea
 
 import ShoppingListScreen from '@/app/lista/[id]/index';
 import { toISODate } from '@/domain/dates';
+import { REFRESH_LABEL } from '@/domain/desktop';
 import { LinkIndex } from '@/domain/listLinks';
 import { FIRST_LIST_SKIP, FIRST_LIST_TEXT } from '@/domain/onboarding';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
@@ -1826,6 +1827,18 @@ describe('no computador: os itens numa coluna, o cartão de pôr item e a conta 
     expect(bar.props.children.props.title).toBe('Finalizar compra');
   });
 
+  it('o "Atualizar" do computador fica numa linha dele, e não por cima do cartão de pôr item da coluna do lado', async () => {
+    await desktop();
+    await mount();
+    const button = renderer!.root.findAll((node) => node.props.accessibilityLabel === REFRESH_LABEL && typeof node.props.onPress === 'function')[0];
+    expect(button).toBeDefined();
+    const holders = renderer!.root
+      .findAll((node) => (node.type as unknown) === 'View' && node.findAll((inner) => inner === button).length > 0)
+      .map((node) => StyleSheet.flatten(node.props.style) ?? {});
+    expect(holders[holders.length - 1]).toEqual({ alignSelf: 'flex-end' });
+    expect(holders.some((style) => style.position === 'absolute')).toBe(false);
+  });
+
   it('a janela do navegador que cruza a largura do computador não fecha as janelas abertas nem recolhe a conta', async () => {
     // Um iPad no Safari, de pé (820) e deitado (1180), ou a janela do computador redimensionada. As janelas ficam fora
     // das colunas, e o aberto da conta, na tela: nada disso depende das caixas das colunas (ui/desktop).
@@ -1866,7 +1879,7 @@ describe('no computador: os itens numa coluna, o cartão de pôr item e a conta 
   });
 
   it('a pergunta de "Estou indo ao mercado" também fica aberta ao cruzar a largura, e sai com a lista arquivada', async () => {
-    // O botão fica na coluna do lado, que remonta; a pergunta, aberta pelo botão, é da tela e fica fora das colunas.
+    // O botão fica na coluna do lado; a pergunta, aberta pelo botão, é da tela e fica fora das colunas.
     web = jest.replaceProperty(Platform, 'OS', 'web');
     await act(async () => Dimensions.set({ window: { ...WINDOW, width: 820 } }));
     mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz')]);

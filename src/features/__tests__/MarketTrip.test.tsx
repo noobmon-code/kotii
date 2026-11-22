@@ -92,7 +92,7 @@ function textsOf(node: ReactTestRendererJSON | ReactTestRendererJSON[] | string 
 
 /**
  * O botão e a confirmação ligados como a lista os liga: o aberto fica com a tela, e a confirmação fora do botão.
- * `buttonKey` remonta só o botão, como as colunas do computador quando a janela do navegador cruza a largura.
+ * `buttonKey` remonta só o botão: o aberto da pergunta não depende dele.
  */
 function TripAction({ list, buttonKey = 0 }: { list: { id: string; kind: ListKind }; buttonKey?: number }) {
   const [asking, setAsking] = useState(false);
@@ -356,8 +356,7 @@ describe('o botão "Estou indo ao mercado"', () => {
   });
 
   it('a pergunta aberta é da tela: o botão que remonta não a fecha, e gira pelo pedido dela, também remontado', async () => {
-    // No computador o botão fica na coluna do lado, e a janela do navegador que cruza a largura remonta o que está
-    // nas colunas (ui/desktop); a confirmação fica fora delas.
+    // No computador o botão fica na coluna do lado (ui/desktop); a confirmação fica fora das colunas, com a tela.
     const answers: ((answer: Answer) => void)[] = [];
     mockDb.rpc = () => new Promise((resolve) => answers.push(resolve));
     const sheet = () => tree.root.findByType(ActionSheet);

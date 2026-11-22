@@ -229,8 +229,8 @@ export default function ShoppingListScreen() {
   // "Onde estou": guardado por lista neste aparelho (lib/storeChoice), também escolhido em "Onde comprar".
   const storeChoice = useStoreChoice(id);
   // O cartão da conta aberto pelo "i" e a escolha do lugar aberta pelo chip dele: aqui, e a escolha desenhada fora das
-  // colunas, para a janela do navegador que cruza a largura do computador (ui/desktop: as caixas das colunas mudam,
-  // e o que está nelas remonta) não recolher o cartão nem fechar a escolha com a busca digitada.
+  // colunas, para o que está aberto não depender de como as colunas se arrumam em cada largura (ui/desktop): a janela
+  // do navegador que cruza a largura do computador não recolhe o cartão nem fecha a escolha com a busca digitada.
   const [estimateOpen, setEstimateOpen] = useState(false);
   const [choosingStore, setChoosingStore] = useState(false);
   // A confirmação de "Estou indo ao mercado" aberta: aqui, e desenhada fora das colunas, pelo mesmo motivo.
@@ -1229,9 +1229,10 @@ export default function ShoppingListScreen() {
           </Text>
         ) : null}
       </Columns>
-      {/* As janelas que o cartão de pôr item, o da conta e a ida abrem ficam fora das colunas: a janela do navegador que
-          cruza a largura do computador remonta o que está nelas (ui/desktop), e o código digitado no leitor, a busca de
-          "Qual produto é este?" e a de "Onde você está comprando?" sumiriam, e a pergunta de avisar a casa fecharia. */}
+      {/* As janelas que o cartão de pôr item, o da conta e a ida abrem ficam fora das colunas, e o aberto delas, com a
+          tela: nada disso depende de como as colunas se arrumam em cada largura (ui/desktop), e a janela do navegador
+          que cruza a largura do computador mantém o código digitado no leitor, a busca de "Qual produto é este?" e a de
+          "Onde você está comprando?", e a pergunta de avisar a casa aberta. */}
       {archived ? null : barcode.element}
       {archived ? null : <MarketTripConfirm list={list.data} visible={askingTrip} onClose={() => setAskingTrip(false)} />}
       {estimateShown ? (
