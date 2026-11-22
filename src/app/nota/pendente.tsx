@@ -20,7 +20,7 @@ export default function PendingReceiptScreen() {
   // `direto`: a nota nem foi à Sefaz, porque o estado dela pediu o "não sou robô" há pouco (domain/captchaStates).
   const { chave, direto } = useLocalSearchParams<{ chave?: string; direto?: string }>();
   const { pending, storeNames, ready, discard } = usePendingReceipts();
-  const scanner = useReceiptScanner({ replace: true });
+  const scanner = useReceiptScanner();
   const entry = pending.find((p) => p.accessKey === chave);
   // A Sefaz, tentada de novo daqui, pediu a verificação para esta nota: ela deixa de ser "a que nem foi à Sefaz".
   const [askedNow, setAskedNow] = useState(false);

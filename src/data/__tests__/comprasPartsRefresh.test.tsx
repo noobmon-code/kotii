@@ -6,10 +6,9 @@ import ShoppingScreen from '@/app/(tabs)/compras';
 import { Screen } from '@/ui/primitives';
 
 // A aba Compras de verdade, com os painéis e os hooks de dados de verdade em cada parte (Listas, Notas e Despensa);
-// só o Supabase é de mentira, e o leitor de notas e as notas pendentes do aparelho ficam de fora (têm os testes
-// deles). O que se confere aqui: puxar para atualizar busca de novo o que a parte aberta mostra, e só isso: nas
-// Listas, as listas e as arquivadas; nas Notas, tudo debaixo de 'receipts'; na Despensa, a despensa e o gás, a água
-// e a ração.
+// só o Supabase é de mentira, e as notas pendentes do aparelho ficam de fora (têm os testes delas). O que se confere
+// aqui: puxar para atualizar busca de novo o que a parte aberta mostra, e só isso: nas Listas, as listas e as
+// arquivadas; nas Notas, tudo debaixo de 'receipts'; na Despensa, a despensa e o gás, a água e a ração.
 
 type Answer = { data: unknown; error: unknown; count?: number };
 
@@ -37,7 +36,6 @@ jest.mock('@/ui/dialogs', () => ({ notify: jest.fn(), confirmAction: jest.fn() }
 jest.mock('@/lib/auth', () => ({ useHousehold: () => ({ data: { members: [] } }), useAuth: () => ({ session: null }) }));
 jest.mock('@/lib/session', () => ({ endSessionIfGone: async () => false }));
 jest.mock('@/lib/reminders', () => ({ REMINDER_PLACE: 'neste celular', remindersSupported: false, remindersUnavailableReason: () => null }));
-jest.mock('@/features/ReceiptScanner', () => ({ useReceiptScanner: () => ({ open: jest.fn(), busy: false, element: null }) }));
 jest.mock('@/data/pendingReceipts', () => ({ usePendingReceipts: () => ({ pending: [], storeNames: {} }) }));
 jest.mock('@/lib/supabase', () => {
   // Uma consulta do supabase-js: responde quando alguém espera por ela.
