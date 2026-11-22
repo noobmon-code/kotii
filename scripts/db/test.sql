@@ -11575,16 +11575,19 @@ begin
     ('sessao-beto', beto, h1, now() - interval '9 days');
 
   -- IA: o chat da Dani está em 240 de 300 (80%: perto), a foto da Dani em 79 de 100 (ainda não), o cardápio
-  -- da Dani no limite e o da Ana em 19 de 20; o mês passado conta, o de seis meses atrás não.
+  -- da Dani no limite e o da Ana em 19 de 20, a foto de produto da Ana em 40 de 50 (80%: perto) e a da Dani em
+  -- 50 (no limite, e não mais perto); o mês passado conta, o de seis meses atrás não.
   insert into public.ai_usage (household_id, month, kind, count) values
     (h1, this_month, 'chat', 4),
     (h1, this_month, 'photo', 85),
     (h1, this_month, 'menu', 19),
+    (h1, this_month, 'product', 40),
     (h1, to_char(month_start - interval '1 month', 'YYYY-MM'), 'chat', 7),
     (h2, this_month, 'chat', 240),
     (h2, this_month, 'photo', 79),
     (h2, this_month, 'menu', 20),
     (h2, this_month, 'nfce', 0),
+    (h2, this_month, 'product', 50),
     (h2, to_char(month_start - interval '6 months', 'YYYY-MM'), 'chat', 9);
 
   -- Funções: a lista (dois itens novos na Ana, um velho na Dani), notas (a da Ana confirmada agora, a da Dani
@@ -11658,7 +11661,7 @@ begin
   select * into s from public.app_daily_stats where day = today;
   assert s.accounts = 5 and s.households = 2, 'today: five accounts, two households';
   assert s.active_users = 2 + beto_today, 'today: Ana and Dani (and Beto when his refresh was today): ' || s.active_users;
-  assert s.ai_month = '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0, "product": 0}',
+  assert s.ai_month = '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0, "product": 90}',
     'the month''s AI use, summed, and every kind without use at zero: ' || s.ai_month::text;
   assert not s.backfilled, 'a real snapshot';
 end $$;
@@ -11701,7 +11704,7 @@ begin
   assert j -> 'daily' = jsonb_build_array(
     jsonb_build_object('day', to_char(today - 30, 'YYYY-MM-DD'), 'accounts', 1, 'active_users', 1, 'households', 1, 'ai', '{}'::jsonb, 'backfilled', true),
     jsonb_build_object('day', to_char(today, 'YYYY-MM-DD'), 'accounts', 5, 'active_users', 2 + beto_today, 'households', 2,
-      'ai', '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0, "product": 0}'::jsonb, 'backfilled', false)
+      'ai', '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0, "product": 90}'::jsonb, 'backfilled', false)
   ), 'the 30 days plus the day before, oldest first: ' || (j -> 'daily')::text;
   assert j -> 'ai' ->> 'month' = this_month, 'the AI month';
   assert j -> 'ai' -> 'months' = jsonb_build_array(
@@ -11709,11 +11712,12 @@ begin
     jsonb_build_object('month', this_month, 'kind', 'chat', 'uses', 244, 'households', 2),
     jsonb_build_object('month', this_month, 'kind', 'menu', 'uses', 39, 'households', 2),
     jsonb_build_object('month', this_month, 'kind', 'nfce', 'uses', 0, 'households', 0),
-    jsonb_build_object('month', this_month, 'kind', 'photo', 'uses', 164, 'households', 2)
+    jsonb_build_object('month', this_month, 'kind', 'photo', 'uses', 164, 'households', 2),
+    jsonb_build_object('month', this_month, 'kind', 'product', 'uses', 90, 'households', 2)
   ), 'six months by month and kind, without the older one: ' || (j -> 'ai' -> 'months')::text;
-  assert j -> 'ai' -> 'near_limit' = '[{"kind": "chat", "households": 1}, {"kind": "photo", "households": 1}, {"kind": "menu", "households": 1}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}, {"kind": "product", "households": 0}]',
+  assert j -> 'ai' -> 'near_limit' = '[{"kind": "chat", "households": 1}, {"kind": "photo", "households": 1}, {"kind": "menu", "households": 1}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}, {"kind": "product", "households": 1}]',
     'near the limit from 80%: ' || (j -> 'ai' -> 'near_limit')::text;
-  assert j -> 'ai' -> 'at_limit' = '[{"kind": "chat", "households": 0}, {"kind": "photo", "households": 0}, {"kind": "menu", "households": 1}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}, {"kind": "product", "households": 0}]',
+  assert j -> 'ai' -> 'at_limit' = '[{"kind": "chat", "households": 0}, {"kind": "photo", "households": 0}, {"kind": "menu", "households": 1}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}, {"kind": "product", "households": 1}]',
     'at the limit: ' || (j -> 'ai' -> 'at_limit')::text;
   assert j -> 'features' = (
     select jsonb_agg(jsonb_build_object(
