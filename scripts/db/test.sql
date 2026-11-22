@@ -11351,7 +11351,9 @@ begin
       and bool_and(ai_month = '{}'::jsonb) filter (where backfilled)
     from public.app_daily_stats
   ), 'the migration wrote the 30 days before it (backfilled, AI unknown) and its own day';
-  -- A foto do dia da migração, num banco ainda sem uso de IA: os cinco tipos, com zero (um zero sabido, não '{}').
+  -- A foto do dia da migração, num banco ainda sem uso de IA: os cinco tipos de então, com zero (um zero sabido, não
+  -- '{}'). A foto de produto entrou depois (20261121013508_app_dashboard_product_kind), e a foto de um mês sem uso
+  -- com a função de agora, com os seis tipos, é conferida mais abaixo, no banco sem casa.
   assert (
     select bool_and(ai_month = '{"chat": 0, "photo": 0, "menu": 0, "nfce": 0, "finance": 0}'::jsonb) filter (where not backfilled)
     from public.app_daily_stats
@@ -11462,6 +11464,13 @@ do $$
 declare
   j jsonb;
   today date := (now() at time zone 'America/Sao_Paulo')::date;
+  -- Os tipos que ai_usage aceita (o check da tabela, como o banco o guarda), na ordem em que aparecem nele.
+  kinds text[] := array(
+    select m.k[1]
+    from pg_constraint c, regexp_matches(pg_get_constraintdef(c.oid), '''([a-z_]+)''', 'g') with ordinality as m (k, n)
+    where c.conrelid = 'public.ai_usage'::regclass and c.conname = 'ai_usage_kind_check'
+    order by m.n
+  );
 begin
   assert public.is_app_admin(), 'now she is';
   j := public.app_dashboard();
@@ -11479,10 +11488,20 @@ begin
     'from 29 days ago to today';
   assert j -> 'daily' = '[]', 'no daily row';
   assert j -> 'ai' -> 'months' = '[]', 'no AI use';
-  assert j -> 'ai' -> 'limits' = '{"chat": 300, "photo": 100, "menu": 20, "nfce": 200, "finance": 100}', 'the limits';
-  assert j -> 'ai' -> 'near_limit' = '[{"kind": "chat", "households": 0}, {"kind": "photo", "households": 0}, {"kind": "menu", "households": 0}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}]',
+  assert j -> 'ai' -> 'limits' = '{"chat": 300, "photo": 100, "menu": 20, "nfce": 200, "finance": 100, "product": 50}', 'the limits';
+  assert j -> 'ai' -> 'near_limit' = '[{"kind": "chat", "households": 0}, {"kind": "photo", "households": 0}, {"kind": "menu", "households": 0}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}, {"kind": "product", "households": 0}]',
     'every kind near the limit, with zero';
   assert j -> 'ai' -> 'at_limit' = j -> 'ai' -> 'near_limit', 'and at the limit';
+  -- Os tipos estão escritos à mão no painel: um tipo que entre no check de ai_usage (e em ai_limit) sem uma
+  -- migração que recrie app_dashboard fica sem limite e sem casas perto e no limite. Cada tipo do check, com o
+  -- limite dele.
+  assert cardinality(kinds) >= 6, 'the kinds of the ai_usage check: ' || kinds::text;
+  assert (select array_agg(k order by k) from jsonb_object_keys(j -> 'ai' -> 'limits') k) = (select array_agg(k order by k) from unnest(kinds) k),
+    'a limit for every kind ai_usage accepts: ' || (j -> 'ai' -> 'limits')::text || ' / ' || kinds::text;
+  assert (select bool_and(jsonb_typeof(j -> 'ai' -> 'limits' -> k) = 'number' and (j -> 'ai' -> 'limits' ->> k)::integer > 0) from unnest(kinds) k),
+    'every limit is ai_limit''s, a positive number: ' || (j -> 'ai' -> 'limits')::text;
+  assert (select array_agg(e ->> 'kind' order by e ->> 'kind') from jsonb_array_elements(j -> 'ai' -> 'near_limit') e)
+    = (select array_agg(k order by k) from unnest(kinds) k), 'a near-the-limit row for every kind: ' || (j -> 'ai' -> 'near_limit')::text;
   assert jsonb_array_length(j -> 'features') = 19
     and (select bool_and((e ->> 'households')::int = 0 and (e ->> 'households_30d')::int = 0 and (e ->> 'events_30d')::int = 0)
          from jsonb_array_elements(j -> 'features') e), 'nineteen features, none used';
@@ -11496,6 +11515,33 @@ select set_config('request.jwt.claim.sub', '', true) \gset
 do $$
 begin
   assert not public.is_app_admin(), 'no account, no admin';
+end $$;
+
+-- A foto do dia de um mês em que ninguém usou a IA, com a função de agora: cada tipo que ai_usage aceita, com zero
+-- (um zero sabido: só o dia reconstruído fica com '{}'), a foto de produto também. Aqui não há soma nenhuma: o total
+-- do dia é só o objeto de zeros de snapshot_app_stats, e ele tem de ter cada tipo do check de ai_usage. As fotos de
+-- mais abaixo conferem o mesmo zero ao lado das somas: o do consultor financeiro, que não tem uso nelas, e, no fim,
+-- o da foto de produto sem uso no mês.
+reset role;
+do $$
+declare
+  today date := (now() at time zone 'America/Sao_Paulo')::date;
+  kinds text[] := array(
+    select m.k[1]
+    from pg_constraint c, regexp_matches(pg_get_constraintdef(c.oid), '''([a-z_]+)''', 'g') with ordinality as m (k, n)
+    where c.conrelid = 'public.ai_usage'::regclass and c.conname = 'ai_usage_kind_check'
+    order by m.n
+  );
+  s public.app_daily_stats;
+begin
+  assert not exists (select 1 from public.ai_usage where month = public.ai_month()), 'no AI use this month yet';
+  perform public.snapshot_app_stats();
+  select * into s from public.app_daily_stats where day = today;
+  assert s.ai_month = '{"chat": 0, "photo": 0, "menu": 0, "nfce": 0, "finance": 0, "product": 0}',
+    'a snapshot of a month without AI use writes every kind at zero, the product photo too: ' || s.ai_month::text;
+  assert (select array_agg(k order by k) from jsonb_object_keys(s.ai_month) k) = (select array_agg(k order by k) from unnest(kinds) k),
+    'every kind ai_usage accepts is in the day''s total: ' || s.ai_month::text || ' / ' || kinds::text;
+  assert not s.backfilled and s.accounts = 1 and s.households = 0 and s.active_users = 0, 'and the rest of the day: ' || row_to_json(s)::text;
 end $$;
 
 -- As outras pessoas. Beto (há 10 dias) e Caio (há 20, sem confirmar o e-mail) entraram e voltaram ou não; Dani
@@ -11574,16 +11620,19 @@ begin
     ('sessao-beto', beto, h1, now() - interval '9 days');
 
   -- IA: o chat da Dani está em 240 de 300 (80%: perto), a foto da Dani em 79 de 100 (ainda não), o cardápio
-  -- da Dani no limite e o da Ana em 19 de 20; o mês passado conta, o de seis meses atrás não.
+  -- da Dani no limite e o da Ana em 19 de 20, a foto de produto da Ana em 40 de 50 (80%: perto) e a da Dani em
+  -- 50 (no limite, e não mais perto); o mês passado conta, o de seis meses atrás não.
   insert into public.ai_usage (household_id, month, kind, count) values
     (h1, this_month, 'chat', 4),
     (h1, this_month, 'photo', 85),
     (h1, this_month, 'menu', 19),
+    (h1, this_month, 'product', 40),
     (h1, to_char(month_start - interval '1 month', 'YYYY-MM'), 'chat', 7),
     (h2, this_month, 'chat', 240),
     (h2, this_month, 'photo', 79),
     (h2, this_month, 'menu', 20),
     (h2, this_month, 'nfce', 0),
+    (h2, this_month, 'product', 50),
     (h2, to_char(month_start - interval '6 months', 'YYYY-MM'), 'chat', 9);
 
   -- Funções: a lista (dois itens novos na Ana, um velho na Dani), notas (a da Ana confirmada agora, a da Dani
@@ -11657,7 +11706,10 @@ begin
   select * into s from public.app_daily_stats where day = today;
   assert s.accounts = 5 and s.households = 2, 'today: five accounts, two households';
   assert s.active_users = 2 + beto_today, 'today: Ana and Dani (and Beto when his refresh was today): ' || s.active_users;
-  assert s.ai_month = '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0}',
+  -- O consultor financeiro não tem uso neste mês: o "finance": 0 vem do objeto de zeros, não de uma soma.
+  assert not exists (select 1 from public.ai_usage where kind = 'finance' and month = public.ai_month()),
+    'no finance use this month, so its zero is the snapshot''s own';
+  assert s.ai_month = '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0, "product": 90}',
     'the month''s AI use, summed, and every kind without use at zero: ' || s.ai_month::text;
   assert not s.backfilled, 'a real snapshot';
 end $$;
@@ -11700,7 +11752,7 @@ begin
   assert j -> 'daily' = jsonb_build_array(
     jsonb_build_object('day', to_char(today - 30, 'YYYY-MM-DD'), 'accounts', 1, 'active_users', 1, 'households', 1, 'ai', '{}'::jsonb, 'backfilled', true),
     jsonb_build_object('day', to_char(today, 'YYYY-MM-DD'), 'accounts', 5, 'active_users', 2 + beto_today, 'households', 2,
-      'ai', '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0}'::jsonb, 'backfilled', false)
+      'ai', '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0, "product": 90}'::jsonb, 'backfilled', false)
   ), 'the 30 days plus the day before, oldest first: ' || (j -> 'daily')::text;
   assert j -> 'ai' ->> 'month' = this_month, 'the AI month';
   assert j -> 'ai' -> 'months' = jsonb_build_array(
@@ -11708,11 +11760,12 @@ begin
     jsonb_build_object('month', this_month, 'kind', 'chat', 'uses', 244, 'households', 2),
     jsonb_build_object('month', this_month, 'kind', 'menu', 'uses', 39, 'households', 2),
     jsonb_build_object('month', this_month, 'kind', 'nfce', 'uses', 0, 'households', 0),
-    jsonb_build_object('month', this_month, 'kind', 'photo', 'uses', 164, 'households', 2)
+    jsonb_build_object('month', this_month, 'kind', 'photo', 'uses', 164, 'households', 2),
+    jsonb_build_object('month', this_month, 'kind', 'product', 'uses', 90, 'households', 2)
   ), 'six months by month and kind, without the older one: ' || (j -> 'ai' -> 'months')::text;
-  assert j -> 'ai' -> 'near_limit' = '[{"kind": "chat", "households": 1}, {"kind": "photo", "households": 1}, {"kind": "menu", "households": 1}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}]',
+  assert j -> 'ai' -> 'near_limit' = '[{"kind": "chat", "households": 1}, {"kind": "photo", "households": 1}, {"kind": "menu", "households": 1}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}, {"kind": "product", "households": 1}]',
     'near the limit from 80%: ' || (j -> 'ai' -> 'near_limit')::text;
-  assert j -> 'ai' -> 'at_limit' = '[{"kind": "chat", "households": 0}, {"kind": "photo", "households": 0}, {"kind": "menu", "households": 1}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}]',
+  assert j -> 'ai' -> 'at_limit' = '[{"kind": "chat", "households": 0}, {"kind": "photo", "households": 0}, {"kind": "menu", "households": 1}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}, {"kind": "product", "households": 1}]',
     'at the limit: ' || (j -> 'ai' -> 'at_limit')::text;
   assert j -> 'features' = (
     select jsonb_agg(jsonb_build_object(
@@ -11812,6 +11865,21 @@ begin
   update public.app_daily_stats set active_users = yesterday_active + 5 where day = today - 1;
   perform public.snapshot_app_stats();
   assert (select active_users from public.app_daily_stats where day = today - 1) = yesterday_active + 5, 'yesterday never goes down';
+end $$;
+
+-- Os outros tipos com uso e a foto de produto sem nenhum no mês: ela fica com zero, ao lado das somas (como o
+-- consultor financeiro, que segue sem uso).
+do $$
+declare
+  s public.app_daily_stats;
+begin
+  delete from public.ai_usage where kind = 'product' and month = public.ai_month();
+  assert not exists (select 1 from public.ai_usage where kind in ('product', 'finance') and month = public.ai_month()),
+    'no product photo nor finance use this month';
+  perform public.snapshot_app_stats();
+  select * into s from public.app_daily_stats where day = (now() at time zone 'America/Sao_Paulo')::date;
+  assert s.ai_month = '{"chat": 245, "photo": 164, "menu": 39, "nfce": 0, "finance": 0, "product": 0}',
+    'the kinds without use this month stay at zero beside the sums: ' || s.ai_month::text;
 end $$;
 rollback;
 

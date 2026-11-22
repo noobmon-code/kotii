@@ -34,16 +34,19 @@ export function houseInviteText(house: { name: string; invite_code: string }, wi
 /**
  * Chamar a casa: o convite pelo WhatsApp, por outro app (o menu de compartilhar do sistema) ou copiado. Fecha em
  * qualquer escolha, também em "Agora não" (`onClose`): quem abriu segue o caminho dele. O app não manda nada; quem
- * manda é o app escolhido.
+ * manda é o app escolhido. `onClosed` (ui/ActionSheet): o menu já saiu e a escolha já rodou; quem tira o convite da
+ * tela ao fechar (a faixa da primeira lista) espera por ele, senão no iOS a escolha some junto com o menu.
  */
 export function InviteSheet({
   visible,
   house,
   onClose,
+  onClosed,
 }: {
   visible: boolean;
   house: { name: string; invite_code: string };
   onClose: () => void;
+  onClosed?: () => void;
 }) {
   const c = useColors();
   const message = houseInviteText(house, true);
@@ -81,7 +84,14 @@ export function InviteSheet({
   actions.push({ label: INVITE_COPY, icon: 'content-copy', onPress: () => void copy() });
 
   return (
-    <ActionSheet visible={visible} title={INVITE_TITLE} message={INVITE_TEXT} actions={actions} cancelLabel={INVITE_SKIP} onClose={onClose}>
+    <ActionSheet
+      visible={visible}
+      title={INVITE_TITLE}
+      message={INVITE_TEXT}
+      actions={actions}
+      cancelLabel={INVITE_SKIP}
+      onClose={onClose}
+      onClosed={onClosed}>
       <View style={[styles.code, { backgroundColor: c.surfaceAlt }]}>
         <Text variant="small">Código da casa</Text>
         <Text variant="title" selectable style={styles.letters}>

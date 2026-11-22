@@ -49,8 +49,22 @@ const STEPS: readonly { key: FirstStepKey; title: string; hint: string; skippabl
   { key: 'pessoas', title: 'Cadastrar pessoas e pets', hint: 'Crianças, idosos e pets que não usam o app' },
 ];
 
-/** Com o começo novo (domain/onboarding), o passo de convidar abre o convite ali mesmo, em vez de Configurações. */
+/**
+ * Para onde o toque em "Convidar" leva, e o que a dica diz: `configuracoes`, onde fica o código de convite (o de
+ * antes); no começo novo (domain/onboarding), o convite abre ali mesmo, e a dica diz o que a mensagem leva: `link` no
+ * navegador, onde ela traz o link do convite, e `codigo` no aparelho, onde ela traz só o código.
+ */
+export type FirstStepInvite = 'configuracoes' | 'link' | 'codigo';
+
+/** O convite abre ali mesmo, e a mensagem leva o link (no navegador). */
 export const FIRST_STEP_INVITE_BY_LINK = 'Mande o link do convite pelo WhatsApp';
+/** O convite abre ali mesmo, e a mensagem leva só o código (no aparelho, que não tem o endereço do site). */
+export const FIRST_STEP_INVITE_BY_CODE = 'Mande o convite pelo WhatsApp';
+
+const INVITE_HINTS: Record<Exclude<FirstStepInvite, 'configuracoes'>, string> = {
+  link: FIRST_STEP_INVITE_BY_LINK,
+  codigo: FIRST_STEP_INVITE_BY_CODE,
+};
 
 /** Os passos que dá para pular. */
 export const SKIPPABLE_FIRST_STEPS: readonly FirstStepKey[] = STEPS.filter((step) => step.skippable).map((step) => step.key);
@@ -58,12 +72,12 @@ export const SKIPPABLE_FIRST_STEPS: readonly FirstStepKey[] = STEPS.filter((step
 /**
  * Os passos, na ordem, cada um feito ou não; null enquanto falta saber algum deles. `skipped`: os que a pessoa
  * pulou neste aparelho, que saem da lista (e não precisam ser sabidos); só os que dá para pular contam.
- * `inviteByLink`: o toque em "Convidar" abre o convite com o link (o começo novo), e a dica diz isso.
+ * `invite`: para onde o toque em "Convidar" leva (FirstStepInvite), e a dica diz isso.
  */
 export function firstSteps(
   facts: FirstStepsFacts,
   skipped: ReadonlySet<string> = new Set(),
-  { inviteByLink = false }: { inviteByLink?: boolean } = {},
+  { invite = 'configuracoes' }: { invite?: FirstStepInvite } = {},
 ): FirstStep[] | null {
   const { members, anyList, anyReceipt, anyPantry, peopleWithoutApp } = facts;
   const known: Record<FirstStepKey, boolean | undefined> = {
@@ -78,7 +92,7 @@ export function firstSteps(
   return shown.map((step) => ({
     key: step.key,
     title: step.title,
-    hint: inviteByLink && step.key === 'convidar' ? FIRST_STEP_INVITE_BY_LINK : step.hint,
+    hint: invite !== 'configuracoes' && step.key === 'convidar' ? INVITE_HINTS[invite] : step.hint,
     done: known[step.key] === true,
     skippable: Boolean(step.skippable),
   }));

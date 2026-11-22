@@ -26,6 +26,7 @@ export function ActionSheet({
   message,
   actions,
   onClose,
+  onClosed,
   children,
   cancelLabel = 'Cancelar',
 }: {
@@ -34,6 +35,12 @@ export function ActionSheet({
   message?: string;
   actions: SheetAction[];
   onClose: () => void;
+  /**
+   * O menu já saiu e a ação escolhida já rodou: no iOS, quando ele acaba de descer (o onDismiss do Modal); nos outros,
+   * logo depois do `onClose` (lá a ação roda na hora). É o momento de quem tira o menu da tela ao fechar (desmonta o
+   * menu, ou a parte que o tem): desmontado antes disso, no iOS, o menu leva junto a ação que esperava ele descer.
+   */
+  onClosed?: () => void;
   children?: ReactNode;
   /** O botão que fecha sem escolher nada, quando "Cancelar" não diz o que acontece ("Deixar como está"). */
   cancelLabel?: string;
@@ -44,23 +51,33 @@ export function ActionSheet({
   // No iOS, abrir câmera/galeria enquanto o modal fecha falha em silêncio:
   // a ação escolhida roda só depois que o modal some (onDismiss).
   const pending = useRef<(() => void) | null>(null);
-  const run = (action: () => void) => {
-    if (Platform.OS === 'ios') pending.current = action;
+  const ios = Platform.OS === 'ios';
+  const close = () => {
     onClose();
-    if (Platform.OS !== 'ios') action();
+    if (!ios) onClosed?.();
+  };
+  const run = (action: () => void) => {
+    if (ios) pending.current = action;
+    onClose();
+    if (!ios) {
+      action();
+      onClosed?.();
+    }
   };
   return (
     <Modal
       visible={visible}
       transparent
       animationType="fade"
-      onRequestClose={onClose}
+      onRequestClose={close}
       onDismiss={() => {
         const action = pending.current;
         pending.current = null;
         action?.();
+        // O onDismiss é só do iOS (no navegador, o react-native-web também o chama: lá o `onClosed` já veio no fechar).
+        if (ios) onClosed?.();
       }}>
-      <Pressable style={[styles.backdrop, desktop && styles.backdropDesktop]} onPress={onClose} accessibilityLabel="Fechar">
+      <Pressable style={[styles.backdrop, desktop && styles.backdropDesktop]} onPress={close} accessibilityLabel="Fechar">
         <SafeAreaView edges={['bottom']} style={[styles.anchor, desktop && styles.anchorDesktop]}>
           <Pressable
             style={[
@@ -96,7 +113,7 @@ export function ActionSheet({
             </ScrollView>
             <Pressable
               accessibilityRole="button"
-              onPress={onClose}
+              onPress={close}
               style={({ pressed }) => [styles.action, { borderTopColor: c.border }, pressed && { backgroundColor: c.surfaceAlt }]}>
               <Text variant="label" color="textMuted">
                 {cancelLabel}

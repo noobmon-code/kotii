@@ -99,7 +99,9 @@ function ClassicWelcome({ pendingInvite }: { pendingInvite: string | null }) {
       // vez de erro. O PostgREST manda o registro nulo como objeto com campos nulos.
       const houseId = (data as { id?: string | null } | null)?.id;
       if (!houseId) throw new Error(INVITE_NOT_FOUND);
-      if (mode === 'entrar') clearPendingInvite();
+      // Usado, ou a pessoa escolheu criar a própria casa: o código do link sai do aparelho (guardado, a Hoje o levaria
+      // para "Suas casas", features/onboarding/OnboardingContinuation).
+      clearPendingInvite();
       // O lugar vai antes de buscar a casa de novo: com ela, esta tela sai (a guarda do _layout), e o pedido leva o id
       // da casa nova, que ainda não é a aberta neste aparelho. Se a tela sair antes (a casa buscada de novo por conta
       // própria), o pedido segue e o aviso também.

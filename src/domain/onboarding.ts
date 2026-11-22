@@ -51,6 +51,9 @@ export const CONFIRM_EMAIL_DONE = 'Já confirmei, entrar';
 export const CONFIRM_EMAIL_RESEND = 'Reenviar o e-mail';
 export const CONFIRM_EMAIL_CHANGE = 'Usar outro e-mail';
 export const CONFIRM_EMAIL_RESENT = 'Mandamos de novo. Use o link do e-mail mais recente.';
+/** Pedido cedo demais: o Supabase não mandou outro, e o link do e-mail anterior continua valendo. */
+export const CONFIRM_EMAIL_NOT_YET =
+  'Ainda não deu para mandar outro. O link do e-mail que já mandamos continua valendo; o botão mostra quando dá para pedir de novo.';
 /** O Supabase só manda outro e-mail para o mesmo endereço depois disso. */
 export const RESEND_SECONDS = 60;
 export function resendLabel(waitSeconds: number): string {
@@ -71,7 +74,7 @@ export const HOUSE_PLACE_ROW = { title: 'Onde fica a casa (opcional)', subtitle:
 export const HOUSE_CREATE = 'Criar casa';
 
 export const CODE_TITLE = 'Digite o código do convite';
-export const CODE_HINT = 'Está na mensagem que te mandaram. Quem te convidou também acha em Ajustes → Convidar.';
+export const CODE_HINT = 'Está na mensagem que te mandaram. Quem te convidou também acha em Configurações → Convidar.';
 export const CODE_PASTE = 'Colar';
 export const CODE_JOIN = 'Entrar na casa';
 export const CODE_NOTHING_TO_PASTE = 'Copie a mensagem do convite (ou só o código) e toque em "Colar" de novo.';
@@ -81,7 +84,7 @@ export const JOINED_TITLE = 'Você entrou na casa!';
 export function joinedText(houseName: string): string {
   return `"${houseName}" já aparece aqui: listas, tarefas, saúde e o que mais a casa tiver.`;
 }
-export const JOINED_WRONG = 'Entrou na casa errada? Em Ajustes → Conta, toque em "Sair desta casa".';
+export const JOINED_WRONG = 'Entrou na casa errada? Em Configurações → Conta, toque em "Sair desta casa".';
 export const JOINED_OK = 'Começar';
 
 /** A faixa da lista de mercado logo depois de criar a casa. */
@@ -99,7 +102,7 @@ export const INVITE_COPY = 'Copiar o convite';
 export const INVITE_SKIP = 'Agora não';
 export const INVITE_COPIED_TITLE = 'Convite copiado';
 export const INVITE_COPIED = 'É só colar na conversa.';
-export const INVITE_COPY_FAILED = 'Não deu para copiar. O código da casa está em Ajustes → Convidar.';
+export const INVITE_COPY_FAILED = 'Não deu para copiar. O código da casa está em Configurações → Convidar.';
 
 /** Pôr o Kotii na tela de início (só no navegador, quando ainda não está). */
 export const INSTALL_TITLE = 'Ponha o Kotii na tela de início';
@@ -116,7 +119,7 @@ export const INSTALL_SKIP = 'Agora não';
 export const PREVIEW_TITLE = 'Ver o começo como conta nova';
 export const PREVIEW_SUBTITLE = 'Das boas-vindas à primeira lista, como uma pessoa nova vê';
 export const PREVIEW_NOTICE =
-  'Prévia: as telas de conta não criam nada. A casa criada aqui é de verdade e fica em Suas casas; para apagar, abra ela e use Ajustes → Conta → Sair desta casa.';
+  'Prévia: as telas de conta não criam nada. A casa criada aqui é de verdade e fica em Suas casas; para apagar, abra ela e use Configurações → Conta → Sair desta casa.';
 export const PREVIEW_ONLY_ADMINS = 'Esta prévia é só para quem mantém o app.';
 
 /** Quanto tempo o código de um link de convite fica guardado no aparelho, esperando a conta. */
@@ -167,7 +170,7 @@ export function inviteLink(origin: string, code: string): string {
 /** A mensagem do convite: com o link quando há o endereço do site (no navegador), e sempre com o código. */
 export function inviteMessage(houseName: string, code: string, origin: string | null): string {
   return origin
-    ? `Entra na nossa casa "${houseName}" no Kotii: ${inviteLink(origin, code)} (ou use o código ${code}).`
+    ? `Entre na nossa casa "${houseName}" no Kotii: ${inviteLink(origin, code)} (ou use o código ${code}).`
     : `Entre na nossa casa "${houseName}" no Kotii com o código ${code}.`;
 }
 
