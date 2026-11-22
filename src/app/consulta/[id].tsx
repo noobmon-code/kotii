@@ -1,4 +1,4 @@
-import { router, Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
@@ -7,6 +7,7 @@ import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { splitTimestamp, toTimestamp } from '@/domain/health';
 import { parseTimes } from '@/domain/medications';
 import { openNewPerson, PersonChips } from '@/features/health/PersonChips';
+import { closeWindow } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import type { Appointment, Person } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -71,7 +72,7 @@ function AppointmentForm({
           status,
         },
       },
-      { onSuccess: () => router.back(), onError },
+      { onSuccess: () => closeWindow('consulta/[id]'), onError },
     );
   }
 
@@ -125,7 +126,7 @@ function AppointmentForm({
           icon="trash-can-outline"
           onPress={() =>
             confirmAction('Apagar consulta', `Apagar ${appointment.title}?`, 'Apagar', () =>
-              remove.mutate(appointment.id, { onSuccess: () => router.back(), onError }),
+              remove.mutate(appointment.id, { onSuccess: () => closeWindow('consulta/[id]'), onError }),
             )
           }
         />

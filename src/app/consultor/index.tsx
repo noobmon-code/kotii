@@ -142,7 +142,8 @@ function Consultor() {
     !sync.isPending && sync.variables?.force === true && sync.data && sync.data.synced === 0 && sync.data.skipped > 0;
 
   return (
-    <Screen edges={[]} refreshing={pulling} onRefresh={() => refresh(true)}>
+    // No computador, o "Atualizar" da barra dos bancos já faz o que puxar a tela faz: a tela não ganha um segundo.
+    <Screen edges={[]} refreshing={pulling} onRefresh={() => refresh(true)} ownRefreshButton>
       <SyncBar
         connections={data?.connections}
         failed={finance.status === 'error'}

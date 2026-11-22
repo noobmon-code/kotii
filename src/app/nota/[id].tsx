@@ -2,8 +2,7 @@ import { onlineManager } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useMemo, useRef, useState, type ReactNode } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { fetchPantryNear } from '@/data/home';
 import { useLearnedAbbreviations } from '@/data/learnedAbbreviations';
@@ -39,6 +38,7 @@ import { joinNames, receiptPantryRepeats } from '@/domain/cartPantry';
 import { CATEGORIES, getCategory } from '@/domain/categories';
 import { COMMON_ITEMS } from '@/domain/commonItems';
 import { formatBRDate, formatShortDate, parseBRDate, toISODate } from '@/domain/dates';
+import { DESKTOP_PANEL_SIDE_WIDTH } from '@/domain/desktop';
 import { duplicateReceiptNotice, findDuplicateReceipt } from '@/domain/duplicateReceipt';
 import { receiptSavedText } from '@/domain/finishPurchase';
 import {
@@ -141,9 +141,10 @@ import { handConfirmedReceipt } from '@/lib/finishPurchase';
 import { goBackOr } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import type { ReceiptItem } from '@/lib/types';
-import { Backdrop } from '@/ui/Backdrop';
+import { Actions, Columns, useDesktop } from '@/ui/desktop';
 import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
+import { SheetModal } from '@/ui/SheetModal';
 import {
   Badge,
   Button,
@@ -162,7 +163,7 @@ import {
   Text,
   TextField,
 } from '@/ui/primitives';
-import { space, useColors } from '@/ui/theme';
+import { space } from '@/ui/theme';
 
 type Picker =
   | { kind: 'store' }
@@ -198,6 +199,8 @@ const confirmGone = (error: unknown) =>
 
 export default function ReceiptScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  // No computador (ui/desktop), a revisão em duas colunas: os itens de um lado, o resto do outro, e as ações no rodapé.
+  const desktop = useDesktop();
   const receiptQuery = useReceipt(id);
   const receiptReadAt = useReceiptReadAt(id);
   const products = useProducts();
@@ -1033,295 +1036,327 @@ export default function ReceiptScreen() {
       : [],
   );
 
+  const confirmButton = isDraft ? (
+    <Button
+      title={`Confirmar nota (${items.length} ${items.length === 1 ? 'item' : 'itens'})`}
+      icon="check"
+      onPress={doConfirm}
+      loading={confirm.isPending || checkingPantry || listPending || saveTotal.isPending || settlingValue}
+      disabled={!items.length || listFailed}
+    />
+  ) : null;
+  const removeButton = (
+    <Button
+      title={isDraft ? 'Descartar nota' : 'Excluir nota'}
+      variant="danger"
+      icon="trash-can-outline"
+      onPress={() => {
+        // O texto da pergunta vem do status em tela: com a busca que falhou, a nota pode já estar confirmada lá.
+        if (refuseStale()) return;
+        confirmAction(
+          isDraft ? 'Descartar nota' : 'Excluir nota',
+          isDraft ? 'Os itens lidos serão apagados.' : 'Os preços desta nota saem do comparativo. Itens já na despensa continuam.',
+          isDraft ? 'Descartar' : 'Excluir',
+          () => deleteReceipt.mutate(photos, { onSuccess: () => router.back(), onError }),
+        );
+      }}
+    />
+  );
+
   return (
+    // "Confirmar nota" fica no rodapé fixo, sempre à vista. No computador, o rodapé leva também o "Descartar nota"
+    // (no celular, ele vem no fim, depois dos itens), os dois encostados à direita, embaixo da coluna do lado: a ordem
+    // do teclado e do leitor de tela continua a do celular, os itens antes das duas ações.
     <Screen
       edges={[]}
+      wide
       footer={
-        isDraft ? (
-          <Button
-            title={`Confirmar nota (${items.length} ${items.length === 1 ? 'item' : 'itens'})`}
-            icon="check"
-            onPress={doConfirm}
-            loading={confirm.isPending || checkingPantry || listPending || saveTotal.isPending || settlingValue}
-            disabled={!items.length || listFailed}
-          />
-        ) : undefined
+        desktop ? (
+          <Actions end>
+            {removeButton}
+            {confirmButton}
+          </Actions>
+        ) : (
+          (confirmButton ?? undefined)
+        )
       }>
       <Stack.Screen options={{ title: isDraft ? 'Revisar nota' : 'Nota fiscal' }} />
 
       {receiptQuery.isError ? <StaleNotice onRetry={() => receiptQuery.refetch()} /> : null}
 
-      {duplicate ? (
-        <Card style={styles.gapSm}>
-          <Row>
-            <Icon name="content-duplicate" color="warning" />
-            <Text variant="body" style={styles.flex}>
-              {duplicateReceiptNotice(duplicate)}
-            </Text>
-          </Row>
-          <Row>
-            <Button
-              title="Ver a outra nota"
-              variant="secondary"
-              compact
-              onPress={() => router.push({ pathname: '/nota/[id]', params: { id: duplicate.id } })}
-            />
-            <Button
-              title="Excluir esta"
-              variant="ghost"
-              icon="trash-can-outline"
-              compact
-              onPress={() => {
-                // A nota em tela pode já estar confirmada em outro aparelho: sem a busca, não se apaga às cegas.
-                if (refuseStale()) return;
-                confirmAction(
-                  'Excluir esta nota?',
-                  'Os itens lidos nesta revisão serão apagados. A outra nota continua como está.',
-                  'Excluir',
-                  () => deleteReceipt.mutate(photos, { onSuccess: () => router.back(), onError }),
-                );
-              }}
-            />
-          </Row>
-        </Card>
-      ) : null}
+      {/* No computador, os itens ficam na coluna principal, e o que vem antes deles no celular (o cabeçalho com o
+          mercado, a data e o total, os avisos, a lista de compras) na do lado, que vem antes na ordem do teclado e do
+          leitor de tela, como no celular. As duas rolam com a tela: nada fica escondido numa rolagem de dentro. */}
+      <Columns
+        sideFirst
+        sideWidth={DESKTOP_PANEL_SIDE_WIDTH}
+        side={
+          <>
+            {duplicate ? (
+              <Card style={styles.gapSm}>
+                <Row>
+                  <Icon name="content-duplicate" color="warning" />
+                  <Text variant="body" style={styles.flex}>
+                    {duplicateReceiptNotice(duplicate)}
+                  </Text>
+                </Row>
+                <Row>
+                  <Button
+                    title="Ver a outra nota"
+                    variant="secondary"
+                    compact
+                    onPress={() => router.push({ pathname: '/nota/[id]', params: { id: duplicate.id } })}
+                  />
+                  <Button
+                    title="Excluir esta"
+                    variant="ghost"
+                    icon="trash-can-outline"
+                    compact
+                    onPress={() => {
+                      // A nota em tela pode já estar confirmada em outro aparelho: sem a busca, não se apaga às cegas.
+                      if (refuseStale()) return;
+                      confirmAction(
+                        'Excluir esta nota?',
+                        'Os itens lidos nesta revisão serão apagados. A outra nota continua como está.',
+                        'Excluir',
+                        () => deleteReceipt.mutate(photos, { onSuccess: () => router.back(), onError }),
+                      );
+                    }}
+                  />
+                </Row>
+              </Card>
+            ) : null}
 
-      <Card style={styles.gap}>
-        {/* O cabeçalho (mercado, data, total e quem pagou) se corrige na revisão e na nota confirmada. */}
-        <View style={styles.storeRow}>
-          <Pressable onPress={() => setPicker({ kind: 'store' })} style={[styles.storeRow, styles.flex]}>
-            <Icon name="store-outline" color="primary" />
-            <View style={styles.flex}>
-              <Text variant="small">Mercado</Text>
-              <Text variant="heading">{receipt.store?.name ?? 'Toque para escolher'}</Text>
-              {notePrinted ? <Text variant="muted">{notePrinted}</Text> : null}
-            </View>
-            <Icon name="chevron-right" color="textMuted" />
-          </Pressable>
-          {noteStore && canRenameStore(noteStore) ? (
-            <IconButton icon="pencil-outline" label="Renomear o mercado" onPress={() => setRenamingStore(true)} />
-          ) : null}
-        </View>
-        <DateField
-          label="Data da compra"
-          value={dateText ?? formatBRDate(purchasedOn)}
-          onChangeText={setDateText}
-          onBlur={commitDate}
-          onSubmitEditing={commitDate}
-        />
-        <Row style={styles.between}>
-          <Text variant="muted">Soma dos itens</Text>
-          <Text variant="label">{formatBRL(gap.itemsTotal)}</Text>
-        </Row>
-        {totalText != null ? (
-          <View style={styles.gapSm}>
-            <TextField
-              label={RECEIPT_TOTAL_LABEL}
-              value={totalText}
-              onChangeText={setTotalText}
-              onSubmitEditing={saveTypedTotal}
-              keyboardType="decimal-pad"
-              placeholder="0,00"
-              hint={RECEIPT_TOTAL_HINT}
-              autoFocus
-            />
-            <Row>
-              <Button
-                title={SAVE_TOTAL_LABEL}
-                compact
-                onPress={saveTypedTotal}
-                loading={isDraft ? saveTotal.isPending : correctTotal.isPending}
-              />
-              <Button title="Cancelar" variant="ghost" compact onPress={() => setTotalText(null)} />
-            </Row>
-          </View>
-        ) : (
-          // O total dá para corrigir (a leitura também erra o total) ou informar, também depois de confirmar; nunca
-          // é obrigatório.
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={totalAccess.label}
-            accessibilityHint={totalAccess.hint}
-            hitSlop={TOTAL_ROW_SLOP}
-            onPress={() => setTotalText(receiptTotalField(receipt.total))}
-            style={[styles.totalRow, styles.between]}>
-            <Text variant="muted">{RECEIPT_TOTAL_LABEL}</Text>
-            <Row gap={space.xs}>
-              <Text variant="label" color={hasReceiptTotal(receipt.total) ? undefined : 'primary'}>
-                {receiptTotalText(receipt.total)}
-              </Text>
-              <Icon name="pencil-outline" size={16} color="textMuted" />
-            </Row>
-          </Pressable>
-        )}
-        {notices.length ? (
-          <View style={styles.gapXs}>
-            {notices.map((text) => (
-              <Badge key={text} label={text} tone="warning" />
-            ))}
-          </View>
-        ) : null}
-        {/* "Quem pagou" só serve à divisão de gastos de Finanças: com a chave desligada (lib/features), uma pergunta
-            a menos na revisão. */}
-        {FEATURES.finance ? (
-          <PayerChips
-            value={receipt.paid_by}
-            onChange={(paidBy) => {
-              if (!refuseStale()) updateReceipt.mutate({ paid_by: paidBy }, { onError });
-            }}
-          />
-        ) : null}
-        {isDraft ? null : <Text variant="small">{CONFIRMED_EDIT_NOTE}</Text>}
-        {photos.length ? (
-          <Button
-            title={photos.length > 1 ? `Ver fotos da nota (${photos.length})` : 'Ver foto da nota'}
-            icon="image-outline"
-            variant="secondary"
-            compact
-            onPress={showImages}
-          />
-        ) : null}
-      </Card>
-
-      {alerts.size ? (
-        <Card style={styles.gapSm}>
-          <Row>
-            <Icon name="tag-arrow-up-outline" color="warning" />
-            <Text variant="heading" style={styles.flex}>
-              {alerts.size === 1 ? 'Um item saiu mais caro' : `${alerts.size} itens saíram mais caros`}
-            </Text>
-          </Row>
-          <Text variant="muted">
-            Comparando com o que a casa pagou nos últimos meses, dava para economizar cerca de {formatBRL(saving)}. Os avisos
-            estão nos itens.
-          </Text>
-        </Card>
-      ) : null}
-
-      {listFailed ? (
-        <Card style={styles.gapSm}>
-          <Text variant="muted">
-            Não deu para carregar a lista de compras. A nota é confirmada junto com o que sai da lista: tente de novo.
-          </Text>
-          <Button
-            title="Tentar de novo"
-            icon="refresh"
-            variant="secondary"
-            compact
-            onPress={() => {
-              if (openList.isError) void openList.refetch();
-              if (links.isError) void links.refetch();
-            }}
-          />
-        </Card>
-      ) : null}
-
-      {listItems.length && !listFailed ? (
-        <ReceiptListSection
-          listItems={listItems}
-          matches={listMatches}
-          receipt={items.map((item) => {
-            const resolved = resolvedItems.get(item.id)!;
-            return {
-              id: item.id,
-              name: resolved.productName ?? item.suggested_name ?? item.raw_description,
-              category: resolved.category,
-            };
-          })}
-          onChoose={(listItemId, choice) => setListChoices((prev) => ({ ...prev, [listItemId]: choice }))}
-        />
-      ) : null}
-
-      {isDraft ? (
-        <Text variant="muted">
-          Confira cada item. Produtos ligam a mesma coisa entre mercados diferentes — é isso que permite comparar preços.
-        </Text>
-      ) : null}
-
-      <Section
-        title={`Itens (${items.length})`}
-        action={can.addItem ? <Button title="Item" icon="plus" variant="ghost" compact onPress={() => setEditing({})} /> : null}>
-        {items.map((item) => {
-          const resolved = resolvedItems.get(item.id)!;
-          const alert = alertText(alerts.get(item.id));
-          const before = beforeUse[item.id];
-          const prompt = unpricedPrompt(gap, item.id, receipt, leftUnpriced, savedUnshown);
-          const chosenName = resolved.productName ?? (resolved.product.kind === 'new' ? resolved.product.name : null);
-          // O peso gravado (ou que está gravando) que a nota em tela ainda não mostra também não pergunta de novo.
-          const weighing =
-            isDraft &&
-            !packaged.has(item.id) &&
-            !savedUnshown.has(item.id) &&
-            !writingIds.has(item.id) &&
-            asksWeight(item, resolved.category, chosenName);
-          return isDraft ? (
-            <DraftItemCard
-              key={item.id}
-              item={item}
-              resolved={resolved}
-              alert={gone.chosen.includes(item.id) ? GONE_CHOICE_HINT : alert}
-              prompt={prompt}
-              weighing={weighing}
-              onSaveWeight={(text) => saveWeight(item, text)}
-              onPackaged={() => setPackaged((prev) => new Set([...prev, item.id]))}
-              pack={packPart(item, resolved.category, chosenName)}
-              onUseSuggestion={applySuggestion}
-              onLeaveUnpriced={() => leaveUnpriced([item.id])}
-              onEdit={() => setEditing({ item })}
-              onPickProduct={() =>
-                setPicker({ kind: 'product', itemId: item.id, query: resolved.productName ?? item.suggested_name ?? '' })
-              }
-              onPickCategory={() => setPicker({ kind: 'category', itemId: item.id })}
-              onTogglePantry={() => override(item.id, { pantry: !resolved.pantry })}
-              onChangeExpiry={(iso) => override(item.id, { expiryManual: true, expiresOn: iso })}
-              houseNames={houseNames}
-              keepsName={keptNames[item.id] === resolved.productName}
-              onUseName={(name) => applyHouseName(item.id, name)}
-              onKeepName={() => {
-                const name = resolved.productName;
-                if (name) setKeptNames((prev) => ({ ...prev, [item.id]: name }));
-              }}
-              previousName={before ? resolveItem(item, before.override, catalog, purchasedOn).productName : undefined}
-              onUndoName={() => undoHouseName(item.id)}
-            />
-          ) : (
-            <Card key={item.id}>
-              <ListRow
-                left={<CategoryIcon category={resolved.category} name={catalog.get(item.product_id ?? '')?.name ?? item.raw_description} size={36} />}
-                title={item.product_id ? (catalog.get(item.product_id)?.name ?? item.raw_description) : item.raw_description}
-                subtitle={
-                  <View style={styles.gapXs}>
-                    <Text variant="muted">{quantityText(item)}</Text>
-                    {alert ? <Badge label={alert} tone="warning" /> : null}
+            <Card style={styles.gap}>
+              {/* O cabeçalho (mercado, data, total e quem pagou) se corrige na revisão e na nota confirmada. */}
+              <View style={styles.storeRow}>
+                <Pressable onPress={() => setPicker({ kind: 'store' })} style={[styles.storeRow, styles.flex]}>
+                  <Icon name="store-outline" color="primary" />
+                  <View style={styles.flex}>
+                    <Text variant="small">Mercado</Text>
+                    <Text variant="heading">{receipt.store?.name ?? 'Toque para escolher'}</Text>
+                    {notePrinted ? <Text variant="muted">{notePrinted}</Text> : null}
                   </View>
-                }
-                right={<ItemValue item={item} />}
-                onPress={item.product_id ? () => router.push({ pathname: '/produto/[id]', params: { id: item.product_id! } }) : undefined}
+                  <Icon name="chevron-right" color="textMuted" />
+                </Pressable>
+                {noteStore && canRenameStore(noteStore) ? (
+                  <IconButton icon="pencil-outline" label="Renomear o mercado" onPress={() => setRenamingStore(true)} />
+                ) : null}
+              </View>
+              <DateField
+                label="Data da compra"
+                value={dateText ?? formatBRDate(purchasedOn)}
+                onChangeText={setDateText}
+                onBlur={commitDate}
+                onSubmitEditing={commitDate}
               />
-              {/* Dos itens da nota confirmada, só se corrige o valor do que ficou sem (domain/receiptEdit). */}
-              {prompt ? <ValueQuestion prompt={prompt} onUse={applySuggestion} onFill={() => setEditing({ item })} /> : null}
-              {/* E quantos vêm na embalagem, que não mexe no valor nem na despensa. */}
-              {packPart(item, resolved.category, item.product_id ? (catalog.get(item.product_id)?.name ?? null) : null)}
+              <Row style={styles.between}>
+                <Text variant="muted">Soma dos itens</Text>
+                <Text variant="label">{formatBRL(gap.itemsTotal)}</Text>
+              </Row>
+              {totalText != null ? (
+                <View style={styles.gapSm}>
+                  <TextField
+                    label={RECEIPT_TOTAL_LABEL}
+                    value={totalText}
+                    onChangeText={setTotalText}
+                    onSubmitEditing={saveTypedTotal}
+                    keyboardType="decimal-pad"
+                    placeholder="0,00"
+                    hint={RECEIPT_TOTAL_HINT}
+                    autoFocus
+                  />
+                  <Row>
+                    <Button
+                      title={SAVE_TOTAL_LABEL}
+                      compact
+                      onPress={saveTypedTotal}
+                      loading={isDraft ? saveTotal.isPending : correctTotal.isPending}
+                    />
+                    <Button title="Cancelar" variant="ghost" compact onPress={() => setTotalText(null)} />
+                  </Row>
+                </View>
+              ) : (
+                // O total dá para corrigir (a leitura também erra o total) ou informar, também depois de confirmar; nunca
+                // é obrigatório.
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={totalAccess.label}
+                  accessibilityHint={totalAccess.hint}
+                  hitSlop={TOTAL_ROW_SLOP}
+                  onPress={() => setTotalText(receiptTotalField(receipt.total))}
+                  style={[styles.totalRow, styles.between]}>
+                  <Text variant="muted">{RECEIPT_TOTAL_LABEL}</Text>
+                  <Row gap={space.xs}>
+                    <Text variant="label" color={hasReceiptTotal(receipt.total) ? undefined : 'primary'}>
+                      {receiptTotalText(receipt.total)}
+                    </Text>
+                    <Icon name="pencil-outline" size={16} color="textMuted" />
+                  </Row>
+                </Pressable>
+              )}
+              {notices.length ? (
+                <View style={styles.gapXs}>
+                  {notices.map((text) => (
+                    <Badge key={text} label={text} tone="warning" />
+                  ))}
+                </View>
+              ) : null}
+              {/* "Quem pagou" só serve à divisão de gastos de Finanças: com a chave desligada (lib/features), uma pergunta
+                a menos na revisão. */}
+              {FEATURES.finance ? (
+                <PayerChips
+                  value={receipt.paid_by}
+                  onChange={(paidBy) => {
+                    if (!refuseStale()) updateReceipt.mutate({ paid_by: paidBy }, { onError });
+                  }}
+                />
+              ) : null}
+              {isDraft ? null : <Text variant="small">{CONFIRMED_EDIT_NOTE}</Text>}
+              {photos.length ? (
+                <Button
+                  title={photos.length > 1 ? `Ver fotos da nota (${photos.length})` : 'Ver foto da nota'}
+                  icon="image-outline"
+                  variant="secondary"
+                  compact
+                  onPress={showImages}
+                />
+              ) : null}
             </Card>
-          );
-        })}
-      </Section>
 
-      <Button
-        title={isDraft ? 'Descartar nota' : 'Excluir nota'}
-        variant="danger"
-        icon="trash-can-outline"
-        onPress={() => {
-          // O texto da pergunta vem do status em tela: com a busca que falhou, a nota pode já estar confirmada lá.
-          if (refuseStale()) return;
-          confirmAction(
-            isDraft ? 'Descartar nota' : 'Excluir nota',
-            isDraft ? 'Os itens lidos serão apagados.' : 'Os preços desta nota saem do comparativo. Itens já na despensa continuam.',
-            isDraft ? 'Descartar' : 'Excluir',
-            () => deleteReceipt.mutate(photos, { onSuccess: () => router.back(), onError }),
-          );
-        }}
-      />
+            {alerts.size ? (
+              <Card style={styles.gapSm}>
+                <Row>
+                  <Icon name="tag-arrow-up-outline" color="warning" />
+                  <Text variant="heading" style={styles.flex}>
+                    {alerts.size === 1 ? 'Um item saiu mais caro' : `${alerts.size} itens saíram mais caros`}
+                  </Text>
+                </Row>
+                <Text variant="muted">
+                  Comparando com o que a casa pagou nos últimos meses, dava para economizar cerca de {formatBRL(saving)}. Os avisos estão
+                  nos itens.
+                </Text>
+              </Card>
+            ) : null}
+
+            {listFailed ? (
+              <Card style={styles.gapSm}>
+                <Text variant="muted">
+                  Não deu para carregar a lista de compras. A nota é confirmada junto com o que sai da lista: tente de novo.
+                </Text>
+                <Button
+                  title="Tentar de novo"
+                  icon="refresh"
+                  variant="secondary"
+                  compact
+                  onPress={() => {
+                    if (openList.isError) void openList.refetch();
+                    if (links.isError) void links.refetch();
+                  }}
+                />
+              </Card>
+            ) : null}
+
+            {listItems.length && !listFailed ? (
+              <ReceiptListSection
+                listItems={listItems}
+                matches={listMatches}
+                receipt={items.map((item) => {
+                  const resolved = resolvedItems.get(item.id)!;
+                  return {
+                    id: item.id,
+                    name: resolved.productName ?? item.suggested_name ?? item.raw_description,
+                    category: resolved.category,
+                  };
+                })}
+                onChoose={(listItemId, choice) => setListChoices((prev) => ({ ...prev, [listItemId]: choice }))}
+              />
+            ) : null}
+          </>
+        }>
+        {isDraft ? (
+          <Text variant="muted">
+            Confira cada item. Produtos ligam a mesma coisa entre mercados diferentes — é isso que permite comparar preços.
+          </Text>
+        ) : null}
+
+        <Section
+          title={`Itens (${items.length})`}
+          action={can.addItem ? <Button title="Item" icon="plus" variant="ghost" compact onPress={() => setEditing({})} /> : null}>
+          {items.map((item) => {
+            const resolved = resolvedItems.get(item.id)!;
+            const alert = alertText(alerts.get(item.id));
+            const before = beforeUse[item.id];
+            const prompt = unpricedPrompt(gap, item.id, receipt, leftUnpriced, savedUnshown);
+            const chosenName = resolved.productName ?? (resolved.product.kind === 'new' ? resolved.product.name : null);
+            // O peso gravado (ou que está gravando) que a nota em tela ainda não mostra também não pergunta de novo.
+            const weighing =
+              isDraft &&
+              !packaged.has(item.id) &&
+              !savedUnshown.has(item.id) &&
+              !writingIds.has(item.id) &&
+              asksWeight(item, resolved.category, chosenName);
+            return isDraft ? (
+              <DraftItemCard
+                key={item.id}
+                item={item}
+                resolved={resolved}
+                alert={gone.chosen.includes(item.id) ? GONE_CHOICE_HINT : alert}
+                prompt={prompt}
+                weighing={weighing}
+                onSaveWeight={(text) => saveWeight(item, text)}
+                onPackaged={() => setPackaged((prev) => new Set([...prev, item.id]))}
+                pack={packPart(item, resolved.category, chosenName)}
+                onUseSuggestion={applySuggestion}
+                onLeaveUnpriced={() => leaveUnpriced([item.id])}
+                onEdit={() => setEditing({ item })}
+                onPickProduct={() =>
+                  setPicker({ kind: 'product', itemId: item.id, query: resolved.productName ?? item.suggested_name ?? '' })
+                }
+                onPickCategory={() => setPicker({ kind: 'category', itemId: item.id })}
+                onTogglePantry={() => override(item.id, { pantry: !resolved.pantry })}
+                onChangeExpiry={(iso) => override(item.id, { expiryManual: true, expiresOn: iso })}
+                houseNames={houseNames}
+                keepsName={keptNames[item.id] === resolved.productName}
+                onUseName={(name) => applyHouseName(item.id, name)}
+                onKeepName={() => {
+                  const name = resolved.productName;
+                  if (name) setKeptNames((prev) => ({ ...prev, [item.id]: name }));
+                }}
+                previousName={before ? resolveItem(item, before.override, catalog, purchasedOn).productName : undefined}
+                onUndoName={() => undoHouseName(item.id)}
+              />
+            ) : (
+              <Card key={item.id}>
+                <ListRow
+                  left={
+                    <CategoryIcon
+                      category={resolved.category}
+                      name={catalog.get(item.product_id ?? '')?.name ?? item.raw_description}
+                      size={36}
+                    />
+                  }
+                  title={item.product_id ? (catalog.get(item.product_id)?.name ?? item.raw_description) : item.raw_description}
+                  subtitle={
+                    <View style={styles.gapXs}>
+                      <Text variant="muted">{quantityText(item)}</Text>
+                      {alert ? <Badge label={alert} tone="warning" /> : null}
+                    </View>
+                  }
+                  right={<ItemValue item={item} />}
+                  onPress={item.product_id ? () => router.push({ pathname: '/produto/[id]', params: { id: item.product_id! } }) : undefined}
+                />
+                {/* Dos itens da nota confirmada, só se corrige o valor do que ficou sem (domain/receiptEdit). */}
+                {prompt ? <ValueQuestion prompt={prompt} onUse={applySuggestion} onFill={() => setEditing({ item })} /> : null}
+                {/* E quantos vêm na embalagem, que não mexe no valor nem na despensa. */}
+                {packPart(item, resolved.category, item.product_id ? (catalog.get(item.product_id)?.name ?? null) : null)}
+              </Card>
+            );
+          })}
+        </Section>
+      </Columns>
+
+      {desktop ? null : removeButton}
 
       {renamingStore && noteStore ? (
         <RenameStoreModal store={noteStore} stores={stores.data ?? []} onClose={() => setRenamingStore(false)} />
@@ -1331,7 +1366,12 @@ export default function ReceiptScreen() {
         visible={picker?.kind === 'store'}
         title="Mercado"
         placeholder="Buscar ou criar mercado"
-        options={(stores.data ?? []).map((s) => ({ id: s.id, title: s.name, subtitle: s.address ?? undefined, keywords: s.printed_name ?? undefined }))}
+        options={(stores.data ?? []).map((s) => ({
+          id: s.id,
+          title: s.name,
+          subtitle: s.address ?? undefined,
+          keywords: s.printed_name ?? undefined,
+        }))}
         onClose={() => setPicker(null)}
         onSelect={(storeId) => chooseStore({ id: storeId })}
         extraActions={(query) =>
@@ -1809,36 +1849,35 @@ function PackAnswer({
   );
 }
 
-/** Fotos da nota; nota comprida vem em partes, uma embaixo da outra. */
+/**
+ * Fotos da nota; nota comprida vem em partes, uma embaixo da outra. No celular, a tela inteira; no computador, uma
+ * caixa grande no meio da janela (SheetModal). Fecha pelo X e, no navegador, pelo Esc.
+ */
 function ImageViewer({ urls, onClose }: { urls: string[] | null; onClose: () => void }) {
-  const c = useColors();
   return (
-    <Modal visible={Boolean(urls?.length)} animationType="fade" onRequestClose={onClose}>
-      <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
-        <Backdrop />
-        <Row style={styles.viewerHeader}>
-          <Text variant="heading" style={styles.flex}>
-            {urls && urls.length > 1 ? `Fotos da nota (${urls.length})` : 'Foto da nota'}
-          </Text>
-          <IconButton icon="close" label="Fechar" onPress={onClose} />
-        </Row>
-        {urls?.length === 1 ? (
-          <Image source={{ uri: urls[0] }} style={styles.flex} contentFit="contain" />
-        ) : (
-          <ScrollView contentContainerStyle={styles.photos}>
-            {urls?.map((url, index) => (
-              <Image
-                key={url}
-                source={{ uri: url }}
-                style={styles.photo}
-                contentFit="contain"
-                accessibilityLabel={`Parte ${index + 1} da nota`}
-              />
-            ))}
-          </ScrollView>
-        )}
-      </SafeAreaView>
-    </Modal>
+    <SheetModal visible={Boolean(urls?.length)} photo onClose={onClose}>
+      <Row style={styles.viewerHeader}>
+        <Text variant="heading" style={styles.flex}>
+          {urls && urls.length > 1 ? `Fotos da nota (${urls.length})` : 'Foto da nota'}
+        </Text>
+        <IconButton icon="close" label="Fechar" onPress={onClose} />
+      </Row>
+      {urls?.length === 1 ? (
+        <Image source={{ uri: urls[0] }} style={styles.flex} contentFit="contain" />
+      ) : (
+        <ScrollView contentContainerStyle={styles.photos}>
+          {urls?.map((url, index) => (
+            <Image
+              key={url}
+              source={{ uri: url }}
+              style={styles.photo}
+              contentFit="contain"
+              accessibilityLabel={`Parte ${index + 1} da nota`}
+            />
+          ))}
+        </ScrollView>
+      )}
+    </SheetModal>
   );
 }
 

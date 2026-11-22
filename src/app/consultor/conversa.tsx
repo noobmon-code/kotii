@@ -1,5 +1,4 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { router } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -24,6 +23,7 @@ import {
 } from '@/features/finance/advisorConversation';
 import { useNukeGaze } from '@/features/nuke/useNukeGaze';
 import { useAuth, useHousehold } from '@/lib/auth';
+import { closeWindow } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import { Backdrop } from '@/ui/Backdrop';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -50,7 +50,7 @@ export default function FinanceChatScreen() {
       ) : (
         <>
           <View style={[styles.header, { borderBottomColor: c.glassBorder }]}>
-            <IconButton icon="close" label="Fechar" onPress={() => router.back()} />
+            <IconButton icon="close" label="Fechar" onPress={() => closeWindow('consultor/conversa')} />
           </View>
           {beta.data === false ? (
             <EmptyState
@@ -181,7 +181,7 @@ function Conversation() {
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={[styles.header, { borderBottomColor: c.glassBorder }]}>
-        <IconButton icon="close" label="Fechar" onPress={() => router.back()} />
+        <IconButton icon="close" label="Fechar" onPress={() => closeWindow('consultor/conversa')} />
         <Row style={styles.headerTitle}>
           {/* Ele vira os olhos para a mensagem que acabou de entrar (useNukeGaze). */}
           <View ref={nukeRef} collapsable={false}>

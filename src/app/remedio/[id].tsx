@@ -1,5 +1,5 @@
 import { useIsMutating } from '@tanstack/react-query';
-import { router, Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Platform, type ScrollView, StyleSheet, Switch, View } from 'react-native';
 
@@ -37,6 +37,7 @@ import {
 } from '@/domain/medicationStock';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { forgetBoxUnits } from '@/lib/medicationBox';
+import { closeWindow } from '@/lib/navigation';
 import {
   askReminderPermission,
   disableReminders,
@@ -277,7 +278,7 @@ function MedicationForm({
           }
           // O banco ainda não tem o estoque: o remédio foi salvo, e a pessoa fica sabendo do que ficou de fora.
           if (stockUnavailable) notify('Remédio salvo, mas sem o estoque', MEDICATION_STOCK_UNAVAILABLE);
-          router.back();
+          closeWindow('remedio/[id]');
         },
         onError,
       },
@@ -422,7 +423,7 @@ function MedicationForm({
                 onSuccess: async () => {
                   await disableReminders(medication.id).catch(() => undefined);
                   await forgetBoxUnits(medication.id);
-                  router.back();
+                  closeWindow('remedio/[id]');
                 },
                 onError,
               }),

@@ -1,4 +1,4 @@
-import { router, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 
 import { usePendingReceipts } from '@/data/pendingReceipts';
@@ -8,6 +8,7 @@ import { pendingReceiptCnpj, pendingReceiptSubtitle } from '@/domain/pendingRece
 import { PendingReceiptCard } from '@/features/PendingReceiptCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useSefazRetry } from '@/features/sefazRetry';
+import { closeWindow } from '@/lib/navigation';
 import { notify } from '@/ui/dialogs';
 import { Button, EmptyState, Loading, Screen, Text } from '@/ui/primitives';
 
@@ -29,7 +30,9 @@ export default function PendingReceiptScreen() {
   // Sem o link do QR (a chave digitada), não há o que tentar.
   const retryUrl = direct && entry?.url && parseNfceQr(entry.url) ? entry.url : null;
 
-  const close = () => (router.canGoBack() ? router.back() : router.replace({ pathname: '/compras', params: { aba: 'notas' } }));
+  // Sem tela para onde voltar, Compras → Notas, onde ficam as notas pendentes: o mesmo lugar do "Fechar" da caixa
+  // desta tela no computador (lib/navigation: closeWindow).
+  const close = () => closeWindow('nota/pendente');
 
   return (
     <Screen edges={[]}>

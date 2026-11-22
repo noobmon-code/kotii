@@ -26,6 +26,7 @@ import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useSefazRetry } from '@/features/sefazRetry';
 import { prepareBarcodeReader } from '@/lib/barcodeReader';
 import { readCaptchaStates, rememberCaptchaState } from '@/lib/captchaStates';
+import { closeWindow } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import { BusyOverlay } from '@/ui/BusyOverlay';
 import { notify } from '@/ui/dialogs';
@@ -165,7 +166,9 @@ export default function NfceQrScreen() {
     else setPhotoOnly({ ...qr, direct });
   }
 
-  const close = () => (router.canGoBack() ? router.back() : router.replace({ pathname: '/compras', params: { aba: 'notas' } }));
+  // Sem tela para onde voltar, Compras → Notas, onde ficam as notas pendentes: o mesmo lugar do "Fechar" da caixa
+  // desta tela no computador (lib/navigation: closeWindow).
+  const close = () => closeWindow('nota/qrcode');
 
   return (
     <Screen edges={[]}>

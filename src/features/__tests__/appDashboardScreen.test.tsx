@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router } from 'expo-router';
-import { StyleSheet } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import AppDashboardScreen from '@/app/painel';
@@ -16,6 +16,7 @@ import {
   parseAppDashboard,
 } from '@/domain/appDashboard';
 import { addDays } from '@/domain/dates';
+import { REFRESH_LABEL } from '@/domain/desktop';
 import { PANEL_MAX_WIDTH, panelCellPercent } from '@/domain/panelLayout';
 import { TERMS_ACCEPT_VERSION } from '@/domain/terms';
 import { Section } from '@/ui/primitives';
@@ -445,5 +446,39 @@ describe('Painel do app no computador', () => {
     // A ordem de sempre: só as três colunas empilham o Nuke e a IA.
     expect(sectionTitles()).toEqual(['Agora', 'Uso por dia', 'Novas contas', 'Nuke', 'IA', 'O que as casas usam', 'Entrada', 'Aparelhos', 'Outros']);
     expect(viewStyles().filter((style) => style.flexBasis === '22%')).toHaveLength(4);
+  });
+});
+
+describe('Painel do app no computador: buscar de novo (no navegador não se puxa a tela)', () => {
+  /** O "Atualizar" da tela (o do computador, no lugar do puxar). */
+  const screenRefresh = () =>
+    renderer!.root.findAll((node) => node.props.accessibilityLabel === REFRESH_LABEL && typeof node.props.onPress === 'function');
+  /** O botão da própria caixa de recados, ao lado da busca. */
+  const inboxRefresh = () =>
+    renderer!.root.findAll((node) => node.props.label === 'Buscar os recados de novo' && typeof node.props.onPress === 'function');
+  beforeEach(() => {
+    jest.replaceProperty(Platform, 'OS', 'web');
+    mockWindow.width = 1440;
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('na aba Números, o "Atualizar" da tela busca os números de novo', async () => {
+    await mount();
+    expect(inboxRefresh()).toHaveLength(0);
+    expect(screenRefresh().length).toBeGreaterThan(0);
+    const before = dashboardCalls();
+    await act(async () => screenRefresh()[0].props.onPress());
+    await settle();
+    expect(dashboardCalls()).toBeGreaterThan(before);
+  });
+
+  it('na aba Recados, um botão só: o da caixa (que também solta os recados abertos), e nenhuma linha a mais em cima das duas partes', async () => {
+    mockDb.feedback.mockResolvedValue(answer(feedbackList(1)));
+    mockParams.value = { aba: 'recados' };
+    await mount();
+    expect(inboxRefresh()).toHaveLength(1);
+    expect(screenRefresh()).toHaveLength(0);
   });
 });

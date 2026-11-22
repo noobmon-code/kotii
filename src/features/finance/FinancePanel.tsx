@@ -11,11 +11,16 @@ import { BillsPanel } from './BillsPanel';
 import { ConsultorCard } from './ConsultorCard';
 import { FinanceSummaryPanel } from './FinanceSummaryPanel';
 
+/** O que cada parte de Finanças mostra. Nas contas, os pagamentos recentes decidem o selo "Acima do normal". */
+const PART_QUERY_KEYS: Record<Financas, string[]> = { resumo: ['spending', 'bills'], contas: ['bills', 'billPayments'] };
+
 /**
- * O que cada parte de Finanças mostra, para o "puxar para atualizar" da Casa refazer só as buscas dela. Nas contas,
- * os pagamentos recentes decidem o selo "Acima do normal".
+ * As buscas do que o painel mostra, para o "puxar para atualizar" da Casa (e o "Atualizar" do computador) refazer só
+ * elas: no celular, as da parte aberta; no computador (`desktop`), onde o painel mostra o Resumo e as Contas lado a
+ * lado (e o ?financas= não decide nada), as das duas.
  */
-export const financeQueryKeys = (part: Financas): string[] => (part === 'resumo' ? ['spending', 'bills'] : ['bills', 'billPayments']);
+export const financeQueryKeys = (part: Financas, desktop = false): string[] =>
+  desktop ? [...new Set(Object.values(PART_QUERY_KEYS).flat())] : PART_QUERY_KEYS[part];
 
 /**
  * Casa → Finanças (só com a chave ligada, lib/features): o Resumo, que é a parte que abre, e as Contas, num

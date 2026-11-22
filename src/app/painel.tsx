@@ -69,14 +69,15 @@ export default function AppDashboardScreen() {
     void dashboard.refetch();
     void fresh.refetch();
   };
-  const screen = (children: ReactNode) => (
+  const screen = (children: ReactNode, ownRefresh = false) => (
     <Screen
       edges={[]}
       maxWidth={PANEL_MAX_WIDTH}
       // Na janela larga e alta, os recados não rolam com a tela: a lista e o recado aberto rolam cada um do seu lado.
       scroll={!fixedPanes}
       refreshing={inbox ? pulling : dashboard.isRefetching}
-      onRefresh={refresh}>
+      onRefresh={refresh}
+      ownRefreshButton={ownRefresh}>
       {children}
     </Screen>
   );
@@ -91,6 +92,9 @@ export default function AppDashboardScreen() {
     label: option.value === 'recados' ? feedbackTabLabel(newCount) : option.label,
   }));
   const newLine = newFeedbackLine(newCount);
+  // Os recados em duas partes (a janela larga, também a do computador) têm o próprio botão de buscar de novo, ao lado
+  // da busca, que também solta os recados abertos que ficaram na lista: a tela não ganha um segundo "Atualizar",
+  // que faria outra coisa, e sem a linha dele a altura das duas partes é a que panelPaneHeight conta.
   return screen(
     <>
       <View style={layout.masterDetail ? styles.tabsWide : null}>
@@ -118,6 +122,7 @@ export default function AppDashboardScreen() {
         </>
       )}
     </>,
+    inbox && layout.masterDetail,
   );
 }
 

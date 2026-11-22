@@ -5,6 +5,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import HouseScreen from '@/app/(tabs)/casa';
 import { AgendaPanel, agendaQueryKeys } from '@/features/AgendaPanel';
+import { financeQueryKeys } from '@/features/finance/FinancePanel';
 import { FEATURES } from '@/lib/features';
 import { Screen } from '@/ui/primitives';
 
@@ -42,8 +43,17 @@ jest.mock('@/lib/auth', () => ({
   useHousehold: () => ({ data: { household: { id: 'casa-1' }, members: [] } }),
 }));
 jest.mock('@/lib/session', () => ({ endSessionIfGone: async () => false }));
-// As outras partes da aba não entram nesta história.
-jest.mock('@/features/ChoresPanel', () => ({ ChoresPanel: () => null }));
+// As outras partes da aba não entram nesta história. Das Tarefas, só o que o puxar precisa casar com elas: as ordens do
+// rodízio que o painel lê (a lista das tarefas é lida pela própria aba).
+jest.mock('@/features/ChoresPanel', () => ({
+  ChoresPanel: function ChoresPanel() {
+    jest.requireActual<typeof import('@/data/home')>('@/data/home').useChoreRotations();
+    return null;
+  },
+}));
+// A janela é de computador (ui/desktop), ou não: no computador, o Dia a dia e Finanças mostram as duas metades lado a lado.
+let mockDesktop = false;
+jest.mock('@/ui/desktop', () => ({ ...jest.requireActual<object>('@/ui/desktop'), useDesktop: () => mockDesktop }));
 jest.mock('@/features/EquipmentPanel', () => ({ EquipmentPanel: () => null }));
 jest.mock('@/lib/supabase', () => {
   // Uma consulta do supabase-js: responde quando alguém espera por ela, pela tabela.
@@ -118,6 +128,7 @@ const mountedKeys = () =>
 beforeEach(() => {
   // Os testes partem da chave de Finanças desligada; os que a querem ligada ligam no próprio teste.
   jest.replaceProperty(FEATURES, 'finance', false);
+  mockDesktop = false;
   mockServer.reads = {};
   delete mockParams.aba;
   delete mockParams.dia;
@@ -202,5 +213,69 @@ describe('Casa → Documentos: puxar para atualizar', () => {
     mockParams.aba = 'documentos';
     await open(<HouseScreen />);
     expect(await refresh()).toEqual(['documents', 'people']);
+  });
+});
+
+describe('no computador: o "Atualizar" busca de novo as duas metades que estão lado a lado', () => {
+  /** Quantas vezes as buscas com esse começo de chave trouxeram dados (a de agora conta quando chega). */
+  const updates = (prefix: unknown[]) =>
+    client
+      .getQueryCache()
+      .findAll({ queryKey: prefix })
+      .reduce((sum, query) => sum + query.state.dataUpdateCount, 0);
+
+  it.each([
+    ['o Dia a dia, que abre (nenhum ?dia=)', {}],
+    ['com ?dia=agenda (e o endereço de antes, /casa?aba=agenda)', { aba: 'dia', dia: 'agenda' }],
+    ['com ?dia=tarefas', { aba: 'dia', dia: 'tarefas' }],
+  ])('%s: as tarefas, as ordens do rodízio e as fichas, e tudo o que a agenda junta; o girando, até tudo voltar', async (_name, params) => {
+    mockDesktop = true;
+    Object.assign(mockParams, params);
+    await open(<HouseScreen />);
+    mockServer.reads = {};
+    act(() => renderer!.root.findByType(Screen).props.onRefresh());
+    // A leva inteira: o girando não para quando só as tarefas voltam.
+    expect(renderer!.root.findByType(Screen).props.refreshing).toBe(true);
+    await settle();
+    expect(renderer!.root.findByType(Screen).props.refreshing).toBe(false);
+    // As ordens do rodízio (chore_rotation) vêm com as tarefas: sem elas, a lista diria a vez nova com a ordem de antes.
+    expect(Object.keys(mockServer.reads).sort()).toEqual([...AGENDA_TABLES, 'chore_rotation'].sort());
+  });
+
+  it('o endereço de antes (/casa?aba=agenda) também', async () => {
+    mockDesktop = true;
+    mockParams.aba = 'agenda';
+    await open(<HouseScreen />);
+    expect(await refresh()).toEqual([...AGENDA_TABLES, 'chore_rotation'].sort());
+  });
+
+  it.each(['resumo', 'contas'])('Finanças (?financas=%s): o Resumo e, ao lado, as Contas com os pagamentos recentes (o selo "Acima do normal")', async (part) => {
+    jest.replaceProperty(FEATURES, 'finance', true);
+    mockDesktop = true;
+    mockParams.aba = 'financas';
+    mockParams.financas = part;
+    await open(<HouseScreen />);
+    const recent = updates(['billPayments', 'recent']);
+    // As Contas estão na tela, ao lado do Resumo, também com ?financas=resumo.
+    expect(recent).toBeGreaterThan(0);
+    const again = await refresh();
+    expect(again).toEqual(expect.arrayContaining(['bills', 'bill_payments', 'expenses']));
+    expect(updates(['billPayments', 'recent'])).toBe(recent + 1);
+    for (const table of ['chores', 'documents', 'equipment', 'appointments', 'vaccines', 'family_events']) expect(again).not.toContain(table);
+  });
+
+  it('financeQueryKeys: no celular, a parte aberta; no computador, as duas', () => {
+    expect(financeQueryKeys('resumo')).toEqual(['spending', 'bills']);
+    expect(financeQueryKeys('contas')).toEqual(['bills', 'billPayments']);
+    expect(financeQueryKeys('resumo', true)).toEqual(['spending', 'bills', 'billPayments']);
+    expect(financeQueryKeys('contas', true)).toEqual(['spending', 'bills', 'billPayments']);
+  });
+
+  it('no celular, nas Tarefas, como sempre: as tarefas e as ordens (as fichas, quando o painel as lê), e nada da agenda', async () => {
+    mockParams.aba = 'dia';
+    mockParams.dia = 'tarefas';
+    await open(<HouseScreen />);
+    // O painel de mentira não lê as fichas: só as buscas montadas ('active') são refeitas.
+    expect(await refresh()).toEqual(['chore_rotation', 'chores']);
   });
 });
