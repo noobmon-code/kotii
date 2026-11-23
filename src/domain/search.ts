@@ -1,4 +1,7 @@
-/** Minúsculas e sem acento, para busca tolerante ("feijao" acha "Feijão"). */
+/**
+ * Minúsculas e sem acento, para busca tolerante ("feijao" acha "Feijão"). O servidor tem uma cópia em
+ * supabase/functions/_shared/packageSize.ts: mudar aqui é mudar lá (packageSize.test.ts compara os dois).
+ */
 export function normalizeSearch(value: string): string {
   return value
     .normalize('NFD')

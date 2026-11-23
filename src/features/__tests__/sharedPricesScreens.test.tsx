@@ -400,7 +400,7 @@ describe('Preços: a linha "Visto por"', () => {
   /** A tela inteira de antes: o produto, onde a casa comprou e por quanto. */
   const USUAL = 'Arroz Tio João 5kgSó em MercadinhoR$ 25,00';
 
-  it('aparece embaixo do produto quando outra casa viu mais barato que o menor preço da casa, e o aviso vem uma vez, embaixo da lista', async () => {
+  it('aparece embaixo do produto quando outra casa viu mais barato que o preço da casa, e o aviso vem uma vez, embaixo da lista', async () => {
     mockQueries.shared = loaded([seen(ATACADAO, 'ATACADAO MOOCA', 22.9, 2), seen(SUPER, 'SUPER OUTRO', 21.9, 3)]);
     expect(await mount(<PricesScreen />)).toBe(
       `Arroz Tio João 5kgSó em MercadinhoVisto por R$ 21,90/un · SUPER OUTRO (SP) · ${short(3)}, em outra casaR$ 25,00${SHARED_PRICES_NOTICE}`,
@@ -425,6 +425,14 @@ describe('Preços: a linha "Visto por"', () => {
     expect(page.split('Visto por')).toHaveLength(3);
     expect(page.split(SHARED_PRICES_NOTICE)).toHaveLength(2);
     expect(page.endsWith(SHARED_PRICES_NOTICE)).toBe(true);
+  });
+
+  it('compara com o preço da casa a no máximo 2,5 vezes, não com o menor de todos: R$ 15 o kg contra os R$ 20, não os R$ 5', async () => {
+    household([own('mercadinho', 5, 20, { unit: 'kg' }), own('atacadao', 20, 10, { unit: 'kg' })]);
+    mockQueries.shared = loaded([seen(SUPER, 'SUPER OUTRO', 15, 3, { unit: 'kg' })]);
+    expect(await mount(<PricesScreen />)).toBe(
+      `Arroz Tio João 5kgMais barato: Mercadinho · 2 mercadosVisto por R$ 15,00/kg · SUPER OUTRO (SP) · ${short(3)}, em outra casaR$ 5,00–20,00/kg${SHARED_PRICES_NOTICE}`,
+    );
   });
 
   it('não aparece quando o que outras casas viram é igual ou mais caro', async () => {
@@ -463,6 +471,26 @@ describe('Preços: a linha "Visto por"', () => {
       household([own('mercadinho', 39.9, 20, { raw_description: 'CERV SKOL LT 350ML C/12' })]);
       mockQueries.shared = loaded([seen(SUPER, 'SUPER OUTRO', 3.29, 3, { pack_unit: 'l', pack_amount: 0.35 }), seen(ATACADAO, 'ATACADAO', 3.49, 3)]);
       expect(await mount(<PricesScreen />)).toBe('Cerveja SkolSó em MercadinhoR$ 39,90');
+    });
+
+    it('ovos em duas caixas na casa: a dica fala de ovos como a linha ("o ovo", "30 ovos"), não de "cada" e "un"', async () => {
+      mockQueries.products = loaded([{ id: 'arroz', name: 'Ovos brancos', category: 'ovos', shelf_life_days: null }]);
+      household([own('mercadinho', 11.9, 20, { raw_description: 'OVOS BRANCOS C/12' }), own('atacadao', 24.9, 10, { raw_description: 'OVOS BRANCOS 30UN' })]);
+      mockQueries.shared = loaded([seen(SUPER, 'SUPER OUTRO', 21.9, 3, { pack_unit: 'un', pack_amount: 30 })]);
+      expect(await mount(<PricesScreen />)).toBe(
+        'Ovos brancosMais barato: Atacadão (30 ovos por R$ 24,90) · 2 mercados' +
+          `Visto por R$ 0,73 o ovo (30 ovos por R$ 21,90) · SUPER OUTRO (SP) · ${short(3)}, em outra casa` +
+          `R$ 0,83–0,99 o ovo${SHARED_PRICES_NOTICE}`,
+      );
+    });
+
+    it('ovos numa caixa só na casa: a dica por unidade diz quantos ovos a de fora traz', async () => {
+      mockQueries.products = loaded([{ id: 'arroz', name: 'Ovos brancos', category: 'ovos', shelf_life_days: null }]);
+      household([own('atacadao', 24.9, 10, { raw_description: 'OVOS BRANCOS 30UN' })]);
+      mockQueries.shared = loaded([seen(SUPER, 'SUPER OUTRO', 21.9, 3, { pack_unit: 'un', pack_amount: 30 })]);
+      expect(await mount(<PricesScreen />)).toBe(
+        `Ovos brancosSó em AtacadãoVisto por R$ 21,90/un (30 ovos) · SUPER OUTRO (SP) · ${short(3)}, em outra casaR$ 24,90${SHARED_PRICES_NOTICE}`,
+      );
     });
 
     it('ovos respondidos na revisão (30) e uma linha sem tamanho: a dica continua, dizendo que o tamanho não foi informado', async () => {

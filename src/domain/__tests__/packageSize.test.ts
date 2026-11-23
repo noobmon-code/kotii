@@ -270,10 +270,43 @@ describe('o tamanho que vai para a base comum (sharedPackageSize)', () => {
   });
 });
 
-describe('o espelho do servidor (supabase/functions/_shared/packageSize.ts)', () => {
-  const descriptions = [...STRICT_CORPUS.map(([description]) => description), ...sweep, ...STRICT_CORPUS.map(([description]) => asKey(description))];
+/** A mesma descrição com acentos nas vogais e cedilha no C ("DUZIA" vira "DÚZIA"): a Sefaz e a foto escrevem assim. */
+const ACCENTED: Record<string, string> = { A: 'Á', E: 'Ê', I: 'Í', O: 'Õ', U: 'Ú', C: 'Ç', a: 'ã', e: 'é', i: 'í', o: 'ô', u: 'ü', c: 'ç' };
+const accented = (description: string) => description.replace(/[AEIOUCaeiouc]/g, (letter) => ACCENTED[letter]);
 
-  it('lê igual ao app: packageSize e sharedPackageSize, nas mesmas descrições', () => {
+/** Descrições com acento que têm tamanho só porque o acento sai: o espelho precisa tirar como o app. */
+const ACCENT_CORPUS: [string, string | null][] = [
+  ['OVOS BRANCOS 1 DÚZIA', '12 un'],
+  ['OVOS 2 DÚZIAS', '24 un'],
+  ['OVOS BRANCOS DÚZIA', '12 un'],
+  ['SUCO UVA 1 LÍTRO', '1 L'],
+  ['ÁGUA MINERAL 2 LÍTROS', '2 L'],
+  ['CAFÉ PILÃO 250 GRÁMAS', '250 g'],
+  ['Café Pilão 500 g', '500 g'],
+  // Já decomposta (o acento como marca à parte, U+0301), como vem de alguns teclados.
+  ['OVOS BRANCOS 1 DU\u0301ZIA', '12 un'],
+];
+
+describe('o espelho do servidor (supabase/functions/_shared/packageSize.ts)', () => {
+  const plain = [...STRICT_CORPUS.map(([description]) => description), ...sweep, ...STRICT_CORPUS.map(([description]) => asKey(description))];
+  const descriptions = [...plain, ...plain.map(accented), ...ACCENT_CORPUS.map(([description]) => description)];
+
+  it.each(ACCENT_CORPUS)('%s: o app tira o acento e lê %s', (description, label) => {
+    expect(packageSize(description)?.label ?? null).toBe(label);
+    expect(server.packageSize(description)?.label ?? null).toBe(label);
+  });
+
+  it('com acento, o app lê o mesmo que sem (a comparação com o espelho abaixo não é só de nulos)', () => {
+    let sized = 0;
+    for (const description of plain) {
+      const size = packageSize(description);
+      if (size) sized++;
+      expect([description, JSON.stringify(packageSize(accented(description)))]).toEqual([description, JSON.stringify(size)]);
+    }
+    expect(sized).toBeGreaterThan(500);
+  });
+
+  it('lê igual ao app: packageSize e sharedPackageSize, nas mesmas descrições, com e sem acento', () => {
     for (const description of descriptions) {
       expect([description, JSON.stringify(server.packageSize(description))]).toEqual([description, JSON.stringify(packageSize(description))]);
       expect([description, JSON.stringify(server.sharedPackageSize(description))]).toEqual([description, JSON.stringify(sharedPackageSize(description))]);
@@ -285,10 +318,37 @@ describe('o espelho do servidor (supabase/functions/_shared/packageSize.ts)', ()
     expect(server.samePackageSize(server.packageSize('ARROZ 1KG')!, server.packageSize('ARROZ 1000G')!)).toBe(true);
   });
 
-  it('é o mesmo arquivo, fora o começo (o normalizeSearch copiado no lugar do import)', () => {
+  describe('o texto dos dois arquivos', () => {
+    const MARKER = '/** O tamanho de uma embalagem, na unidade em que os preços se comparam. */';
     const app = readFileSync(path.resolve(__dirname, '../packageSize.ts'), 'utf8');
     const mirror = readFileSync(path.resolve(__dirname, '../../../supabase/functions/_shared/packageSize.ts'), 'utf8');
-    const body = (source: string) => source.slice(source.indexOf('/** O tamanho de uma embalagem, na unidade em que os preços se comparam. */'));
-    expect(body(mirror)).toBe(body(app));
+    const search = readFileSync(path.resolve(__dirname, '../search.ts'), 'utf8');
+    /** O começo do arquivo, até o marcador, sem os comentários: o que de código vem antes do corpo comum. */
+    const head = (source: string) =>
+      source
+        .slice(0, source.indexOf(MARKER))
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '')
+        .trim();
+    const normalizeSearchOf = (source: string) => source.match(/(?:export )?function normalizeSearch\([\s\S]*?\n\}/)?.[0].replace(/^export /, '');
+
+    it('os dois têm o marcador, uma vez só, onde o corpo comum começa', () => {
+      for (const source of [app, mirror]) {
+        expect(source.indexOf(MARKER)).toBeGreaterThan(0);
+        expect(source.indexOf(MARKER)).toBe(source.lastIndexOf(MARKER));
+      }
+    });
+
+    it('é o mesmo arquivo do marcador em diante', () => {
+      expect(mirror.slice(mirror.indexOf(MARKER))).toBe(app.slice(app.indexOf(MARKER)));
+      expect(app.length - app.indexOf(MARKER)).toBeGreaterThan(5000);
+    });
+
+    it('antes dele, o app só importa o normalizeSearch, e o espelho só o copia, com o mesmo corpo do de search.ts', () => {
+      expect(head(app)).toBe("import { normalizeSearch } from './search';");
+      const original = normalizeSearchOf(search);
+      expect(original).toContain(".replace(/[\\u0300-\\u036f]/g, '')");
+      expect(head(mirror)).toBe(original);
+    });
   });
 });
