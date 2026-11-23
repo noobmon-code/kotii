@@ -108,8 +108,8 @@ export interface GoneProducts {
 export const goneKey = (itemId: string, productId: string) => `${itemId}:${productId}`;
 
 /**
- * Os itens em que um produto sumiu do catálogo (outra pessoa da casa o juntou com outro, com esta revisão
- * aberta). O `resolveItem` já não manda o id que sumiu, mas o que ele põe no lugar é "produto novo", e
+ * Os itens em que um produto sumiu do catálogo (outra pessoa da casa o juntou com outro, ou o excluiu, com esta
+ * revisão aberta). O `resolveItem` já não manda o id que sumiu, mas o que ele põe no lugar é "produto novo", e
  * confirmar assim criaria de novo, pelo nome da nota, o produto que acabou de ser juntado:
  * - `chosen`: a pessoa escolheu nesta revisão um produto que não existe mais. A escolha tem de ser refeita.
  * - `own`: o produto do próprio item (sem escolha por cima) não está no catálogo. Ou a nota é de antes da
@@ -134,7 +134,7 @@ export function goneProducts(
 }
 
 /** No item, no lugar do aviso de preço: a escolha que sumiu. */
-export const GONE_CHOICE_HINT = 'O produto escolhido foi juntado com outro. Escolha de novo.';
+export const GONE_CHOICE_HINT = 'O produto escolhido foi juntado com outro ou excluído. Escolha de novo.';
 
 export interface ConfirmBlock {
   /** `choose`: a pessoa refaz a escolha. `refresh`: a tela busca os produtos e a nota de novo, e a pessoa confere. */
@@ -159,8 +159,8 @@ export function confirmBlock(gone: GoneProducts, refreshed: readonly string[]): 
       title: 'Escolha o produto de novo',
       message:
         gone.chosen.length === 1
-          ? 'O produto escolhido para um item desta nota foi juntado com outro em outro aparelho. Escolha de novo o produto desse item.'
-          : `Os produtos escolhidos para ${gone.chosen.length} itens desta nota foram juntados com outros em outro aparelho. Escolha de novo o produto desses itens.`,
+          ? 'O produto escolhido para um item desta nota foi juntado com outro ou excluído em outro aparelho. Escolha de novo o produto desse item.'
+          : `Os produtos escolhidos para ${gone.chosen.length} itens desta nota foram juntados com outros ou excluídos em outro aparelho. Escolha de novo o produto desses itens.`,
     };
   }
   if (gone.own.some((key) => !refreshed.includes(key))) {

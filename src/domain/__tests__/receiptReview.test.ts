@@ -3,6 +3,7 @@ import {
   allArrived,
   buildConfirmPayload,
   confirmBlock,
+  GONE_CHOICE_HINT,
   goneProducts,
   REFRESH_FAILED_NOTICE,
   resolveItem,
@@ -114,13 +115,17 @@ describe('produto que sumiu do catálogo com a revisão aberta (foi juntado com 
     expect(confirmBlock({ chosen: ['a'], own: [] }, [])).toEqual({
       kind: 'choose',
       title: 'Escolha o produto de novo',
-      message: 'O produto escolhido para um item desta nota foi juntado com outro em outro aparelho. Escolha de novo o produto desse item.',
+      message: 'O produto escolhido para um item desta nota foi juntado com outro ou excluído em outro aparelho. Escolha de novo o produto desse item.',
     });
     expect(confirmBlock({ chosen: ['a', 'e'], own: ['c:gone'] }, ['c:gone'])).toEqual({
       kind: 'choose',
       title: 'Escolha o produto de novo',
-      message: 'Os produtos escolhidos para 2 itens desta nota foram juntados com outros em outro aparelho. Escolha de novo o produto desses itens.',
+      message: 'Os produtos escolhidos para 2 itens desta nota foram juntados com outros ou excluídos em outro aparelho. Escolha de novo o produto desses itens.',
     });
+  });
+
+  it('no item, a escolha que sumiu diz que o produto foi juntado ou excluído', () => {
+    expect(GONE_CHOICE_HINT).toBe('O produto escolhido foi juntado com outro ou excluído. Escolha de novo.');
   });
 
   it('o produto do próprio item fora do catálogo pede uma busca nova, e impede até as duas buscas chegarem', () => {

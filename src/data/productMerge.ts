@@ -27,6 +27,7 @@ import {
   type ProductFacts,
   type PurchaseCounts,
 } from '@/domain/productMerge';
+import { EXPECTS_ROWS_META } from '@/lib/accessErrors';
 import { isDeadlock } from '@/lib/databaseErrors';
 import { errorMessage, supabase, unwrap } from '@/lib/supabase';
 import type { LatestPrice, Product } from '@/lib/types';
@@ -76,6 +77,40 @@ export function useMarkDistinct() {
   });
 }
 
+/**
+ * Desfazer "São diferentes": apaga o par guardado (a RLS só alcança os da casa) e pede a linha de volta. [] é
+ * nada guardado: alguém da casa já desfez, ou um dos dois produtos foi juntado ou excluído (o par saiu junto).
+ * Sem nova tentativa: apagar de novo dá no mesmo, e a pessoa vê o erro.
+ */
+export function useUndoDistinct() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    // 0 linhas confere a casa de novo, calado (pode ser só o par que outra pessoa já desfez).
+    meta: EXPECTS_ROWS_META,
+    mutationFn: async ({ a, b }: { a: string; b: string }): Promise<DistinctPair[]> => {
+      const pair = orderedPair(a, b);
+      const rows = unwrap(
+        await supabase
+          .from('product_distinct_pairs')
+          .delete()
+          .eq('product_a', pair.product_a)
+          .eq('product_b', pair.product_b)
+          .select('product_a, product_b'),
+      );
+      return (rows ?? []) as DistinctPair[];
+    },
+    onSuccess: (_rows, { a, b }) => {
+      // A linha sai da tela já, sem esperar a busca (e a sugestão de juntar pode voltar com ela).
+      const pair = orderedPair(a, b);
+      queryClient.setQueryData<DistinctPair[] | null>(['productDistinctPairs'], (pairs) =>
+        pairs ? pairs.filter((p) => p.product_a !== pair.product_a || p.product_b !== pair.product_b) : pairs,
+      );
+      queryClient.invalidateQueries({ queryKey: ['productDistinctPairs'] });
+    },
+    onError: () => queryClient.invalidateQueries({ queryKey: ['productDistinctPairs'] }),
+  });
+}
+
 /** Quantos ids vão num pedido: a lista vai no endereço, que tem limite de tamanho. */
 const ID_CHUNK = 100;
 
@@ -122,9 +157,27 @@ export function usePurchaseCounts(productIds: readonly string[], { keepPrevious 
   });
 }
 
+/**
+ * Um item aberto da despensa (não consumido) com este produto, se houver: uma linha basta, a pergunta é se ele
+ * está lá. A confirmação de juntar e a pergunta de excluir (data/productDelete) leem assim.
+ */
+export function openPantryRow(productId: string) {
+  return supabase.from('pantry_items').select('product_id').eq('product_id', productId).is('consumed_at', null).limit(1);
+}
+
+/** Um item de lista que não foi arquivada com este produto, se houver (uma linha basta, como openPantryRow). */
+export function openListRow(productId: string) {
+  return supabase
+    .from('shopping_list_items')
+    .select('product_id, list:shopping_lists!inner(id)')
+    .eq('product_id', productId)
+    .is('list.archived_at', null)
+    .limit(1);
+}
+
 /** O que a confirmação de juntar mostra, lido do banco só sobre os dois produtos. */
 export interface MergeFacts {
-  /** Os produtos como estão no banco agora, pelo id. O que não está aqui foi juntado ou apagado em outro aparelho. */
+  /** Os produtos como estão no banco agora, pelo id. O que não está aqui foi juntado ou excluído em outro aparelho. */
   products: Readonly<Record<string, Product | undefined>>;
   /** O que o app sabe de cada um dos dois, pelo id. */
   facts: Readonly<Record<string, ProductFacts>>;
@@ -142,18 +195,14 @@ export interface MergeFacts {
  */
 export async function fetchMergeFacts(firstId: string, secondId: string): Promise<MergeFacts> {
   const ids = [firstId, secondId];
-  // Uma linha basta: a pergunta é se o produto está lá.
-  const inPantry = (id: string) => supabase.from('pantry_items').select('product_id').eq('product_id', id).is('consumed_at', null).limit(1);
-  const onList = (id: string) =>
-    supabase.from('shopping_list_items').select('product_id, list:shopping_lists!inner(id)').eq('product_id', id).is('list.archived_at', null).limit(1);
   const [found, purchases, priced, ...places] = await Promise.all([
     supabase.from('products').select('id, name, category, shelf_life_days').in('id', ids),
     fetchPurchaseCounts(ids),
     supabase.from('latest_prices').select('product_id, store_id, unit, unit_price, purchased_at', { count: 'exact' }).in('product_id', ids),
-    inPantry(firstId),
-    inPantry(secondId),
-    onList(firstId),
-    onList(secondId),
+    openPantryRow(firstId),
+    openPantryRow(secondId),
+    openListRow(firstId),
+    openListRow(secondId),
   ]);
   const products = (unwrap(found) ?? []) as Product[];
   const listed = (unwrap(priced) ?? []) as LatestPrice[];
@@ -208,8 +257,8 @@ export function refreshMergedProducts(queryClient: QueryClient) {
 }
 
 /**
- * O produto já não existe: outra pessoa da casa juntou ou apagou antes. É o P0002 de merge_products e, ao
- * gravar um par, a chave estrangeira que não acha o produto (23503).
+ * O produto já não existe: outra pessoa da casa juntou ou excluiu antes. É o P0002 de merge_products e de
+ * delete_product e, ao gravar um par, a chave estrangeira que não acha o produto (23503).
  */
 export function isProductGone(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
@@ -218,7 +267,7 @@ export function isProductGone(error: unknown): boolean {
 
 /**
  * Uma gravação mandou o id de um produto que não existe mais: outra pessoa da casa juntou esse produto com
- * outro, e este aparelho ainda tinha o id de antes. É o 23503 da chave estrangeira para `products` (pela
+ * outro ou o excluiu, e este aparelho ainda tinha o id de antes. É o 23503 da chave estrangeira para `products` (pela
  * mensagem do Postgres: "... is not present in table "products"", ou, sem os detalhes, o nome da chave, que
  * leva a coluna: "..._product_id_household_id_fkey"). Outro 23503 (uma lista apagada em outro aparelho, a chave
  * da casa numa tabela com "product" no nome) não é isto.
@@ -235,7 +284,7 @@ export const LISTED_PRODUCT_SOURCES = ['products', 'pantry', 'purchaseRecords'] 
 
 /**
  * Roda uma gravação que manda o id de um produto guardado na tela (a nota em revisão, um item para a lista).
- * Se o banco recusar porque o produto foi juntado com outro, busca de novo `refresh` (de onde o id veio) e só
+ * Se o banco recusar porque o produto foi juntado com outro ou excluído, busca de novo `refresh` (de onde o id veio) e só
  * depois devolve o erro, já com a frase que a pessoa lê (PRODUCT_MERGED_AWAY): enquanto a busca não chega a
  * gravação continua em andamento, e a tentativa seguinte sai com os ids de agora.
  */

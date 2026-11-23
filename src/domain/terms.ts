@@ -6,7 +6,7 @@
 import { formatBRDate } from './dates';
 
 /** Data da versão do texto (AAAA-MM-DD). Muda a cada mudança no texto. */
-export const TERMS_VERSION = '2026-11-14';
+export const TERMS_VERSION = '2026-11-22';
 
 /**
  * A versão que a pessoa aceita (AAAA-MM-DD). Só muda numa mudança importante (o que é guardado, compartilhado
@@ -138,8 +138,8 @@ export const TERMS_SECTIONS: TermsSection[] = [
   {
     title: 'Apagar dados e sair',
     paragraphs: [
-      'Nas telas do app dá para excluir notas fiscais e itens delas, itens das listas, tarefas, aparelhos, prestadores e serviços, documentos, gastos, contas, consultas, vacinas, exames, fichas de treino e de dieta, compromissos, fichas de pessoas e pets, e gás, água e ração.',
-      'Nem tudo sai assim: os remédios só são arquivados; apagar a ficha de uma pessoa não apaga os remédios dela; o item da despensa fica marcado como consumido; e os produtos, os mercados e os históricos (compras, tarefas feitas, pontos trocados, treinos feitos e idas ao mercado) ficam com a casa.',
+      'Nas telas do app dá para excluir notas fiscais e itens delas, itens das listas, tarefas, aparelhos, prestadores e serviços, documentos, gastos, contas, consultas, vacinas, exames, fichas de treino e de dieta, compromissos, fichas de pessoas e pets, gás, água e ração, e os produtos que não estão em nenhuma nota.',
+      'Nem tudo sai assim: os remédios só são arquivados; apagar a ficha de uma pessoa não apaga os remédios dela; o item da despensa fica marcado como consumido; e os produtos que estão em alguma nota, os mercados e os históricos (compras, tarefas feitas, pontos trocados, treinos feitos e idas ao mercado) ficam com a casa.',
       `Para apagar tudo o que é seu, escreva para ${TERMS_CONTACT}.`,
       'Sair da casa ("Sair desta casa", em Configurações) tira o seu acesso a ela; o que você registrou continua com a casa. Se você é a última pessoa, sair apaga a casa e tudo o que ela tem, para sempre: listas, notas, despensa, tarefas, saúde, documentos e fotos.',
       'Sair da conta só desconecta este aparelho; não apaga nada.',

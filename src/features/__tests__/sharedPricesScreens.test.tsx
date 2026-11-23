@@ -54,6 +54,8 @@ jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => mockSharedPrice
 jest.mock('@/features/market/PriceHistorySection', () => ({ PriceHistorySection: () => null }));
 // Juntar produtos (o cartão de sugestões e a confirmação) também tem os testes dele.
 jest.mock('@/features/MergeSuggestionsCard', () => ({ MergeSuggestionsCard: () => null }));
+jest.mock('@/features/DistinctPairsSection', () => ({ DistinctPairsSection: () => null }));
+jest.mock('@/features/DeleteProductButton', () => ({ DeleteProductButton: () => null }));
 jest.mock('@/features/MergeProductsModal', () => ({ MergeProductsModal: () => null }));
 // A aba Configurações: a casa, as pessoas e as outras seções não entram no que se confere aqui.
 jest.mock('@/data/health', () => ({ usePeople: () => ({ data: [] }) }));
