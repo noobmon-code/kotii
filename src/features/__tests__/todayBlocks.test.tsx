@@ -13,7 +13,7 @@ import { ALL_CLEAR_TITLE, PANTRY_SHOWN, TODAY_BLOCK_TITLES } from '@/domain/toda
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { FEATURES } from '@/lib/features';
 import type { Chore, Equipment, HomeDocument, Medication, PantryItem, Supply } from '@/lib/types';
-import { Button, LinkButton, ListRow, Section } from '@/ui/primitives';
+import { Badge, Button, LinkButton, ListRow, Section } from '@/ui/primitives';
 
 // A tela Hoje por urgência, com as linhas de verdade e as buscas trocadas por respostas prontas: "Agora" (o atrasado
 // antes do que é de hoje), "Em breve" (o mais perto antes) e "Sugestões" (que não contam nem seguram o "Tudo em
@@ -400,6 +400,34 @@ describe('os blocos por urgência', () => {
     const lixo = section(TODAY_BLOCK_TITLES.agora)!.findAllByType(ListRow).find((row) => row.props.title === 'Tirar o lixo')!;
     await act(async () => lixo.props.onPress());
     expect(router.push).toHaveBeenCalledWith({ pathname: '/tarefa/[id]', params: { id: 'Tirar o lixo' } });
+  });
+
+  it('a validade estimada da despensa é neutra, com "~"; a certa, vermelha ou laranja; o congelador e o descongelado dizem onde estão, e a conta é a mesma', async () => {
+    settledHouse();
+    mockData.pantry = [
+      { ...pantry('Iogurte', '2026-11-11'), expiry_source: 'categoria' },
+      pantry('Leite', '2026-11-11'),
+      { ...pantry('Queijo', '2026-11-09'), expiry_source: 'produto' },
+      { ...pantry('Pão', '2026-11-09'), expiry_source: null },
+      { ...pantry('Frango', '2026-11-12'), expiry_source: 'congelado', frozen_on: '2026-08-14', thawed_on: null, freeze_kind: 'frango' },
+      { ...pantry('Peixe', '2026-11-08'), expiry_source: 'descongelado', frozen_on: '2026-10-01', thawed_on: '2026-11-07', freeze_kind: 'peixe' },
+    ];
+    await mount();
+    const row = (title: string) => renderer!.root.findAllByType(ListRow).find((entry) => entry.props.title === title)!;
+    const badge = (title: string) => row(title).findByType(Badge).props;
+    expect(badge('Iogurte')).toEqual({ label: '~ vence amanhã', tone: 'neutral' });
+    expect(row('Iogurte').props.accessibilityLabel).toBe('Iogurte, Validade estimada: vence amanhã');
+    expect(badge('Leite')).toEqual({ label: 'Vence amanhã', tone: 'warning' });
+    expect(row('Leite').props.accessibilityLabel).toBe('Leite, Validade: vence amanhã');
+    expect(badge('Queijo')).toEqual({ label: 'Venceu há 1 dia', tone: 'danger' });
+    expect(badge('Pão')).toEqual({ label: 'Venceu há 1 dia', tone: 'danger' });
+    expect(badge('Frango')).toEqual({ label: '~ vence em 2 dias', tone: 'neutral' });
+    expect(row('Frango').props.subtitle).toBe('No congelador');
+    expect(row('Frango').props.accessibilityLabel).toBe('Frango, No congelador, Validade estimada: vence em 2 dias');
+    expect(row('Peixe').props.subtitle).toBe('Descongelado em 7 nov');
+    expect(badge('Peixe')).toEqual({ label: '~ venceu há 2 dias', tone: 'neutral' });
+    // O lugar e a conta não mudam: a estimada e a do congelador pedem atenção como antes.
+    expect(page()).toContain('6 coisas pedem sua atenção.');
   });
 
   it('a despensa mostra até seis nos dois blocos juntos, e o "Ver todos" leva a Compras → Despensa', async () => {

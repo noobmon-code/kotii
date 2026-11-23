@@ -71,6 +71,12 @@ jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
 jest.mock('@/features/finance/PayerChips', () => ({ PayerChips: () => null }));
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));
+// O congelador (data/freezer): sem ele no banco, como antes da migração.
+jest.mock('@/data/freezer', () => ({
+  useFreezer: () => ({ available: false, days: null }),
+  useFreezePantryItems: () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false }),
+  useThawPantryItems: () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false }),
+}));
 jest.mock('@/data/home', () => ({ fetchPantryNear: async () => [] }));
 // A câmera do "Escanear": a permissão já dada, a foto tirada e o que a leitura local acharia nela.
 jest.mock('expo-camera', () => {

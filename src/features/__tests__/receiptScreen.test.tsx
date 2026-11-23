@@ -71,6 +71,17 @@ jest.mock('@/features/RenameStoreModal', () => {
 });
 jest.mock('@/data/images', () => ({ signedImageUrl: jest.fn() }));
 jest.mock('@/data/home', () => ({ fetchPantryNear: jest.fn(async () => mockMarket.pantryNear) }));
+// O congelador (data/freezer): se o banco o tem é o teste que diz (a pergunta tem os testes dela, pantryFreezer.test);
+// congelar é o de verdade, pelo rpc do banco de mentira.
+const mockFreezer: { available: boolean | undefined } = { available: false };
+jest.mock('@/data/freezer', () => {
+  const actual = jest.requireActual<typeof import('@/data/freezer')>('@/data/freezer');
+  const { DEFAULT_FREEZE_DAYS } = jest.requireActual<typeof import('@/domain/freezer')>('@/domain/freezer');
+  return {
+    ...actual,
+    useFreezer: () => ({ available: mockFreezer.available, days: mockFreezer.available === true ? DEFAULT_FREEZE_DAYS : null }),
+  };
+});
 jest.mock('@/data/market', () => {
   const { LinkIndex: Links } = jest.requireActual<typeof import('@/domain/listLinks')>('@/domain/listLinks');
   const loaded = (data: unknown) => ({ data, isPending: false, isError: false, isFetching: false, error: null, refetch: jest.fn() });
@@ -186,7 +197,12 @@ jest.mock('@/lib/supabase', () => {
         // Como no servidor: confirmar uma nota que já não existe responde P0002 ("receipt not found").
         const gone = fn === 'confirm_receipt' && !mockDb.receipts.some((row) => row.id === args.p_receipt_id);
         const error = gone ? { code: 'P0002', message: 'receipt not found', details: null, hint: null } : fn === 'confirm_receipt' ? mockDb.confirmError : null;
-        return answer({ table: fn, verb: 'rpc', values: args }, () => ({ data: null, error }));
+        // Congelar devolve as compras que mudaram (aqui, todas as pedidas).
+        const data =
+          fn === 'freeze_pantry_items'
+            ? (args.p_ids as string[]).map((id) => ({ item_id: id, item_expires_on: null, item_expiry_source: 'congelado', item_frozen_on: args.p_frozen_on }))
+            : null;
+        return answer({ table: fn, verb: 'rpc', values: args }, () => ({ data, error }));
       },
     },
   };
@@ -370,6 +386,7 @@ beforeEach(() => {
   mockMarket.stores = [{ id: 's1', name: 'Assaí', cnpj: null, address: null }];
   mockLearning.learned = undefined;
   mockLearning.enabled = [];
+  mockFreezer.available = false;
   answers = {};
   jest.mocked(confirmAction).mockReset();
   jest.mocked(askYesNo).mockReset();
@@ -2786,5 +2803,115 @@ describe('no computador (ui/desktop): a revisão em duas colunas', () => {
     const viewer = renderer!.root.findAllByType(SheetModal).find((entry) => entry.props.visible);
     expect(viewer?.props.photo).toBe(true);
     expect(said(viewer!)).toContain('Foto da nota');
+  });
+});
+
+describe('"Congelou?": a linha de carne ou peixe que vai para a despensa', () => {
+  const carne = (patch: Row = {}) =>
+    item('c', 'PICANHA BOV KG', 60, { suggested_name: 'Picanha', suggested_category: 'carnes', quantity: 1, unit: 'kg', unit_price: 60, ...patch });
+  const pantryOf = (id: string) => (mockDb.rpcs.find((call) => call.fn === 'confirm_receipt')?.args.p_items as Row[]).find((entry) => entry.id === id)?.pantry as Row | undefined;
+  const day = `${YEAR}-06-10`;
+
+  it('pergunta na carne e na linguiça do açougue, não no pão nem na salsicha dos frios', async () => {
+    mockFreezer.available = true;
+    seed(
+      receipt({ total: 100 }),
+      carne(),
+      item('l', 'LINGUICA TOSCANA', 20, { suggested_name: 'Linguiça toscana', suggested_category: 'carnes' }),
+      item('p', 'PAO FRANCES KG', 10, { suggested_name: 'Pão francês', suggested_category: 'padaria' }),
+      item('s', 'SALSICHA HOT DOG', 10, { suggested_name: 'Salsicha', suggested_category: 'frios' }),
+    );
+    await open();
+    expect(said(card('PICANHA BOV KG'))).toContain('Congelou?');
+    expect(chip('Congelei', card('PICANHA BOV KG'))?.props.accessibilityLabel).toBe('Congelei: PICANHA BOV KG');
+    expect(said(card('LINGUICA TOSCANA'))).toContain('Congelou?');
+    expect(said(card('PAO FRANCES KG'))).not.toContain('Congelou?');
+    expect(said(card('SALSICHA HOT DOG'))).not.toContain('Congelou?');
+  });
+
+  it('sem a resposta do banco (pendente, falhou ou sem o congelador) não pergunta, e a linha "CONG" vai como antes', async () => {
+    for (const available of [undefined, false]) {
+      mockFreezer.available = available;
+      mockDb.rpcs = [];
+      seed(receipt({ total: 30 }), item('t', 'FILE TILAPIA CONG', 30, { suggested_name: 'Filé de tilápia', suggested_category: 'peixes' }));
+      await open();
+      expect(page()).not.toContain('Congelou?');
+      await press(button('Confirmar nota'));
+      expect(pantryOf('t')).toEqual({ name: 'Filé de tilápia', category: 'peixes', purchased_on: day, expires_on: `${YEAR}-06-12`, expiry_source: 'categoria' });
+      act(() => renderer?.unmount());
+    }
+  });
+
+  it('"CONG" começa marcado; marcar muda a validade e o que vai para confirm_receipt', async () => {
+    mockFreezer.available = true;
+    seed(receipt({ total: 90 }), carne(), item('t', 'FILE TILAPIA CONG', 30, { suggested_name: 'Filé de tilápia', suggested_category: 'peixes' }));
+    await open();
+    expect(chip('Congelei', card('FILE TILAPIA CONG'))?.props.selected).toBe(true);
+    expect(said(card('FILE TILAPIA CONG'))).toContain('Validade estimada no congelador (peixe e frutos do mar: 60 dias) — ajuste se quiser.');
+    expect(chip('Congelei', card('PICANHA BOV KG'))?.props.selected).toBe(false);
+    expect(said(card('PICANHA BOV KG'))).toContain('Validade estimada pela categoria — ajuste se quiser.');
+    await press(chip('Congelei', card('PICANHA BOV KG')));
+    expect(said(card('PICANHA BOV KG'))).toContain('Validade estimada no congelador (carne bovina e suína: 90 dias) — ajuste se quiser.');
+    await press(button('Confirmar nota'));
+    expect(pantryOf('c')).toEqual({
+      name: 'Picanha',
+      category: 'carnes',
+      purchased_on: day,
+      expires_on: `${YEAR}-09-08`,
+      expiry_source: 'congelado',
+      frozen_on: day,
+      freeze_kind: 'carne',
+      fresh_expires_on: `${YEAR}-06-13`,
+      fresh_expiry_source: 'categoria',
+    });
+    expect(pantryOf('t')).toEqual(expect.objectContaining({ frozen_on: day, freeze_kind: 'peixe', expiry_source: 'congelado' }));
+  });
+
+  it('a validade digitada antes de "Congelei" vai como a de antes do congelador (manual)', async () => {
+    mockFreezer.available = true;
+    seed(receipt({ total: 60 }), carne());
+    await open();
+    const expiry = () => card('PICANHA BOV KG').findAll((node) => node.props.accessibilityLabel === 'Validade de PICANHA BOV KG' && typeof node.props.onChangeText === 'function')[0];
+    await run(() => expiry().props.onChangeText('20/06/' + YEAR));
+    // Sem sair do campo: o toque em "Congelei" grava a data digitada antes.
+    await press(chip('Congelei', card('PICANHA BOV KG')));
+    await press(button('Confirmar nota'));
+    expect(pantryOf('c')).toEqual(
+      expect.objectContaining({ expiry_source: 'congelado', fresh_expires_on: `${YEAR}-06-20`, fresh_expiry_source: 'manual', frozen_on: day }),
+    );
+  });
+
+  it('"Já está na despensa" respondido "Não colocar": a compra do carrinho vai para o congelador depois de confirmar', async () => {
+    mockFreezer.available = true;
+    mockMarket.pantryNear = [{ id: 'cart-picanha', product_id: null, name: 'Picanha', purchased_on: `${YEAR}-06-09` }];
+    seed(receipt({ total: 60 }), carne());
+    await open();
+    await press(chip('Congelei', card('PICANHA BOV KG')));
+    await press(button('Confirmar nota'));
+    expect(asked('Já está na despensa')).toHaveLength(1);
+    expect(pantryOf('c')).toBeUndefined();
+    expect(mockDb.rpcs.find((call) => call.fn === 'freeze_pantry_items')?.args).toEqual({ p_ids: ['cart-picanha'], p_kind: 'carne', p_frozen_on: day });
+    expect(notify).not.toHaveBeenCalledWith('Não deu certo', expect.anything());
+  });
+
+  it('e quando congelar a compra do carrinho falha, a pessoa fica sabendo', async () => {
+    mockFreezer.available = true;
+    mockMarket.pantryNear = [{ id: 'cart-picanha', product_id: null, name: 'Picanha', purchased_on: `${YEAR}-06-09` }];
+    mockDb.fails = [({ table }) => table === 'freeze_pantry_items'];
+    seed(receipt({ total: 60 }), carne());
+    await open();
+    await press(chip('Congelei', card('PICANHA BOV KG')));
+    await press(button('Confirmar nota'));
+    expect(notify).toHaveBeenCalledWith(
+      'Não deu certo',
+      'A nota foi salva, mas não deu para marcar Picanha como congelado. Use "Congelar" em Compras > Despensa.',
+    );
+  });
+
+  it('a validade aprendida do produto diz que o produto aprendeu', async () => {
+    mockMarket.products = [{ id: 'p-arroz', name: 'Arroz', category: 'graos', shelf_life_days: 200 }];
+    seed(receipt({ total: 12.9 }), item('b', 'ARROZ TIO JOAO 5KG', 12.9, { product_id: 'p-arroz', suggested_name: 'Arroz', suggested_category: 'graos' }));
+    await open();
+    expect(said(card('ARROZ TIO JOAO 5KG'))).toContain('Validade que o produto aprendeu — ajuste se quiser.');
   });
 });
