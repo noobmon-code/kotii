@@ -7,6 +7,9 @@
 // o produto. Da leitura do servidor e dos preços comuns só vai o código de
 // barras (gtin), que quem chama já tirou do código da linha (sharedGtin, em
 // read.ts): o código interno do mercado nunca vai.
+// Cada linha diz também se a unidade da Sefaz é de um item só (single_unit):
+// só essa linha pode levar o tamanho da embalagem (receiptRead, readPack). Ela
+// é só da leitura: o rascunho do app não a tem, e o teste compara sem ela.
 // Sem import: o teste do app lê este arquivo direto.
 
 interface SefazItem {
@@ -31,7 +34,20 @@ const UNITS: Record<string, 'un' | 'kg' | 'g' | 'l' | 'ml'> = {
   ML: 'ml',
 };
 
-export function nfceReadLines(items: SefazItem[]): { description: string; unit: string; unit_price: number; gtin?: string }[] {
+// As unidades da Sefaz em que o preço é de um item só (uma unidade, uma peça, uma garrafa, um pote...). Fora delas
+// (FD, CX, PCT, DZ, KIT, a página sem a unidade), o preço pode ser do fardo ou da caixa, e a descrição pode dizer só
+// o tamanho de cada um ("CERV SKOL LT 350ML" num fardo de 12): a leitura não diz tamanho de embalagem.
+const SINGLE_UNITS = new Set([
+  'UN', 'UND', 'UNID', 'UNIDADE', 'UNI', 'PC', 'PECA', 'GF', 'GARRAFA', 'FR', 'FRASCO', 'PT', 'POTE', 'VD', 'VIDRO', 'TB', 'TUBO', 'SC', 'SACO', 'LATA',
+]);
+
+/** Uma linha lida, como receiptRead a recebe (ReadLineInput em _shared/receiptRead.ts, escrito aqui sem import). */
+export type ReadLineInput = { description: string; unit: string; unit_price: number; gtin?: string; single_unit?: boolean };
+
+/** A unidade da Sefaz é de um item só: "UN", "un", "UNID.", "PÇ" (sem acento, sem ponto, em maiúsculas). */
+const singleUnit = (unit: string) => SINGLE_UNITS.has(unit.normalize('NFD').replace(/[^A-Za-z]/g, '').toUpperCase());
+
+export function nfceReadLines(items: SefazItem[]): ReadLineInput[] {
   return items
     .filter((item) => item.description.trim() && item.totalPrice >= 0)
     .map((item) => {
@@ -43,6 +59,7 @@ export function nfceReadLines(items: SefazItem[]): { description: string; unit: 
         unit: UNITS[item.unit.trim().toUpperCase()] ?? 'un',
         unit_price: unitPrice,
         ...(item.gtin ? { gtin: item.gtin } : {}),
+        ...(singleUnit(item.unit) ? { single_unit: true } : {}),
       };
     });
 }

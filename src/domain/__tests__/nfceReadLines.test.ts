@@ -37,12 +37,20 @@ describe('leitura do QR code gravada no servidor', () => {
       unit: line.unit,
       unit_price: line.unit_price,
     }));
-    expect(nfceReadLines(items())).toEqual(draft);
+    // single_unit é só da leitura (diz se a linha pode levar o tamanho da embalagem): o rascunho não o tem.
+    expect(nfceReadLines(items()).map(({ single_unit: _single, ...line }) => line)).toEqual(draft);
+  });
+
+  it('marca a linha cuja unidade da Sefaz é de um item só: só ela pode levar o tamanho da embalagem', () => {
+    const marked = (unit: string) =>
+      nfceReadLines([{ description: 'ITEM', quantity: 1, unit, unitPrice: 1, totalPrice: 1 }])[0].single_unit === true;
+    for (const unit of ['UN', 'un', 'UND', 'PÇ', 'GF', 'UNID.']) expect([unit, marked(unit)]).toEqual([unit, true]);
+    for (const unit of ['PCT', 'CX', 'FD', 'DZ', 'KG', '']) expect([unit, marked(unit)]).toEqual([unit, false]);
   });
 
   it('leva o código de barras (como a função o tira do código da linha) só onde o rascunho tem um de 13 ou 14 dígitos', () => {
     // read.ts manda a cada linha o sharedGtin do código dela; o rascunho guarda o código pela chave do banco.
-    const read = nfceReadLines(items().map((item) => ({ ...item, gtin: sharedGtin(item.code) })));
+    const read = nfceReadLines(items().map((item) => ({ ...item, gtin: sharedGtin(item.code) }))).map(({ single_unit: _single, ...line }) => line);
     const draft = nfceItemsToDraft(items(), new Map()).map((line) => {
       const key = gtinKey(line.store_code);
       const gtin = key && !key.startsWith('00') ? key : null;

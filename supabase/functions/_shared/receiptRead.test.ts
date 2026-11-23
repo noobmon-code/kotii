@@ -1,7 +1,18 @@
 import { assertEquals } from '@std/assert';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { forgetReceiptRead, insertWithRead, MAX_DESCRIPTION, MAX_READ_LINES, receiptRead, saoPauloDay, saveReceiptRead } from './receiptRead.ts';
+import {
+  forgetReceiptRead,
+  insertWithRead,
+  MAX_DESCRIPTION,
+  MAX_PACK_AMOUNT,
+  MAX_PACK_OF,
+  MAX_READ_LINES,
+  readPack,
+  receiptRead,
+  saoPauloDay,
+  saveReceiptRead,
+} from './receiptRead.ts';
 
 const KEY = '35261011222333000181650010000123451000012341';
 
@@ -200,4 +211,50 @@ Deno.test('insertWithRead: outro erro, ou sem leitura, volta como veio, sem nova
     assertEquals(result, { data: null, error: { code }, readId });
     assertEquals(tries, [readId]);
   }
+});
+
+Deno.test('readPack: o tamanho da leitura estrita, só em "un" e dentro dos limites do check do banco', () => {
+  assertEquals(readPack('CERV SKOL LT 350ML C/12', 'un'), { pack_unit: 'l', pack_amount: 4.2, pack_of: 12 });
+  assertEquals(readPack('OVOS C/12', 'un'), { pack_unit: 'un', pack_amount: 12 });
+  assertEquals(readPack('ARROZ CAMIL T1 5KG', 'un'), { pack_unit: 'kg', pack_amount: 5 });
+  assertEquals(readPack('1 X 350ML', 'un'), { pack_unit: 'l', pack_amount: 0.35 });
+  // "AGUA MIN 1 5L" pode ser 1,5 L; "C12" sem a barra é um número que a leitura não explica; por kg, nada.
+  assertEquals(readPack('AGUA MIN 1 5L', 'un'), {});
+  assertEquals(readPack('CERV BRAHMA 350ML LT C12', 'un'), {});
+  assertEquals(readPack('QUEIJO 200G', 'kg'), {});
+  assertEquals(readPack('SACOLA', 'un'), {});
+  // Os limites: até 100 mil (kg, l ou itens); "de quantos" de 2 a mil, e fora disso só ele sai.
+  assertEquals(MAX_PACK_AMOUNT, 100000);
+  assertEquals(MAX_PACK_OF, 1000);
+  assertEquals(readPack('AREIA 100000KG', 'un'), { pack_unit: 'kg', pack_amount: 100000 });
+  assertEquals(readPack('AREIA 100001KG', 'un'), {});
+  assertEquals(readPack('COPO 1001X10ML', 'un'), { pack_unit: 'l', pack_amount: 10.01 });
+  assertEquals(readPack('RACAO 2,5G', 'un'), { pack_unit: 'kg', pack_amount: 0.0025 });
+});
+
+Deno.test('receiptRead: o tamanho só na nota do QR code, só na linha que a Sefaz vendeu como um item só', () => {
+  const base = { householdId: 'h1', accessKey: KEY, cnpj: '11222333000181', storeName: 'ATACADAO', purchasedOn: '2026-10-09' };
+  const lines = [
+    { description: 'CERV SKOL LT 350ML C/12', unit: 'un', unit_price: 39.9, single_unit: true },
+    // O fardo (FD): a mesma descrição da lata, e o preço é do fardo todo.
+    { description: 'CERV SKOL LT 350ML', unit: 'un', unit_price: 39.9 },
+    // Tamanho que veio de fora não conta: só o que o servidor lê aqui.
+    { description: 'SACOLA', unit: 'un', unit_price: 0.1, single_unit: true, pack_unit: 'kg', pack_amount: 5 } as {
+      description: string;
+      unit: string;
+      unit_price: number;
+      single_unit: boolean;
+    },
+  ];
+  const qr = receiptRead({ ...base, source: 'qrcode', lines });
+  assertEquals(qr.lines, [
+    { description: 'CERV SKOL LT 350ML C/12', unit: 'un', unit_price: 39.9, pack_unit: 'l', pack_amount: 4.2, pack_of: 12 },
+    { description: 'CERV SKOL LT 350ML', unit: 'un', unit_price: 39.9 },
+    { description: 'SACOLA', unit: 'un', unit_price: 0.1 },
+  ]);
+  // single_unit é só entrada: nunca vai para o banco.
+  assertEquals(qr.lines.some((line) => 'single_unit' in line), false);
+  // A foto (a IA põe "un" também no fardo e na caixa) nunca leva tamanho.
+  const photo = receiptRead({ ...base, source: 'ai', lines });
+  assertEquals(photo.lines.map((line) => 'pack_unit' in line), [false, false, false]);
 });

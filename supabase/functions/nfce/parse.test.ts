@@ -102,6 +102,17 @@ Deno.test('pageAccessKey: a chave impressa, em grupos de 4, ou null', () => {
   assertEquals(pageAccessKey(`<a href="ver.jsp?chave=${key}">Ver</a>`), null);
 });
 
+Deno.test('item sem o campo da unidade: a unidade fica vazia (não passa por UN; o rascunho e a leitura a leem como "un")', () => {
+  const html = `
+  <table id="tabResult">
+    <tr><td><span class="txtTit">CERV SKOL LT 350ML</span>
+      <span class="Rqtd"><strong>Qtde.:</strong>1</span>
+      <span class="RvlUnit"><strong>Vl. Unit.:</strong>&nbsp;39,9</span></td>
+      <td class="txtTit noWrap">Vl. Total<br /><span class="valor">39,90</span></td></tr>
+  </table>`;
+  assertEquals(parseNfceHtml(html).items, [{ description: 'CERV SKOL LT 350ML', code: null, quantity: 1, unit: '', unitPrice: 39.9, totalPrice: 39.9 }]);
+});
+
 Deno.test('item sem valor legível fica, com total 0, para a revisão perguntar; título solto não vira item', () => {
   const html = `
   <table id="tabResult">
