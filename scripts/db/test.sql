@@ -213,6 +213,9 @@ begin
   assert (select pack_count from public.latest_prices where product_id = p_arroz and store_id = s_caro) = 12,
     'latest price carries the pack count';
   assert (select pack_count from public.price_observations where receipt_id = r2) = 12, 'observation carries the pack count';
+  assert (select raw_description from public.latest_prices where product_id = p_arroz and store_id = s_caro) = 'ARROZ T JOAO 5KG',
+    'latest price carries the line description (the package size)';
+  assert (select raw_description from public.price_observations where receipt_id = r2) = 'ARROZ T JOAO 5KG', 'observation carries the description';
   begin
     update public.receipt_items set pack_count = 1 where id = i_arroz2;
     raise exception 'FAIL: pack of one accepted';
@@ -4584,7 +4587,8 @@ begin
   -- em toda loja (20261024120000_shared_prices_gtin.sql).
   assert (select array_agg(column_name || ' ' || data_type order by ordinal_position) from information_schema.columns
             where table_schema = 'public' and table_name = 'shared_prices')
-    = array['store_cnpj text', 'store_uf text', 'store_name text', 'item_key text', 'unit text', 'seen_on date', 'unit_price numeric', 'visible_on date', 'gtin text'],
+    = array['store_cnpj text', 'store_uf text', 'store_name text', 'item_key text', 'unit text', 'seen_on date', 'unit_price numeric', 'visible_on date', 'gtin text',
+            'pack_unit text', 'pack_amount numeric', 'pack_of smallint'],
     'shared_prices has exactly store, state, name, item key, unit, day, price, the day it becomes readable and the barcode';
   assert (select bool_and(is_nullable = 'NO') from information_schema.columns
             where table_schema = 'public' and table_name = 'shared_prices' and column_name in ('seen_on', 'visible_on')),
@@ -5079,9 +5083,9 @@ begin
   -- O que volta é só isso: nada de casa, pessoa, nota ou hora, nem o dia em que a linha passou a ser lida
   -- (visible_on não sai do banco: diria em que dia a nota foi confirmada).
   assert (select array_agg(k order by k) from jsonb_object_keys(to_jsonb(seen)) as k)
-    = array['mine', 'product_id', 'seen_on', 'store_cnpj', 'store_name', 'store_uf', 'unit', 'unit_price'], 'the answer has only these columns';
+    = array['mine', 'pack_amount', 'pack_of', 'pack_unit', 'product_id', 'seen_on', 'store_cnpj', 'store_name', 'store_uf', 'unit', 'unit_price'], 'the answer has only these columns';
   assert (select proargnames from pg_proc where oid = 'public.shared_latest_prices()'::regprocedure)
-    = array['product_id', 'store_cnpj', 'store_name', 'store_uf', 'unit', 'unit_price', 'seen_on', 'mine'],
+    = array['product_id', 'store_cnpj', 'store_name', 'store_uf', 'unit', 'unit_price', 'seen_on', 'mine', 'pack_unit', 'pack_amount', 'pack_of'],
     'and the function declares no other column';
   perform set_config('test.sp_product_r', p::text, false);
 
@@ -6129,12 +6133,12 @@ begin
     'and so does latest_prices';
   assert (select array_agg(attname::text order by attnum) from pg_attribute
             where attrelid = 'public.price_observations'::regclass and attnum > 0 and not attisdropped)
-         = array['household_id', 'product_id', 'store_id', 'purchased_at', 'unit_price', 'unit', 'receipt_id', 'pack_count'],
-    'the columns of price_observations are the same, in the same order (pack_count, 20261026134101, at the end)';
+         = array['household_id', 'product_id', 'store_id', 'purchased_at', 'unit_price', 'unit', 'receipt_id', 'pack_count', 'raw_description'],
+    'the columns of price_observations are the same, in the same order (pack_count, 20261026134101, and raw_description, 20261122140000, at the end)';
   assert (select array_agg(attname::text order by attnum) from pg_attribute
             where attrelid = 'public.latest_prices'::regclass and attnum > 0 and not attisdropped)
-         = array['household_id', 'product_id', 'store_id', 'unit', 'unit_price', 'purchased_at', 'pack_count'],
-    'the columns of latest_prices are the same, in the same order, with pack_count at the end';
+         = array['household_id', 'product_id', 'store_id', 'unit', 'unit_price', 'purchased_at', 'pack_count', 'raw_description'],
+    'the columns of latest_prices are the same, in the same order, with pack_count and raw_description at the end';
   assert has_table_privilege('authenticated', 'public.price_observations', 'select')
      and has_table_privilege('authenticated', 'public.latest_prices', 'select'), 'members still read both views';
 end $$;
@@ -12837,6 +12841,258 @@ end $$;
 delete from public.shared_prices where store_cnpj like '6200000000%';
 delete from public.households where name in ('Casa do Gil', 'Casa da Bia', 'Casa do Caco');
 delete from auth.users where id in (:'user_g1', :'user_g2', :'user_g3');
+
+-- ---------------------------------------------------------------------------
+\echo '• preços compartilhados: o tamanho da embalagem que o servidor leu na nota do QR code'
+-- Ernesto confirma notas do QR code; a leitura do servidor traz o tamanho de algumas linhas (como nfce o grava). Fia tem
+-- a caixa de 12 latas com o mesmo nome e uma nota do mesmo estado: lê o tamanho na linha comum.
+\set user_pk1 '00000000-0000-0000-0000-000000000361'
+\set user_pk2 '00000000-0000-0000-0000-000000000362'
+reset role;
+insert into auth.users (id) values (:'user_pk1'), (:'user_pk2');
+-- A leitura da foto (a IA): sem chave, com o mercado e o dia da nota.
+create function pg_temp.photo_read_with_lines(p_receipt uuid, p_lines jsonb) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_id uuid;
+begin
+  insert into public.receipt_reads (household_id, source, access_key, store_cnpj, store_name, purchased_on, lines)
+  select r.household_id, 'ai', null, s.cnpj, s.name, (r.purchased_at at time zone 'America/Sao_Paulo')::date, p_lines
+    from public.receipts r
+    join public.stores s on s.id = r.store_id and s.household_id = r.household_id
+    where r.id = p_receipt
+  returning id into v_id;
+  update public.receipts set read_id = v_id where id = p_receipt;
+end $$;
+-- Ernesto compra a lata de novo no mesmo mercado, ontem, e a leitura traz estas linhas.
+create function pg_temp.ernesto_buys_can(p_price numeric, p_n int, p_line jsonb) returns void
+language plpgsql as $$
+declare
+  yesterday constant timestamptz := (((now() at time zone 'America/Sao_Paulo')::date - 1) + time '18:00') at time zone 'America/Sao_Paulo';
+  r uuid;
+begin
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (current_setting('test.e_store')::uuid, yesterday, '352610' || '63000000000101' || repeat('0', 22) || lpad(p_n::text, 2, '0'), 'qrcode')
+    returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'CERV SKOL LT 350ML', 'alcoolicas', 'un', p_price, p_price);
+  perform pg_temp.read_with_lines(r, jsonb_build_array(
+    jsonb_build_object('description', 'CERV SKOL LT 350ML', 'unit', 'un', 'unit_price', p_price) || p_line));
+  perform public.confirm_receipt(r, '[]');
+end $$;
+do $$
+begin
+  assert (select array_agg(column_name || ' ' || is_nullable || ' ' || coalesce(column_default, '-') order by ordinal_position)
+            from information_schema.columns
+            where table_schema = 'public' and table_name = 'shared_prices' and column_name like 'pack_%')
+    = array['pack_unit YES -', 'pack_amount YES -', 'pack_of YES -'],
+    'the three size columns may be missing, and nothing fills them by itself';
+  assert (select array_agg(a.attname::text order by k.ord) from pg_index i
+            cross join lateral unnest(i.indkey) with ordinality as k (attnum, ord)
+            join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+            where i.indrelid = 'public.shared_prices'::regclass and i.indisprimary)
+    = array['store_cnpj', 'item_key', 'unit', 'seen_on'],
+    'the primary key does not change: the size is a column of the row, not another row';
+  -- O check vale para toda gravação (as linhas de antes, todas sem tamanho, nem precisaram ser lidas).
+  declare
+    bad text[] := array[
+      $q$ 'kg', 'kg', 1, null $q$,      -- tamanho numa linha por kg
+      $q$ 'un', 'g', 1, null $q$,       -- unidade de tamanho que não é kg, l ou un
+      $q$ 'un', 'kg', 0, null $q$,
+      $q$ 'un', 'kg', 100001, null $q$,
+      $q$ 'un', 'un', 1.5, null $q$,    -- itens que não são inteiros
+      $q$ 'un', 'un', 1, null $q$,      -- um item só não é pacote
+      $q$ 'un', 'un', 12, 2 $q$,        -- "de quantos" só em kg e l
+      $q$ 'un', 'l', 4.2, 1 $q$,
+      $q$ 'un', 'l', 4.2, 1001 $q$,
+      $q$ 'un', 'l', null, null $q$,    -- unidade sem quanto
+      $q$ 'un', null, 1, null $q$,      -- quanto sem unidade
+      $q$ 'un', null, null, 12 $q$
+    ];
+    v text;
+  begin
+    foreach v in array bad loop
+      begin
+        execute 'insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on, pack_unit, pack_amount, pack_of)
+                 select ''63000000000909'', ''35'', ''X'', ''X'', u::text, current_date - 1, 1, current_date, pu::text, pa::numeric, po::smallint
+                   from (select ' || v || ') as t (u, pu, pa, po)';
+        raise exception 'FAIL: the size check let through (%)', v;
+      exception when check_violation then null;
+      end;
+    end loop;
+  end;
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on, pack_unit, pack_amount, pack_of) values
+    ('63000000000909', '35', 'X', 'A', 'un', current_date - 1, 1, current_date, 'l', 4.2, 12),
+    ('63000000000909', '35', 'X', 'B', 'un', current_date - 1, 1, current_date, 'un', 30, null),
+    ('63000000000909', '35', 'X', 'C', 'un', current_date - 1, 1, current_date, 'kg', 0.0025, null),
+    ('63000000000909', '35', 'X', 'D', 'kg', current_date - 1, 1, current_date, null, null, null);
+  delete from public.shared_prices where store_cnpj = '63000000000909';
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_pk1', false) \gset
+select public.create_household('Casa do Ernesto', 'Ernesto') \gset
+do $$
+declare
+  e1 constant text := '63000000000101';
+  yesterday constant timestamptz := (((now() at time zone 'America/Sao_Paulo')::date - 1) + time '10:00') at time zone 'America/Sao_Paulo';
+  s uuid;
+  r uuid;
+begin
+  insert into public.stores (name, cnpj) values ('SUPERMERCADO EMBALAGEM', e1) returning id into s;
+  perform set_config('test.e_store', s::text, false);
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s, yesterday, '352610' || e1 || repeat('0', 22) || '11', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price) values
+    (r, 0, 'CERV SKOL LT 350ML C/12', 'alcoolicas', 'un', 39.90, 39.90),
+    (r, 1, 'CERV SKOL LT 350ML', 'alcoolicas', 'un', 3.49, 3.49),
+    (r, 2, 'OVOS BRANCOS C/12', 'ovos', 'un', 11.90, 11.90),
+    (r, 3, 'QUEIJO MUSSARELA', 'laticinios', 'kg', 39.90, 39.90),
+    (r, 4, 'AGUA MIN 1 5L', 'bebidas', 'un', 2.50, 2.50),
+    (r, 5, 'FEIJAO CARIOCA 1KG', 'graos', 'un', 8.00, 8.00),
+    (r, 6, 'ARROZ CINCO 5KG', 'graos', 'un', 22.90, 22.90),
+    (r, 7, 'OLEO OBJETO 900ML', 'oleos', 'un', 7.00, 7.00),
+    (r, 8, 'ACUCAR DEMAIS 1KG', 'graos', 'un', 4.99, 4.99),
+    (r, 9, 'LEITE NUMERO 1L', 'laticinios', 'un', 5.49, 5.49),
+    (r, 10, 'RACAO MIUDA 2,5G', 'pet', 'un', 1.99, 1.99);
+  perform pg_temp.read_with_lines(r, $j$[
+    {"description": "CERV SKOL LT 350ML C/12", "unit": "un", "unit_price": 39.90, "pack_unit": "l", "pack_amount": 4.2, "pack_of": 12},
+    {"description": "CERV SKOL LT 350ML", "unit": "un", "unit_price": 3.49, "pack_unit": "l", "pack_amount": 0.35},
+    {"description": "OVOS BRANCOS C/12", "unit": "un", "unit_price": 11.90, "pack_unit": "un", "pack_amount": 12},
+    {"description": "QUEIJO MUSSARELA", "unit": "kg", "unit_price": 39.90, "pack_unit": "kg", "pack_amount": 0.2},
+    {"description": "AGUA MIN 1 5L", "unit": "un", "unit_price": 2.50},
+    {"description": "FEIJAO CARIOCA 1KG", "unit": "un", "unit_price": 8.00, "pack_unit": "kg", "pack_amount": 1},
+    {"description": "FEIJAO CARIOCA 1KG", "unit": "un", "unit_price": 8.00},
+    {"description": "ARROZ CINCO 5KG", "unit": "un", "unit_price": 22.90, "pack_unit": "kg", "pack_amount": "cinco"},
+    {"description": "OLEO OBJETO 900ML", "unit": "un", "unit_price": 7.00, "pack_unit": "l", "pack_amount": {"x": 1}, "pack_of": "2.5"},
+    {"description": "ACUCAR DEMAIS 1KG", "unit": "un", "unit_price": 4.99, "pack_unit": "kg", "pack_amount": 100001},
+    {"description": "LEITE NUMERO 1L", "unit": "un", "unit_price": 5.49, "pack_unit": "l", "pack_amount": 1},
+    {"description": "RACAO MIUDA 2,5G", "unit": "un", "unit_price": 1.99, "pack_unit": "kg", "pack_amount": 0.0025}
+  ]$j$::jsonb);
+  perform public.confirm_receipt(r, '[]');
+  assert (select status from public.receipts where id = r) = 'confirmed', 'an odd size in the read never stops the confirmation';
+
+  -- A foto (a IA) põe "un" também no fardo: o tamanho dela nunca vai, mesmo que uma função de outra versão o mande.
+  insert into public.receipts (store_id, purchased_at, source) values (s, yesterday, 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'ARROZ FOTO 5KG', 'graos', 'un', 21.90, 21.90);
+  perform pg_temp.photo_read_with_lines(r, $j$[{"description": "ARROZ FOTO 5KG", "unit": "un", "unit_price": 21.90, "pack_unit": "kg", "pack_amount": 5}]$j$::jsonb);
+  perform public.confirm_receipt(r, '[]');
+end $$;
+reset role;
+do $$
+begin
+  assert (select array_agg(item_key || ' ' || coalesce(pack_unit || ' ' || pack_amount || coalesce(' x' || pack_of, ''), '-') order by item_key)
+            from public.shared_prices where store_cnpj = '63000000000101')
+    = array[
+      'ACUCAR DEMAIS 1KG -',
+      'AGUA MIN 1 5L -',
+      'ARROZ CINCO 5KG -',
+      'ARROZ FOTO 5KG -',
+      'CERV SKOL LT 350ML l 0.350000',
+      'CERV SKOL LT 350ML C 12 l 4.200000 x12',
+      'FEIJAO CARIOCA 1KG -',
+      'LEITE NUMERO 1L l 1.000000',
+      'OLEO OBJETO 900ML -',
+      'OVOS BRANCOS C 12 un 12.000000',
+      'QUEIJO MUSSARELA -',
+      'RACAO MIUDA 2 5G kg 0.002500'
+    ],
+    'one row per line, as before; the size comes only from the QR read, only on "un" lines, only when every matching '
+    'read line says the same, and a malformed or out-of-bounds size leaves the line without one';
+end $$;
+
+-- Mais latas do Ernesto no mesmo mercado e dia: a linha comum ainda não pode ser lida. O tamanho vai com o preço.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_pk1', false) \gset
+select pg_temp.ernesto_buys_can(3.49, 12, '{}') \gset
+reset role;
+do $$ begin
+  assert (select unit_price || ' ' || coalesce(pack_unit || ' ' || pack_amount, '-') from public.shared_prices
+            where store_cnpj = '63000000000101' and item_key = 'CERV SKOL LT 350ML') = '3.4900 l 0.350000',
+    'the same price written without a size keeps the size the row had';
+end $$;
+set role authenticated;
+select pg_temp.ernesto_buys_can(3.49, 13, '{"pack_unit": "l", "pack_amount": 0.473}') \gset
+reset role;
+do $$ begin
+  assert (select unit_price || ' ' || coalesce(pack_unit || ' ' || pack_amount, '-') from public.shared_prices
+            where store_cnpj = '63000000000101' and item_key = 'CERV SKOL LT 350ML') = '3.4900 -',
+    'the same price with another size: no size';
+end $$;
+set role authenticated;
+select pg_temp.ernesto_buys_can(3.59, 14, '{"pack_unit": "l", "pack_amount": 0.35}') \gset
+reset role;
+do $$ begin
+  assert (select unit_price || ' ' || coalesce(pack_unit || ' ' || pack_amount, '-') from public.shared_prices
+            where store_cnpj = '63000000000101' and item_key = 'CERV SKOL LT 350ML') = '3.5900 l 0.350000',
+    'another price brings its own size';
+end $$;
+set role authenticated;
+select pg_temp.ernesto_buys_can(39.90, 15, '{}') \gset
+reset role;
+do $$ begin
+  -- O fardo de 12 com a descrição da lata (a Sefaz diz FD, e nfce não manda tamanho): a linha não fica com os 350 ml.
+  assert (select unit_price || ' ' || coalesce(pack_unit || ' ' || pack_amount, '-') from public.shared_prices
+            where store_cnpj = '63000000000101' and item_key = 'CERV SKOL LT 350ML') = '39.9000 -',
+    'another price without a size: no size (the case priced under the description of one can)';
+  update public.shared_prices set visible_on = (now() at time zone 'America/Sao_Paulo')::date
+    where store_cnpj = '63000000000101' and item_key = 'CERV SKOL LT 350ML';
+end $$;
+set role authenticated;
+select pg_temp.ernesto_buys_can(3.39, 16, '{"pack_unit": "l", "pack_amount": 0.35}') \gset
+reset role;
+do $$ begin
+  assert (select unit_price || ' ' || coalesce(pack_unit || ' ' || pack_amount, '-') from public.shared_prices
+            where store_cnpj = '63000000000101' and item_key = 'CERV SKOL LT 350ML') = '39.9000 -',
+    'once readable, the row does not change: neither the price nor the size';
+  update public.shared_prices set visible_on = (now() at time zone 'America/Sao_Paulo')::date where store_cnpj = '63000000000101';
+end $$;
+
+-- Fia, de outra casa, com a caixa de 12 com o mesmo nome e uma nota lida de São Paulo, lê o tamanho na linha comum.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_pk2', false) \gset
+select public.create_household('Casa da Fia', 'Fia') \gset
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  f1 constant text := '63000000000202';
+  s uuid;
+  r uuid;
+  i1 uuid;
+  i2 uuid;
+  beer uuid;
+  seen record;
+begin
+  insert into public.stores (name, cnpj) values ('MERCADO DA FIA', f1) returning id into s;
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s, (today - 20 + time '09:00') at time zone 'America/Sao_Paulo', '352610' || f1 || repeat('0', 23) || '1', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 0, 'CERV SKOL LT 350ML C/12', 'alcoolicas', 'un', 41.90, 41.90) returning id into i1;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 1, 'CERV SKOL LATA 1L', 'alcoolicas', 'un', 9.90, 9.90) returning id into i2;
+  insert into public.products (name, category) values ('Cerveja Skol', 'alcoolicas') returning id into beer;
+  perform pg_temp.confirm_as_read(r, jsonb_build_array(jsonb_build_object('id', i1, 'product_id', beer), jsonb_build_object('id', i2, 'product_id', beer)));
+  -- As duas linhas da mesma nota (o mesmo produto, mercado e unidade): o último preço é sempre o mesmo, o menor.
+  assert (select unit_price || ' ' || raw_description from public.latest_prices where product_id = beer)
+    = '9.9000 CERV SKOL LATA 1L', 'two lines of one receipt tie on the moment: the lower price, always the same, with its description';
+  assert (select count(*) from public.price_observations where product_id = beer and raw_description = 'CERV SKOL LT 350ML C/12') = 1,
+    'the observation carries the description too';
+  -- Pelo apelido que a nota dela ensinou ('CERV SKOL LT 350ML C 12'): a caixa de 12, com o tamanho.
+  select * into seen from public.shared_latest_prices() where store_cnpj = '63000000000101';
+  assert seen.product_id = beer and seen.unit = 'un' and seen.unit_price = 39.90, 'her beer, by the description';
+  assert seen.pack_unit = 'l' and seen.pack_amount = 4.2 and seen.pack_of = 12, 'with the size the server read';
+  -- Uma linha sem tamanho volta com as três colunas vazias.
+  insert into public.products (name, category) values ('Água', 'bebidas') returning id into beer;
+  insert into public.product_aliases (alias, product_id) values ('AGUA MIN 1 5L', beer);
+  select * into seen from public.shared_latest_prices() where product_id = beer;
+  assert seen.unit_price = 2.50 and seen.pack_unit is null and seen.pack_amount is null and seen.pack_of is null,
+    'a row without a size comes back with the three columns empty';
+end $$;
+reset role;
+delete from public.shared_prices where store_cnpj like '6300000000%';
+delete from public.households where name in ('Casa do Ernesto', 'Casa da Fia');
+delete from auth.users where id in (:'user_pk1', :'user_pk2');
 
 -- ---------------------------------------------------------------------------
 \echo '• Recados: a pessoa manda (pelo Nuke ou em Configurações), só quem mantém o app lê, e a conta apagada leva os recados dela'
