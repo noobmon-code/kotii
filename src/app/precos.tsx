@@ -5,13 +5,14 @@ import { FlatList, StyleSheet, View } from 'react-native';
 import { useLatestPrices, useProducts, useStores } from '@/data/market';
 import { useSharedPrices } from '@/data/sharedPrices';
 import { formatBRL } from '@/domain/money';
-import { pricesByProduct, summarizePrices } from '@/domain/prices';
+import { NO_PRICE_YET, pricesByProduct, summarizePrices, type PriceSummary } from '@/domain/prices';
 import { normalizeSearch } from '@/domain/search';
 import { cheaperSharedHint, cheaperSharedPrice, SHARED_PRICES_NOTICE, type SharedPriceRow, sharedRowsByProduct } from '@/domain/sharedPrices';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { MergeSuggestionsCard } from '@/features/MergeSuggestionsCard';
 import { useProductBarcode } from '@/features/ProductBarcode';
 import { settledData } from '@/lib/settledData';
+import type { LatestPrice, Product } from '@/lib/types';
 import {
   CategoryIcon,
   EmptyState,
@@ -64,17 +65,21 @@ export default function PricesScreen() {
   const searchable = useMemo(() => (products.data ?? []).map((product) => ({ product, key: normalizeSearch(product.name) })), [products.data]);
   const storeName = useMemo(() => new Map((stores.data ?? []).map((s) => [s.id, s.name])), [stores.data]);
 
+  // Os produtos com preço, na ordem do catálogo (por nome). Buscando, também os que ainda não têm preço de nota,
+  // depois deles: sem a busca a tela é a dos preços, e um produto sem preço só é achado pelo nome.
   const rows = useMemo(() => {
     const q = normalizeSearch(query);
-    return searchable
-      .filter(({ key }) => !q || key.includes(q))
-      .map(({ product }) => {
-        const own = byProduct.get(product.id) ?? [];
-        const summary = summarizePrices(own);
-        // Só quando outra casa viu mais barato que o menor preço da casa, na mesma unidade.
-        return summary ? { product, summary, cheaper: cheaperSharedPrice(own, seenElsewhere?.get(product.id) ?? [], summary.unit) } : null;
-      })
-      .filter((r): r is NonNullable<typeof r> => r !== null);
+    const priced: { product: Product; summary: PriceSummary<LatestPrice>; cheaper: SharedPriceRow | null }[] = [];
+    const unpriced: { product: Product; summary: null; cheaper: null }[] = [];
+    for (const { product, key } of searchable) {
+      if (q && !key.includes(q)) continue;
+      const own = byProduct.get(product.id) ?? [];
+      const summary = summarizePrices(own);
+      // Só quando outra casa viu mais barato que o menor preço da casa, na mesma unidade.
+      if (summary) priced.push({ product, summary, cheaper: cheaperSharedPrice(own, seenElsewhere?.get(product.id) ?? [], summary.unit) });
+      else if (q) unpriced.push({ product, summary: null, cheaper: null });
+    }
+    return [...priced, ...unpriced];
   }, [searchable, byProduct, seenElsewhere, query]);
 
   const queries = [products, prices, stores];
@@ -134,9 +139,9 @@ export default function PricesScreen() {
         // A lista é um cartão de vidro só, desenhado por partes: cada linha leva o seu pedaço (a primeira, as
         // bordas de cima; a última, as de baixo). Assim só as linhas à vista são desenhadas.
         renderItem={({ item: { product, summary, cheaper }, index }) => {
-          const { unit, cheapest, highest, storeCount, otherUnits } = summary;
           const first = index === 0;
           const last = index === rows.length - 1;
+          const open = () => router.push({ pathname: '/produto/[id]', params: { id: product.id } });
           return (
             <View
               style={[
@@ -146,29 +151,40 @@ export default function PricesScreen() {
                 last && styles.segmentLast,
               ]}>
               {first ? null : <View style={[styles.divider, { backgroundColor: c.border }]} />}
-              <ListRow
-                left={<CategoryIcon category={product.category} name={product.name} size={36} />}
-                title={product.name}
-                subtitle={withSeenCheaper(
-                  [
-                    storeCount > 1
-                      ? `Mais barato: ${storeName.get(cheapest.store_id) ?? 'mercado'} · ${storeCount} mercados`
-                      : `Só em ${storeName.get(cheapest.store_id) ?? 'um mercado'}`,
-                    otherUnits.length ? `também vendido por ${otherUnits.join(', ')}` : null,
-                  ]
-                    .filter(Boolean)
-                    .join(' · '),
-                  cheaper,
-                )}
-                right={
-                  <Text variant="label">
-                    {formatBRL(cheapest.unit_price)}
-                    {storeCount > 1 && highest > cheapest.unit_price ? `–${formatBRL(highest).replace('R$ ', '')}` : ''}
-                    {unit === 'un' ? '' : `/${unit}`}
-                  </Text>
-                }
-                onPress={() => router.push({ pathname: '/produto/[id]', params: { id: product.id } })}
-              />
+              {summary ? (
+                <ListRow
+                  left={<CategoryIcon category={product.category} name={product.name} size={36} />}
+                  title={product.name}
+                  subtitle={withSeenCheaper(
+                    [
+                      summary.storeCount > 1
+                        ? `Mais barato: ${storeName.get(summary.cheapest.store_id) ?? 'mercado'} · ${summary.storeCount} mercados`
+                        : `Só em ${storeName.get(summary.cheapest.store_id) ?? 'um mercado'}`,
+                      summary.otherUnits.length ? `também vendido por ${summary.otherUnits.join(', ')}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · '),
+                    cheaper,
+                  )}
+                  right={
+                    <Text variant="label">
+                      {formatBRL(summary.cheapest.unit_price)}
+                      {summary.storeCount > 1 && summary.highest > summary.cheapest.unit_price
+                        ? `–${formatBRL(summary.highest).replace('R$ ', '')}`
+                        : ''}
+                      {summary.unit === 'un' ? '' : `/${summary.unit}`}
+                    </Text>
+                  }
+                  onPress={open}
+                />
+              ) : (
+                <ListRow
+                  left={<CategoryIcon category={product.category} name={product.name} size={36} />}
+                  title={product.name}
+                  subtitle={NO_PRICE_YET}
+                  onPress={open}
+                />
+              )}
             </View>
           );
         }}
