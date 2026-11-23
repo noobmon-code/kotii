@@ -166,6 +166,16 @@ describe('congelar pelo menu', () => {
     expect(notify).toHaveBeenCalledWith('No congelador', `Frango foi para o congelador. Validade estimada: ${short(addDays(day(-2), 90))}.`);
   });
 
+  it('a descongelada: o dia em que saiu do congelador, nunca o da compra (o banco não congela antes dele)', async () => {
+    await open([lot('desc', { frozen_on: day(-10), thawed_on: day(-1), freeze_kind: 'frango', expiry_source: 'descongelado', purchased_on: day(-10) })]);
+    const { actions } = sheetOf('Frango');
+    expect(labels(actions)).toEqual(expect.arrayContaining(['Congelei hoje', `Congelei no dia em que descongelou (${short(day(-1))})`]));
+    expect(labels(actions).some((label) => label.startsWith('Congelei no dia da compra'))).toBe(false);
+    mockFreeze.mockResolvedValue([{ id: 'desc', expiresOn: addDays(day(-1), 90), expirySource: 'congelado', frozenOn: day(-1) }]);
+    await act(async () => actions.find((a) => a.label.startsWith('Congelei no dia em que descongelou'))!.onPress());
+    expect(mockFreeze).toHaveBeenCalledWith({ ids: ['desc'], kind: 'frango', frozenOn: day(-1) });
+  });
+
   it('comprado hoje: "Congelar"', async () => {
     await open([lot('a', { purchased_on: today })]);
     const { actions } = sheetOf('Frango');

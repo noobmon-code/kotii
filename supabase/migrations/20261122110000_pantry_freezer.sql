@@ -17,7 +17,13 @@ alter table public.pantry_items
   add column thawed_on date,            -- dia em que saiu (null: ainda no congelador, ou nunca foi)
   add column freeze_kind text,          -- o tipo da tabela do congelador
   add column fresh_expires_on date,     -- a validade de antes do congelador (só enquanto congelada)
-  add column fresh_expiry_source text;
+  add column fresh_expiry_source text,
+  -- A compra descongelada que voltou para o congelador: o dia em que tinha sido congelada e o dia em que tinha saído
+  -- (só enquanto congelada de novo; quem grava é o gatilho pantry_items_freezer_history). Descongelar no mesmo dia
+  -- desfaz e volta para ela, descongelada: sem isto, a compra pareceria nunca ter ido ao congelador, e a validade
+  -- digitada depois ensinaria o produto.
+  add column prev_frozen_on date,
+  add column prev_thawed_on date;
 
 alter table public.pantry_items drop constraint if exists pantry_items_expiry_source_check;
 alter table public.pantry_items
@@ -36,13 +42,21 @@ alter table public.pantry_items
   add constraint pantry_items_fresh_source_with_date check (fresh_expiry_source is null or fresh_expires_on is not null),
   -- 'congelado' é a validade do congelador: só enquanto a compra está nele.
   add constraint pantry_items_congelado_in_freezer check (
-    expiry_source is distinct from 'congelado' or (frozen_on is not null and thawed_on is null));
+    expiry_source is distinct from 'congelado' or (frozen_on is not null and thawed_on is null)),
+  -- 'descongelado' é a validade de quem saiu do congelador: a compra guarda que esteve nele (e não ensina o produto).
+  add constraint pantry_items_descongelado_was_frozen check (expiry_source is distinct from 'descongelado' or frozen_on is not null),
+  -- A de antes 'descongelado' é de uma compra que voltou ao congelador, e o desfazer volta para a descongelada.
+  add constraint pantry_items_fresh_descongelado_refrozen check (
+    fresh_expiry_source is distinct from 'descongelado' or prev_frozen_on is not null),
+  add constraint pantry_items_prev_while_frozen check (
+    prev_frozen_on is null or (frozen_on is not null and thawed_on is null)),
+  add constraint pantry_items_prev_pair check ((prev_frozen_on is null) = (prev_thawed_on is null)),
+  add constraint pantry_items_prev_range check (
+    prev_frozen_on between date '2000-01-01' and date '2100-12-31'
+    and prev_thawed_on between prev_frozen_on and date '2100-12-31');
 
 -- Não há check frozen_on >= purchased_on: um app antigo pode mudar a data da compra de um item congelado, e esse
 -- salvar não pode começar a falhar. O app e freeze_pantry_items já não congelam antes da compra.
-
-create index pantry_items_in_freezer_idx on public.pantry_items (household_id, freeze_kind)
-  where frozen_on is not null and thawed_on is null and consumed_at is null;
 
 -- =============================================================================
 -- 2. O tempo de cada tipo no congelador (= DEFAULT_FREEZE_DAYS; um teste Jest lê este case)
@@ -81,6 +95,36 @@ $$;
 create trigger pantry_items_freezer_expiry
   before insert or update of expires_on, expiry_source, frozen_on, freeze_kind on public.pantry_items
   for each row execute function public.pantry_items_freezer_expiry();
+
+-- A compra descongelada que volta para o congelador (congelar, ou "Congelei" no item) guarda de onde veio, em
+-- prev_frozen_on e prev_thawed_on, para o descongelar no mesmo dia voltar a ela. Só este gatilho escreve as duas:
+-- quem fica no congelador fica com as de antes, e quem está fora dele (descongelada, nunca congelada, desfeita)
+-- fica sem.
+create function public.pantry_items_freezer_history()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  if tg_op = 'UPDATE' and new.frozen_on is not null and new.thawed_on is null and old.frozen_on is not null then
+    if old.thawed_on is not null then
+      new.prev_frozen_on := old.frozen_on;
+      new.prev_thawed_on := old.thawed_on;
+    else
+      new.prev_frozen_on := old.prev_frozen_on;
+      new.prev_thawed_on := old.prev_thawed_on;
+    end if;
+  else
+    new.prev_frozen_on := null;
+    new.prev_thawed_on := null;
+  end if;
+  return new;
+end;
+$$;
+create trigger pantry_items_freezer_history
+  before insert or update of frozen_on, thawed_on, prev_frozen_on, prev_thawed_on on public.pantry_items
+  for each row execute function public.pantry_items_freezer_history();
 
 -- =============================================================================
 -- 4. confirm_receipt: a versão de 20261021150000_store_codes.sql, igual em tudo, mais o congelador. A linha que a
@@ -294,8 +338,11 @@ $$;
 -- =============================================================================
 -- O congelador pausa a validade: o que faltava quando foi congelada (ou o quanto já tinha passado) volta a contar
 -- do dia em que saiu, com a origem 'descongelado'. No mesmo dia em que foi congelada (ou antes, com o relógio de
--- um aparelho atrasado), desfaz: a compra volta a ser o que era, sem congelador. domain/freezer.ts thawedExpiry é
--- o espelho (os mesmos casos no Jest e em scripts/db/test.sql).
+-- um aparelho atrasado), desfaz: a compra volta a ser o que era, com a validade de antes. A que nunca tinha ido ao
+-- congelador volta sem congelador; a descongelada que tinha voltado para ele volta a ser a descongelada (os dias
+-- que o gatilho guardou em prev_frozen_on e prev_thawed_on; o tipo fica o desta vez), e continua sem ensinar o
+-- produto. domain/freezer.ts thawedExpiry é o espelho da validade (os mesmos casos no Jest e em
+-- scripts/db/test.sql).
 create function public.thaw_pantry_items(p_ids uuid[], p_thawed_on date)
 returns table (item_id uuid, item_expires_on date, item_expiry_source text, item_frozen_on date)
 language plpgsql
@@ -320,11 +367,13 @@ begin
           when p_thawed_on <= p.frozen_on then p.fresh_expiry_source
           when p.fresh_expires_on is null then null
           else 'descongelado' end,
-        thawed_on = case when p_thawed_on <= p.frozen_on then null else p_thawed_on end,
-        frozen_on = case when p_thawed_on <= p.frozen_on then null else p.frozen_on end,
-        freeze_kind = case when p_thawed_on <= p.frozen_on then null else p.freeze_kind end,
+        thawed_on = case when p_thawed_on <= p.frozen_on then p.prev_thawed_on else p_thawed_on end,
+        frozen_on = case when p_thawed_on <= p.frozen_on then p.prev_frozen_on else p.frozen_on end,
+        freeze_kind = case when p_thawed_on <= p.frozen_on and p.prev_frozen_on is null then null else p.freeze_kind end,
         fresh_expires_on = null,
-        fresh_expiry_source = null
+        fresh_expiry_source = null,
+        prev_frozen_on = null,
+        prev_thawed_on = null
       where p.id = any(v_ids) and p.consumed_at is null
         and p.frozen_on is not null and p.thawed_on is null
       returning p.id, p.expires_on, p.expiry_source, p.frozen_on
@@ -350,6 +399,7 @@ $$;
 
 revoke execute on function public.pantry_freeze_days(text) from public, anon;
 revoke execute on function public.pantry_items_freezer_expiry() from public, anon, authenticated;
+revoke execute on function public.pantry_items_freezer_history() from public, anon, authenticated;
 revoke execute on function public.freeze_pantry_items(uuid[], text, date) from public, anon;
 revoke execute on function public.thaw_pantry_items(uuid[], date) from public, anon;
 revoke execute on function public.pantry_freezer_available() from public, anon;

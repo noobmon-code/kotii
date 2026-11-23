@@ -204,6 +204,22 @@ describe('frozenExpiryFor e thawedExpiry', () => {
       '2026-11-20',
     );
   });
+
+  it('a descongelada que voltou ao congelador e sai no mesmo dia volta à validade dela (o F de scripts/db/test.sql)', () => {
+    // Congelado 01/11 (vencia 04/11), descongelado 20/11 (23/11), de novo no congelador 21/11 e descongelado nesse dia.
+    const refrozen = { frozen_on: '2026-11-21', fresh_expires_on: '2026-11-23', fresh_expiry_source: 'descongelado' as const };
+    expect(thawedExpiry(refrozen, '2026-11-21')).toEqual({ expiresOn: '2026-11-23', source: 'descongelado', undo: true });
+    // Outro dia: pausa como qualquer outra.
+    expect(thawedExpiry(refrozen, '2026-11-25')).toEqual({ expiresOn: '2026-11-27', source: 'descongelado', undo: false });
+  });
+
+  it('desfazer a descongelada guarda que ela esteve no congelador: o banco devolve frozen_on (a migração)', () => {
+    const sql = readFileSync(join(__dirname, '../../../supabase/migrations/20261122110000_pantry_freezer.sql'), 'utf8');
+    const thaw = sql.slice(sql.indexOf('create function public.thaw_pantry_items'));
+    expect(thaw).toContain('frozen_on = case when p_thawed_on <= p.frozen_on then p.prev_frozen_on else p.frozen_on end');
+    expect(thaw).toContain('thawed_on = case when p_thawed_on <= p.frozen_on then p.prev_thawed_on else p_thawed_on end');
+    expect(sql).toContain("check (expiry_source is distinct from 'descongelado' or frozen_on is not null)");
+  });
 });
 
 describe('freezeChoices: o menu da despensa', () => {
@@ -234,6 +250,47 @@ describe('freezeChoices: o menu da despensa', () => {
 
   it('a compra de outro ano leva o ano', () => {
     expect(freezeChoices([{ purchased_on: '2025-12-30' }], '2026-01-02')[1].label).toBe('Congelei no dia da compra (30 dez 2025)');
+  });
+
+  it('a descongelada: nunca antes do dia em que saiu do congelador (o mesmo piso de freeze_pantry_items e do formulário)', () => {
+    // Comprado 01/11, descongelado 18/11: "no dia da compra" seria um dia que o banco não grava.
+    expect(freezeChoices([{ purchased_on: '2026-11-01', thawed_on: '2026-11-18' }], today)).toEqual([
+      { label: 'Congelei hoje', frozenOn: today },
+      { label: 'Congelei no dia em que descongelou (18 nov)', frozenOn: '2026-11-18' },
+    ]);
+    // Descongelado hoje: só hoje.
+    expect(freezeChoices([{ purchased_on: '2026-11-01', thawed_on: today }], today)).toEqual([{ label: 'Congelar', frozenOn: today }]);
+    // Descongeladas no mesmo dia.
+    expect(
+      freezeChoices([{ purchased_on: '2026-11-01', thawed_on: '2026-11-18' }, { purchased_on: '2026-11-03', thawed_on: '2026-11-18' }], today),
+    ).toEqual([
+      { label: 'Congelei hoje (tudo)', frozenOn: today },
+      { label: 'Congelei no dia em que descongelou (18 nov, tudo)', frozenOn: '2026-11-18' },
+    ]);
+    // Com outra fresca, ou descongeladas em dias diferentes: só hoje (outro dia, no item).
+    expect(freezeChoices([{ purchased_on: '2026-11-12' }, { purchased_on: '2026-11-01', thawed_on: '2026-11-18' }], today)).toEqual([
+      { label: 'Congelei hoje (tudo)', frozenOn: today },
+    ]);
+    expect(
+      freezeChoices([{ purchased_on: '2026-11-01', thawed_on: '2026-11-17' }, { purchased_on: '2026-11-01', thawed_on: '2026-11-18' }], today),
+    ).toEqual([{ label: 'Congelei hoje (tudo)', frozenOn: today }]);
+    // Descongelada no próprio dia da compra: o dia da compra ainda serve.
+    expect(freezeChoices([{ purchased_on: '2026-11-12', thawed_on: '2026-11-12' }], today)).toEqual([
+      { label: 'Congelei hoje', frozenOn: today },
+      { label: 'Congelei no dia da compra (12 nov)', frozenOn: '2026-11-12' },
+    ]);
+    // Nenhuma escolha manda um dia que o banco mudaria (greatest(dia, compra, saída)).
+    const lots = [
+      [{ purchased_on: '2026-11-01', thawed_on: '2026-11-18' }],
+      [{ purchased_on: '2026-11-12', thawed_on: null }],
+      [{ purchased_on: '2026-11-01', thawed_on: '2026-11-18' }, { purchased_on: '2026-11-03', thawed_on: '2026-11-18' }],
+    ];
+    for (const group of lots) {
+      for (const choice of freezeChoices(group, today)) {
+        const stored = group.map((lot) => [choice.frozenOn, lot.purchased_on, lot.thawed_on ?? lot.purchased_on].sort().at(-1));
+        if (!choice.label.includes('cada compra')) expect(stored.every((day) => day === choice.frozenOn)).toBe(true);
+      }
+    }
   });
 });
 
@@ -426,6 +483,10 @@ describe('frases', () => {
       'Frango saiu do congelador. A validade volta a contar de onde parou, e ela já tinha passado (18 nov).',
     );
     expect(thawedText('Frango', [row({ expiresOn: null, expirySource: null })], today)).toBe('Frango saiu do congelador.');
+    // A descongelada que voltou ao congelador, desfeita no mesmo dia: o banco devolve o dia em que tinha sido congelada.
+    expect(thawedText('Frango', [row({ frozenOn: '2026-11-01', expiresOn: '2026-11-23', expirySource: 'descongelado' })], today)).toBe(
+      'Frango saiu do congelador. A validade volta a contar de onde parou: vence por volta de 23 nov.',
+    );
   });
 
   it('o menu de um grupo no congelador', () => {
@@ -449,11 +510,20 @@ describe('frases', () => {
 
   it('os avisos da nota e os textos de ajuda', () => {
     expect(repeatFreezeFailedText(['Frango'])).toBe(
-      'A nota foi salva, mas não deu para marcar Frango como congelado. Use "Congelar" em Compras > Despensa.',
+      'A nota foi salva, mas não deu para marcar Frango como congelado. Em Compras > Despensa, toque no item e escolha quando ele foi para o congelador.',
     );
     expect(repeatFreezeFailedText(['Frango', 'Peixe'])).toBe(
-      'A nota foi salva, mas não deu para marcar Frango e Peixe como congelados. Use "Congelar" em Compras > Despensa.',
+      'A nota foi salva, mas não deu para marcar Frango e Peixe como congelados. Em Compras > Despensa, toque em cada item e escolha quando ele foi para o congelador.',
     );
+    // O aviso não diz o nome de uma escolha: a compra do carrinho é quase sempre de antes de hoje, e "Congelar" só
+    // aparece para o que foi comprado hoje.
+    const offered = new Set(
+      [[{ purchased_on: today }], [{ purchased_on: '2026-11-12' }], [{ purchased_on: '2026-11-12' }, { purchased_on: '2026-11-15' }]].flatMap(
+        (lots) => freezeChoices(lots, today).map((choice) => choice.label),
+      ),
+    );
+    const quoted = [...repeatFreezeFailedText(['Frango']).matchAll(/"([^"]+)"/g)].map(([, label]) => label);
+    expect(quoted.filter((label) => !offered.has(label))).toEqual([]);
     expect(frozenExpiryHint('frango', DEFAULT_FREEZE_DAYS)).toBe(
       'Estimada pelo congelador: 90 dias para frango, contados de quando foi congelado. Se corrigir, fica só neste item.',
     );

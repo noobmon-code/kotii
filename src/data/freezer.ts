@@ -105,7 +105,10 @@ export function useFreezePantryItems() {
   });
 }
 
-/** "Descongelei": as compras que saíram do congelador (com frozenOn null as desfeitas no mesmo dia). */
+/**
+ * "Descongelei": as compras que saíram do congelador. As desfeitas no mesmo dia voltam com frozenOn null, menos a
+ * descongelada que tinha voltado ao congelador: essa volta a ser a descongelada, com o dia em que foi congelada antes.
+ */
 export function useThawPantryItems() {
   const queryClient = useQueryClient();
   return useMutation({

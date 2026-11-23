@@ -195,7 +195,10 @@ export function frozenExpiryFor({
 /**
  * Descongelar: o congelador pausa a validade. O que faltava quando foi congelada (ou o quanto já tinha passado)
  * volta a contar do dia em que saiu, com a origem `descongelado`; sem validade de antes, fica sem. No mesmo dia em
- * que foi congelada (ou antes), desfaz (`undo`): a compra volta a ser o que era. thaw_pantry_items é o espelho.
+ * que foi congelada (ou antes), desfaz (`undo`): a compra volta a ser o que era, com a validade de antes. A que
+ * nunca tinha ido ao congelador volta sem ele; a descongelada que voltou para ele volta a ser a descongelada (o
+ * banco guarda os dias dela, prev_frozen_on e prev_thawed_on, e devolve frozen_on), e segue sem ensinar o produto.
+ * thaw_pantry_items é o espelho da validade.
  */
 export function thawedExpiry(
   lot: { frozen_on: string; fresh_expires_on?: string | null; fresh_expiry_source?: ExpirySource | null },
@@ -214,22 +217,35 @@ export interface FreezeChoice {
   frozenOn: string;
 }
 
+/** O dia em que a compra saiu do congelador, quando foi depois do dia da compra (a descongelada de volta à despensa). */
+const thawedAfterPurchase = (lot: Pick<PantryLot, 'purchased_on' | 'thawed_on'>): string | null =>
+  lot.thawed_on && lot.thawed_on > lot.purchased_on ? lot.thawed_on : null;
+
 /**
- * As escolhas de "Congelar" no menu de um grupo. Comprado hoje: "Congelar". Comprado antes: "Congelei hoje" e
+ * As escolhas de "Congelar" no menu de um grupo, pelo dia mais cedo em que cada compra pode ter ido para o
+ * congelador: o da compra, ou o dia em que saiu dele (o banco nunca congela antes disso, freeze_pantry_items, e o
+ * formulário também não, frozenOnFits). Todas podem só hoje: "Congelar". Senão "Congelei hoje" e, comprado antes,
  * "Congelei no dia da compra" (o dia dela; com compras de dias diferentes, "no dia de cada compra", que manda o dia
- * da mais antiga: o banco congela cada uma no dia dela, nunca antes da compra).
+ * da mais antiga: o banco congela cada uma no dia dela). A descongelada não foi para o congelador no dia da compra:
+ * com todas descongeladas no mesmo dia, "Congelei no dia em que descongelou"; misturada com outras, só "Congelei
+ * hoje" (outro dia, no item).
  */
-export function freezeChoices(lots: readonly Pick<PantryLot, 'purchased_on'>[], today: string): FreezeChoice[] {
+export function freezeChoices(lots: readonly Pick<PantryLot, 'purchased_on' | 'thawed_on'>[], today: string): FreezeChoice[] {
   if (!lots.length) return [];
   const several = lots.length > 1;
   const all = several ? ' (tudo)' : '';
-  const days = [...new Set(lots.map((lot) => lot.purchased_on))].sort();
+  const tudo = several ? ', tudo' : '';
+  const thawed = lots.map(thawedAfterPurchase);
+  const days = [...new Set(lots.map((lot, i) => thawed[i] ?? lot.purchased_on))].sort();
   if (days[0] >= today) return [{ label: `Congelar${all}`, frozenOn: today }];
   const year = Number(today.slice(0, 4));
   const now = { label: `Congelei hoje${all}`, frozenOn: today };
+  if (thawed.some(Boolean)) {
+    if (days.length > 1 || !thawed.every(Boolean)) return [now];
+    return [now, { label: `Congelei no dia em que descongelou (${formatShortDate(days[0], year)}${tudo})`, frozenOn: days[0] }];
+  }
   if (days.length === 1) {
-    const day = formatShortDate(days[0], year);
-    return [now, { label: `Congelei no dia da compra (${day}${several ? ', tudo' : ''})`, frozenOn: days[0] }];
+    return [now, { label: `Congelei no dia da compra (${formatShortDate(days[0], year)}${tudo})`, frozenOn: days[0] }];
   }
   return [now, { label: 'Congelei no dia de cada compra (tudo)', frozenOn: days[0] }];
 }
@@ -408,7 +424,7 @@ export interface FreezerRow {
   id: string;
   expiresOn: string | null;
   expirySource: ExpirySource | null;
-  /** null depois de um descongelar no mesmo dia (desfeito). */
+  /** null depois de um descongelar no mesmo dia (desfeito), menos o da descongelada que tinha voltado ao congelador. */
   frozenOn: string | null;
 }
 
@@ -481,10 +497,14 @@ export function frozenSheetText(lots: readonly FrozenLot[], today: string): stri
   return [since ? frozenFormLine(since, today) : null, preview].filter(Boolean).join(' ');
 }
 
-/** "A nota foi salva, mas não deu para marcar Frango e Peixe como congelados." */
+/**
+ * "A nota foi salva, mas não deu para marcar Frango e Peixe como congelados." O que fazer aponta para o menu do item,
+ * sem dizer o nome da escolha: ela muda com o dia da compra ("Congelar" só para o que foi comprado hoje; senão
+ * "Congelei hoje" e "Congelei no dia da compra", freezeChoices), e a compra do carrinho costuma ser de outro dia.
+ */
 export function repeatFreezeFailedText(names: readonly string[]): string {
   const several = names.length > 1;
-  return `A nota foi salva, mas não deu para marcar ${joinNames([...names])} como ${several ? 'congelados' : 'congelado'}. Use "Congelar" em Compras > Despensa.`;
+  return `A nota foi salva, mas não deu para marcar ${joinNames([...names])} como ${several ? 'congelados' : 'congelado'}. Em Compras > Despensa, toque ${several ? 'em cada item' : 'no item'} e escolha quando ele foi para o congelador.`;
 }
 
 /** No formulário, a validade estimada pelo congelador. */

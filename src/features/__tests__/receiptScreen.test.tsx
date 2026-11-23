@@ -2904,8 +2904,53 @@ describe('"Congelou?": a linha de carne ou peixe que vai para a despensa', () =>
     await press(button('Confirmar nota'));
     expect(notify).toHaveBeenCalledWith(
       'Não deu certo',
-      'A nota foi salva, mas não deu para marcar Picanha como congelado. Use "Congelar" em Compras > Despensa.',
+      'A nota foi salva, mas não deu para marcar Picanha como congelado. Em Compras > Despensa, toque no item e escolha quando ele foi para o congelador.',
     );
+  });
+
+  it('a pessoa sai da revisão antes de a confirmação responder: a compra do carrinho vai para o congelador do mesmo jeito', async () => {
+    mockFreezer.available = true;
+    mockMarket.pantryNear = [{ id: 'cart-picanha', product_id: null, name: 'Picanha', purchased_on: `${YEAR}-06-09` }];
+    seed(receipt({ total: 60 }), carne());
+    await open();
+    await press(chip('Congelei', card('PICANHA BOV KG')));
+    const answer = hold(({ table }) => table === 'confirm_receipt');
+    await press(button('Confirmar nota'));
+    expect(mockDb.rpcs.map((call) => call.fn)).toEqual(['confirm_receipt']);
+    // Voltar com a nota ainda confirmando: a revisão sai da tela (o onSuccess de cada chamada não roda mais).
+    act(() => renderer?.unmount());
+    renderer = undefined;
+    await answer();
+    expect(mockDb.rpcs.find((call) => call.fn === 'freeze_pantry_items')?.args).toEqual({ p_ids: ['cart-picanha'], p_kind: 'carne', p_frozen_on: day });
+  });
+
+  it('e a falha de congelar depois de a revisão sair ainda é dita', async () => {
+    mockFreezer.available = true;
+    mockMarket.pantryNear = [{ id: 'cart-picanha', product_id: null, name: 'Picanha', purchased_on: `${YEAR}-06-09` }];
+    mockDb.fails = [({ table }) => table === 'freeze_pantry_items'];
+    seed(receipt({ total: 60 }), carne());
+    await open();
+    await press(chip('Congelei', card('PICANHA BOV KG')));
+    const answer = hold(({ table }) => table === 'confirm_receipt');
+    await press(button('Confirmar nota'));
+    act(() => renderer?.unmount());
+    renderer = undefined;
+    await answer();
+    expect(notify).toHaveBeenCalledWith(
+      'Não deu certo',
+      'A nota foi salva, mas não deu para marcar Picanha como congelado. Em Compras > Despensa, toque no item e escolha quando ele foi para o congelador.',
+    );
+  });
+
+  it('a confirmação que falha não congela nada', async () => {
+    mockFreezer.available = true;
+    mockMarket.pantryNear = [{ id: 'cart-picanha', product_id: null, name: 'Picanha', purchased_on: `${YEAR}-06-09` }];
+    mockDb.fails = [({ table }) => table === 'confirm_receipt'];
+    seed(receipt({ total: 60 }), carne());
+    await open();
+    await press(chip('Congelei', card('PICANHA BOV KG')));
+    await press(button('Confirmar nota'));
+    expect(mockDb.rpcs.some((call) => call.fn === 'freeze_pantry_items')).toBe(false);
   });
 
   it('a validade aprendida do produto diz que o produto aprendeu', async () => {

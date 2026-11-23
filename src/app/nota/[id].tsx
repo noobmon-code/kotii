@@ -786,7 +786,9 @@ export default function ReceiptScreen() {
 
   /**
    * Congela, depois da confirmação, a compra do carrinho que cada linha "Congelei" que não foi de novo repete. A
-   * revisão já saiu: o aviso da falha sai depois (mutateAsync segue sem a tela). Menos compras (a do carrinho já
+   * revisão já pode ter saído (a pessoa voltou enquanto a nota confirmava, ou o fim da confirmação a fechou): por
+   * isso corre na promessa de mutateAsync, não no onSuccess de cada chamada, que só roda com a tela montada, e o
+   * aviso da falha sai de qualquer jeito (mutateAsync e notify seguem sem a tela). Menos compras (a do carrinho já
    * foi consumida ou já está no congelador) fica calado.
    */
   async function freezeRepeated(groups: RepeatFreeze[]) {
@@ -893,7 +895,7 @@ export default function ReceiptScreen() {
       // e a resposta em até 30 s (domain/finishPurchase).
       const tappedAt = Date.now();
       const onlineAtTap = onlineManager.isOnline();
-      confirm.mutate(payload, {
+      const confirmed = confirm.mutateAsync(payload, {
         onSuccess: () => {
           const pantryCount = payload.filter((p) => p.pantry).length;
           // Aberta pelo "Finalizar compra" da lista: quem diz o que a nota fez é a lista, para onde a revisão volta
@@ -902,7 +904,6 @@ export default function ReceiptScreen() {
           if (!handConfirmedReceipt({ tappedAt, onlineAtTap, pantryCount, removedListItems })) {
             notify('Nota salva', receiptSavedText(pantryCount, listCount));
           }
-          if (freezeAfter.length) void freezeRepeated(freezeAfter);
           // Volta para quem abriu a revisão (a lista, no "Finalizar compra"; o QR code e a pendente já saíram do
           // caminho). Sem tela para voltar (no navegador, a página recarregada), as notas da casa.
           goBackOr({ pathname: '/compras', params: { aba: 'notas' } });
@@ -914,6 +915,12 @@ export default function ReceiptScreen() {
           void receiptQuery.refetch();
         },
       });
+      // A compra do carrinho vai para o congelador mesmo com a revisão já fora da tela (freezeRepeated). A falha da
+      // confirmação já foi dita no onError acima, com a tela; sem ela, nada a congelar.
+      void confirmed.then(
+        () => (freezeAfter.length ? freezeRepeated(freezeAfter) : undefined),
+        () => undefined,
+      );
     };
     if (!receipt.store_id) {
       confirmAction(

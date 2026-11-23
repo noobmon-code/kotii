@@ -6,7 +6,7 @@ import { DEFAULT_FREEZE_DAYS, FREEZER_NOT_READY } from '@/domain/freezer';
 import { EXPECTS_ROWS_META } from '@/lib/accessErrors';
 
 import { fetchFreezerAvailable, useFreezePantryItems, useFreezer, useThawPantryItems } from '../freezer';
-import { usePantry, usePantryItem, useSavePantryItem, type PantryValues } from '../home';
+import { fetchPantryNear, usePantry, usePantryItem, useSavePantryItem, type PantryValues } from '../home';
 
 // O congelador nos dados: a pergunta se o banco o tem, congelar e descongelar, as leituras da despensa que repetem
 // sem as colunas novas e o salvar do formulário (as condições, a linha que volta e o que ensina o produto).
@@ -63,6 +63,14 @@ jest.mock('@/lib/supabase', () => ({
         },
         in: (column: string, value: unknown) => {
           asked.filters[`in ${column}`] = value;
+          return query;
+        },
+        gte: (column: string, value: unknown) => {
+          asked.filters[`gte ${column}`] = value;
+          return query;
+        },
+        lte: (column: string, value: unknown) => {
+          asked.filters[`lte ${column}`] = value;
           return query;
         },
         order: () => query,
@@ -241,6 +249,22 @@ describe('as leituras da despensa', () => {
     await flush();
     expect(value().data).toEqual({ id: 'a', name: 'Frango' });
     expect(mockDb.asked).toHaveLength(2);
+  });
+
+  it('as compras do carrinho perto da nota trazem o id: é ele que o "Não colocar" congela (repeatFreezes, entryId)', async () => {
+    mockDb.replies['pantry_items select'] = [{ data: [{ id: 'cart-1', product_id: 'p1', name: 'Picanha', purchased_on: '2026-11-10' }], error: null }];
+    await expect(fetchPantryNear('2026-11-10')).resolves.toEqual([
+      { id: 'cart-1', product_id: 'p1', name: 'Picanha', purchased_on: '2026-11-10' },
+    ]);
+    expect(mockDb.asked).toEqual([
+      {
+        table: 'pantry_items',
+        verb: 'select',
+        columns: 'id, product_id, name, purchased_on',
+        filters: { 'is receipt_item_id': null, 'gte purchased_on': '2026-11-07', 'lte purchased_on': '2026-11-13' },
+        returning: false,
+      },
+    ]);
   });
 
   it('outro erro não repete', async () => {

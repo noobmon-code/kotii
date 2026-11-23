@@ -232,6 +232,23 @@ describe('o item no congelador', () => {
     expect(mockSave.mock.calls[0][0].copy).toEqual(expect.objectContaining({ frozen_on: day(-2), thawed_on: null }));
   });
 
+  it('o tipo guardado fica numa edição da quantidade, também quando o nome leria outro; muda só com o nome ou a categoria', async () => {
+    // Congelado pela nota como frango ("FILE PEITO FGO SADIA"), e na despensa com o nome "Filé de peito", que sozinho
+    // leria carne: salvar a quantidade não pode trocar o tipo (o banco refaria a validade pelo tempo de outro tipo).
+    const peito = () => inFreezer({ name: 'Filé de peito', freeze_kind: 'frango' });
+    await open(peito());
+    await type('Quantidade', '2');
+    await tap(button('Salvar'));
+    expect(saved()).toEqual(expect.objectContaining({ quantity: 2, freeze_kind: 'frango', expiry_source: 'congelado' }));
+    await act(async () => renderer?.unmount());
+    // O nome mudou nesta tela: o tipo é o do nome novo.
+    mockSave.mockReset();
+    await open(peito());
+    await type('Item', 'Patinho moído');
+    await tap(button('Salvar'));
+    expect(saved()).toEqual(expect.objectContaining({ name: 'Patinho moído', freeze_kind: 'carne_moida' }));
+  });
+
   it('"Descongelei" sem nada mudado descongela hoje, avisa e fecha', async () => {
     await open(inFreezer());
     expect(JSON.stringify(renderer!.toJSON())).toContain(`Se descongelar hoje: vence por volta de ${short(day(3))}.`);
