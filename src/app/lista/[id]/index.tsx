@@ -37,7 +37,7 @@ import {
   useToggleListItem,
 } from '@/data/market';
 import { marketTripErrorMessage, tripsOnline, useEndMarketTrip, useMarketTrips, useRefreshMarketTrips } from '@/data/marketTrips';
-import { useSharedPrices } from '@/data/sharedPrices';
+import { useOpenSharedPrices, useSharedPrices } from '@/data/sharedPrices';
 import { scannedListItem } from '@/domain/barcode';
 import { cartPantryRows, joinNames, type CartPantryEntry, type CartPantryRow } from '@/domain/cartPantry';
 import { compareByAisle, getCategory } from '@/domain/categories';
@@ -45,6 +45,7 @@ import {
   chosenItemQuantity,
   currentStoreChoice,
   estimateList,
+  openCandidates,
   formatItemCost,
   itemFacts,
   pantryHits,
@@ -657,6 +658,51 @@ export default function ShoppingListScreen() {
     () => (shared.data && stores.data && prices.data ? sharedQuotes(shared.data, prices.data, stores.data) : []),
     [shared.data, prices.data, stores.data],
   );
+  // Os preços da casa como a conta os lê.
+  const estimatePrices = useMemo(
+    () =>
+      (prices.data ?? []).map((p) => ({
+        productId: p.product_id,
+        storeId: p.store_id,
+        unit: p.unit,
+        unitPrice: Number(p.unit_price),
+        purchasedAt: p.purchased_at,
+        // Quantos vinham na embalagem desse preço (os ovos da cartela de 10): os detalhes do item dizem.
+        packCount: p.pack_count ?? null,
+      })),
+    [prices.data],
+  );
+  // A base aberta (domain/openPrices): o item sem preço nenhum, nem da casa nem de outras casas pelo produto, procura
+  // o mesmo item, de qualquer marca, nas notas de outras casas do estado. Só depois de tudo o que dá preço ter
+  // chegado (os preços, os mercados, as ligações, os produtos e os de outras casas, que podem ter falhado): antes
+  // disso, todo item pareceria sem preço. A lista nunca espera por esta busca: a conta sai sem esses itens e muda
+  // quando a resposta chega; parada, com erro ou sem as funções no banco, não há preço aberto e nada a dizer.
+  const priceSourcesSettled =
+    prices.data !== undefined &&
+    stores.data !== undefined &&
+    links.data !== undefined &&
+    products.data !== undefined &&
+    (shared.data !== undefined || shared.isError);
+  const openItems = useMemo(
+    () =>
+      priceSourcesSettled
+        ? openCandidates(
+            (items.data ?? []).map((i) => ({
+              id: i.id,
+              name: i.name,
+              productId: i.product_id,
+              quantity: Number(i.quantity),
+              unit: i.unit,
+              category: i.category,
+              brandPreferred: i.brand_preferred === true,
+            })),
+            estimatePrices,
+            { links: links.data ?? undefined, products: products.data ?? [], shared: seenElsewhere },
+          )
+        : null,
+    [priceSourcesSettled, items.data, estimatePrices, links.data, products.data, seenElsewhere],
+  );
+  const openPrices = useOpenSharedPrices(openItems, stores.data ?? undefined);
   // Na ida ao mercado de quem está com o app, o que a casa pôs depois do aviso ganha o selo "Novo".
   const tripStart = myTrip?.created_at ?? null;
   // O que este aparelho pôs nesta lista (também por outras telas e antes de reabrir o app) não ganha o selo.
@@ -692,16 +738,8 @@ export default function ShoppingListScreen() {
         // Nos ovos, "12 un" (o "1 dz" colado) são doze ovos, não doze cartelas.
         category: i.category,
       })),
-      (prices.data ?? []).map((p) => ({
-        productId: p.product_id,
-        storeId: p.store_id,
-        unit: p.unit,
-        unitPrice: Number(p.unit_price),
-        purchasedAt: p.purchased_at,
-        // Quantos vinham na embalagem desse preço (os ovos da cartela de 10): os detalhes do item dizem.
-        packCount: p.pack_count ?? null,
-      })),
-      { links: links.data, products: products.data ?? [], shared: seenElsewhere, usual, storeId, historyMissing },
+      estimatePrices,
+      { links: links.data, products: products.data ?? [], shared: seenElsewhere, open: openPrices.quotes, usual, storeId, historyMissing },
     );
     // O que o app acha que acabou não é "na despensa": tudo o que passou do costume (ranOut), sem tirar o que
     // já está na lista (é dela que se trata) e sem os cortes da faixa "Acho que acabou".
@@ -721,7 +759,7 @@ export default function ShoppingListScreen() {
       }
     }
     return { estimate, inPantry, hints };
-  }, [items.data, prices.data, links.data, products.data, seenElsewhere, usual, pantry.data, ranOut, historyKnown, historyMissing, storeId, today, newIds]);
+  }, [items.data, estimatePrices, links.data, products.data, seenElsewhere, openPrices.quotes, usual, pantry.data, ranOut, historyKnown, historyMissing, storeId, today, newIds]);
 
   // As ligações e os produtos dão preço ao item digitado solto. Se não chegaram (a busca falhou, ou sem internet e
   // nunca vistos neste aparelho), o cartão diz que não deu para conferir o que ficou sem preço. A lista não espera
@@ -1005,6 +1043,7 @@ export default function ShoppingListScreen() {
       refreshing={items.isRefetching}
       onRefresh={() => {
         [items, prices, pantry, links, products, stores, purchases, shared].forEach((query) => void query.refetch());
+        void openPrices.refetch();
         refreshTrips();
       }}
       // Rodapé por contexto: com item no carrinho, "Finalizar compra"; com o carrinho vazio, "Onde comprar mais barato?".

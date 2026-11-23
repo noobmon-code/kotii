@@ -712,18 +712,19 @@ describe('estimateList', () => {
           mine: true,
           unit: 'kg',
           unitPrice: 72.9,
-          seenOn: '2026-10-10',
+          seenWeek: '2026-10-05',
+          pack: null,
         },
       ];
       const dia = (id: string) => (id === 'dia' ? 'Dia' : undefined);
       expect(storePriceNote(listStorePrices(cheese, [], { shared, usual })('q', 'dia')!, undefined, 2026)).toBe(
-        'Preço de outras casas, visto em 10 out, ~201 g (o que a casa costuma levar)',
+        'Preço de outras casas, visto na semana de 5 out, ~201 g (o que a casa costuma levar)',
       );
       expect(sharedOnlyNote(listSharedOnly(cheese, [], { shared, usual }).get('q')!, dia, 2026)).toBe(
-        'Só há preço de outras casas: Dia, visto em 10 out, ~201 g (o que a casa costuma levar)',
+        'Só há preço de outras casas: Dia, visto na semana de 5 out, ~201 g (o que a casa costuma levar)',
       );
       expect(sharedOnlyNote(listSharedOnly(cheese, [], { shared }).get('q')!, dia, 2026)).toBe(
-        'Só há preço de outras casas: Dia, visto em 10 out, 1 kg (quantidade em outra unidade)',
+        'Só há preço de outras casas: Dia, visto na semana de 5 out, 1 kg (quantidade em outra unidade)',
       );
       // A unidade da lista (kg) não converte para a do preço (unidade): 1 unidade, e a nota diz que o preço é por unidade.
       expect(storePriceNote(listStorePrices([item('a', 'Arroz', 'arroz', 0.5, 'kg')], [price('arroz', 'bom', 12)])('a', 'bom')!)).toBe(
@@ -1051,22 +1052,42 @@ describe('listStorePrices', () => {
 });
 
 describe('a lista e "Onde comprar" dão o mesmo total', () => {
-  type Sources = { links?: LinkIndex; products?: { id: string; name: string }[]; usual?: UsualAmounts };
+  type Sources = {
+    links?: LinkIndex;
+    products?: { id: string; name: string }[];
+    usual?: UsualAmounts;
+    open?: ReadonlyMap<string, readonly SharedQuote[]>;
+  };
 
-  /** A conta como a tela "Onde comprar" a chama (onde-comprar.tsx): só o que falta comprar, com a resposta de listStorePrices. */
+  /**
+   * A conta como a tela "Onde comprar" a chama (onde-comprar.tsx): só o que falta comprar, sem o item que só tem preço
+   * de outras casas (fica à parte, listSharedOnly), com a resposta de listStorePrices.
+   */
   const whereToBuy = (list: EstimateItem[], quotes: EstimatePrice[], sources: Sources, maxStores = 1) => {
     const pending = list.filter((i) => !i.inCart);
+    const sharedOnly = listSharedOnly(pending, quotes, sources);
+    const wanted = pending.filter((i) => !sharedOnly.has(i.id));
     return recommendStores(
-      pending.map((i) => ({ key: i.id, productId: i.productId, quantity: i.quantity, unit: i.unit })),
+      wanted.map((i) => ({ key: i.id, productId: i.productId, quantity: i.quantity, unit: i.unit })),
       quotes,
       maxStores,
-      { storeIndex: storePriceIndex(quotes), priceAt: listStorePrices(pending, quotes, sources) },
+      { storeIndex: storePriceIndex(quotes), priceAt: listStorePrices(wanted, quotes, sources) },
     );
   };
 
-  /** Em cada mercado, o plano de um mercado só bate com a estimativa da lista com ele escolhido: total, itens e avisos. */
+  /**
+   * Em cada mercado, o plano de um mercado só bate com a estimativa da lista com ele escolhido: total, itens e avisos.
+   * O item só com preço de outras casas fica fora do plano e aparece à parte com o preço que a lista mostra sem mercado.
+   */
   function expectSameAccount(list: EstimateItem[], quotes: EstimatePrice[], sources: Sources, storeIds: string[]) {
-    const pending = list.filter((i) => !i.inCart);
+    const sharedOnly = listSharedOnly(
+      list.filter((i) => !i.inCart),
+      quotes,
+      sources,
+    );
+    const lastPaid = estimateList(list, quotes, sources);
+    for (const [id, price] of sharedOnly) expect([id, price.cost]).toEqual([id, lastPaid.byItem.get(id)?.cost]);
+    const pending = list.filter((i) => !i.inCart && !sharedOnly.has(i.id));
     const recommendation = whereToBuy(list, quotes, sources);
     const ranked = new Set(
       estimateList(pending, quotes, sources)
@@ -1080,7 +1101,7 @@ describe('a lista e "Onde comprar" dão o mesmo total', () => {
       // os que não têm nenhum (quem está lá vê a conta estimada), mas recomendar um deles seria palpite.
       expect(Boolean(plan)).toBe(ranked.has(storeId));
       if (!plan) continue;
-      expect(plan.total).toBe(estimate.pendingTotal);
+      expect(plan.total).toBe(Math.round(pending.reduce((sum, i) => sum + (estimate.byItem.get(i.id)?.cost ?? 0), 0) * 100) / 100);
       expect(plan.assignments.map((a) => [a.itemKey, a.cost, a.kind, a.approximateQuantity])).toEqual(
         pending.flatMap((i) => {
           const cost = estimate.byItem.get(i.id);
@@ -1320,7 +1341,7 @@ describe('a lista e "Onde comprar" dão o mesmo total', () => {
 
     const NAMES = ['Leite', 'Refrigerante', 'Café', 'Sabão em pó', 'Queijo'];
     const UNITS = ['un', 'un', 'un', 'kg', 'g', 'l', 'ml'];
-    const seen = { plans: 0, estimated: 0, otherProduct: 0, otherUnit: 0, approximate: 0, perPiece: 0, unpriced: 0, split: 0 };
+    const seen = { plans: 0, estimated: 0, otherProduct: 0, otherUnit: 0, approximate: 0, perPiece: 0, unpriced: 0, split: 0, open: 0 };
     for (let round = 0; round < 400; round++) {
       const stores = ['a', 'b', 'c', 'd'].slice(0, int(2, 4));
       // Dez produtos, cada um com a unidade em que costuma ser vendido; os dois últimos nunca têm preço.
@@ -1362,11 +1383,35 @@ describe('a lista e "Onde comprar" dão o mesmo total', () => {
       const usual: UsualAmounts = new Map(
         catalog.filter(() => chance(0.4)).map(({ id }) => [id, chance(0.5) ? { kg: int(50, 1500) / 1000 } : { l: int(200, 2000) / 1000 }]),
       );
-      const sources = { links, products: catalog.map(({ id, name }) => ({ id, name })), usual };
+      // A base aberta: preços de outras casas para alguns itens, nos mercados da casa e em um de fora. Só entram no
+      // item sem preço nenhum da casa (e então ficam à parte no "Onde comprar").
+      const open = new Map<string, SharedQuote[]>();
+      for (const one of list) {
+        if (!chance(0.5)) continue;
+        const unit = pick(['un', 'kg']);
+        open.set(
+          one.id,
+          [...stores.filter(() => chance(0.5)), null].map((storeId) => ({
+            productId: null,
+            storeId,
+            storeCnpj: storeId ? `cnpj-${storeId}` : 'cnpj-fora',
+            storeName: storeId ?? 'FORA',
+            state: storeId ? null : 'SP',
+            mine: storeId != null,
+            unit,
+            unitPrice: int(100, 4000) / 100,
+            seenWeek: pick(['2026-10-05', '2026-10-12', '2026-10-19']),
+            pack: null,
+            open: { size: null, sizeBy: null, fromPackage: null, packages: null },
+          })),
+        );
+      }
+      const sources = { links, products: catalog.map(({ id, name }) => ({ id, name })), usual, open };
 
       const { recommendation, estimates } = expectSameAccount(list, quotes, sources, stores);
       seen.plans += recommendation.plans.length;
       seen.unpriced += recommendation.unpricedKeys.length;
+      seen.open += [...estimateList(list, quotes, sources).byItem.values()].filter((cost) => cost.shared?.open).length;
       seen.split += whereToBuy(list, quotes, sources, 2).plans.filter((p) => p.storeIds.length === 2).length;
       for (const plan of recommendation.plans) {
         for (const a of plan.assignments) {

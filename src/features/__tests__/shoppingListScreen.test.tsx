@@ -4,14 +4,15 @@ import { AccessibilityInfo, Dimensions, Platform, ScrollView, StyleSheet } from 
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import ShoppingListScreen from '@/app/lista/[id]/index';
-import { toISODate } from '@/domain/dates';
+import { formatShortDate, toISODate } from '@/domain/dates';
 import { REFRESH_LABEL } from '@/domain/desktop';
 import { LinkIndex } from '@/domain/listLinks';
 import { FIRST_LIST_SKIP, FIRST_LIST_TEXT } from '@/domain/onboarding';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { PRICE_CALCULATOR_LABEL, WAITING_SENTENCE as WAITING_TEXT } from '@/domain/priceCalculator';
 import { listShareText } from '@/domain/listShare';
-import { SHARED_PRICES_NOTICE, type SharedPrice } from '@/domain/sharedPrices';
+import { OPEN_PRICE_FACT, type OpenSearchItem } from '@/domain/openPrices';
+import { SHARED_PRICES_NOTICE, sharedWeekStart, type SharedPrice, type SharedQuote } from '@/domain/sharedPrices';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { ALL_IN_CART_MESSAGE, FINISH_OFFLINE_NOTICE } from '@/domain/finishPurchase';
@@ -51,6 +52,12 @@ interface Query {
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockQueries: Record<string, Query> = {};
+/** A base aberta (useOpenSharedPrices): o que ela responde e o que a tela pediu a ela. */
+const mockOpen: { quotes: Map<string, SharedQuote[]>; asked: (OpenSearchItem[] | null)[]; refetch: jest.Mock } = {
+  quotes: new Map(),
+  asked: [],
+  refetch: jest.fn(async () => undefined),
+};
 /** O que a tela entregou à grade do que falta comprar e à faixa "Acho que acabou". */
 const mockSeen: {
   hints?: ReadonlyMap<string, ItemHint>;
@@ -148,7 +155,13 @@ jest.mock('@/data/market', () => {
 // Colar o que foi copiado: a área de transferência de mentira.
 const mockClipboard = { text: '' };
 jest.mock('expo-clipboard', () => ({ getStringAsync: async () => mockClipboard.text, setStringAsync: async () => true }));
-jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => mockQueries.shared }));
+jest.mock('@/data/sharedPrices', () => ({
+  useSharedPrices: () => mockQueries.shared,
+  useOpenSharedPrices: (items: OpenSearchItem[] | null) => {
+    mockOpen.asked.push(items);
+    return { quotes: mockOpen.quotes, waiting: false, refetch: mockOpen.refetch };
+  },
+}));
 // As abreviações aprendidas têm os testes delas (learnedAbbreviations.test): aqui, nenhuma.
 jest.mock('@/data/learnedAbbreviations', () => ({
   useLearnedAbbreviations: () => jest.requireActual<typeof import('@/domain/learnedAbbreviations')>('@/domain/learnedAbbreviations').NO_LEARNED,
@@ -370,6 +383,7 @@ function choose(label: string) {
 }
 
 beforeEach(() => {
+  Object.assign(mockOpen, { quotes: new Map(), asked: [] });
   delete mockRouteParams.primeira;
   mockTrips.list = [];
   mockTrips.online = true;
@@ -3091,5 +3105,101 @@ describe('a primeira lista, logo depois de criar a casa no começo', () => {
     const text = await mount();
     expect(mockSeen.picker!.visible).toBe(false);
     expect(text).not.toContain(FIRST_LIST_TEXT);
+  });
+});
+
+describe('a base aberta: o item que a casa nunca comprou', () => {
+  const OPEN_FACTS = { size: '5 kg', sizeBy: 'most' as const, fromPackage: null, packages: null };
+  /** Um preço da base aberta para o item `id`, num mercado da casa (s1) ou num de fora (null). */
+  const openQuote = (storeId: string | null, unitPrice: number, extra: Partial<SharedQuote> = {}): SharedQuote => ({
+    productId: null,
+    storeId,
+    storeCnpj: storeId ? '11222333000181' : '99888777000166',
+    storeName: storeId ? 'Assaí' : 'ATACADAO S.A.',
+    state: storeId ? null : 'SP',
+    mine: storeId != null,
+    unit: 'un',
+    unitPrice,
+    seenWeek: sharedWeekStart(day(9)),
+    pack: { unit: 'kg', amount: 5, label: '5 kg' },
+    open: OPEN_FACTS,
+    ...extra,
+  });
+  const detailFacts = async (index = 0): Promise<string[]> => {
+    await act(async () => mockSeen.open!((mockQueries.items.data as ShoppingListItem[])[index]));
+    return (mockSeen.editor!.facts as (priority: string) => string[])('normal');
+  };
+  const lastAsked = () => mockOpen.asked.at(-1);
+
+  beforeEach(() => {
+    mockQueries.items = loaded([
+      { ...listItem('n', 'Arroz', null, 'graos') },
+      { ...listItem('b', 'Feijão', null, 'graos'), brand_preferred: true },
+    ]);
+  });
+
+  it('um "Arroz" nunca comprado: a busca leva só ele (não o de marca preferida), e o preço de outra casa entra com "~" e os detalhes', async () => {
+    mockOpen.quotes = new Map([['n', [openQuote('s1', 29.9)]]]);
+    const page = await mountOpen();
+    expect(lastAsked()?.map((item) => item.id)).toEqual(['n']);
+    expect(mockSeen.hints?.get('n')).toEqual({ cost: '~R$ 29,90', inPantry: false });
+    expect(page).toContain('Pelo preço visto em outras casas, porque a casa ainda não pagou por estes itens');
+    expect(page).toContain(SHARED_PRICES_NOTICE);
+    // A casa não tem preço nenhum: não há mercado para escolher, e o chip "Onde você está comprando?" não aparece.
+    expect(page).not.toContain('Onde você está comprando?');
+    expect(await detailFacts()).toEqual([
+      `Preço de outras casas na conta: R$ 29,90/un (Assaí, visto na semana de ${formatShortDate(sharedWeekStart(day(9)))}).`,
+      OPEN_PRICE_FACT,
+      'A lista não diz o tamanho: a conta usa o de 5 kg, o mais visto nas notas.',
+      SHARED_PRICES_NOTICE,
+    ]);
+  });
+
+  it('recolhido, o cartão diz que a conta inclui preços de outras casas', async () => {
+    mockOpen.quotes = new Map([['n', [openQuote('s1', 29.9)]]]);
+    expect(await mount()).toContain('Inclui preços de outras casas');
+  });
+
+  it('antes da migração (nada da base aberta) e com a busca a caminho: nada, e nenhum erro', async () => {
+    const page = await mountOpen();
+    expect(mockSeen.hints?.get('n')).toBeUndefined();
+    expect(page).not.toContain('outras casas');
+    expect(page).not.toContain('Não deu');
+  });
+
+  it('a lista não pergunta à base aberta enquanto o que dá preço não chegou (todo item pareceria sem preço)', async () => {
+    mockQueries.links = onTheWay();
+    await mount();
+    expect(lastAsked()).toBeNull();
+    mockQueries.links = loaded(new LinkIndex([]));
+    mockQueries.shared = failed();
+    await act(async () => renderer?.unmount());
+    await mount();
+    // A busca dos preços de outras casas pelo produto falhou: a base aberta pergunta mesmo assim.
+    expect(lastAsked()?.map((item) => item.id)).toEqual(['n']);
+  });
+
+  it('o item pedido em kg ("2 kg arroz"): o preço por kg do pacote, sem "a lista não diz o tamanho"', async () => {
+    mockQueries.items = loaded([{ ...listItem('n', 'Arroz', null, 'graos'), quantity: 2, unit: 'kg' }]);
+    mockOpen.quotes = new Map([
+      ['n', [openQuote('s1', 4.98, { unit: 'kg', open: { size: null, sizeBy: null, fromPackage: '5 kg', packages: null } })]],
+    ]);
+    await mountOpen();
+    expect(lastAsked()).toEqual([{ id: 'n', name: 'Arroz', category: 'graos', quantity: 2, unit: 'kg' }]);
+    expect(mockSeen.hints?.get('n')).toEqual({ cost: '~R$ 9,96', inPantry: false });
+    const facts = await detailFacts();
+    expect(facts).toContain('A conta usa o preço por kg da embalagem de 5 kg.');
+    expect(facts.join('\n')).not.toContain('A lista não diz o tamanho');
+  });
+
+  it('com preço da casa, a busca não leva o item, e puxar para atualizar busca a base aberta de novo', async () => {
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz', 'graos')]);
+    mockQueries.products = loaded([product('arroz', 'Arroz')]);
+    mockQueries.prices = loaded([latest('arroz', 25)]);
+    await mountOpen();
+    expect(lastAsked()).toEqual([]);
+    const refresh = renderer!.root.findAll((node) => typeof node.props.onRefresh === 'function')[0];
+    await act(async () => refresh.props.onRefresh());
+    expect(mockOpen.refetch).toHaveBeenCalled();
   });
 });

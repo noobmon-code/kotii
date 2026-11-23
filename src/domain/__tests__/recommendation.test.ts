@@ -1,5 +1,19 @@
 import { describe, expect, it } from '@jest/globals';
-import { recommendStores, type ListItemInput, type PriceInput, type StorePriceAnswer } from '../recommendation';
+import { listSharedElsewhere } from '../listEstimate';
+import {
+  recommendStores,
+  SHARED_ONLY_TITLE,
+  sharedOffersIntro,
+  sharedOnlyFooter,
+  sharedStoreOffers,
+  unpricedFooter,
+  WHERE_TO_BUY_EMPTY,
+  WHERE_TO_BUY_SHARED_ONLY,
+  type ListItemInput,
+  type PriceInput,
+  type StorePriceAnswer,
+} from '../recommendation';
+import type { SharedQuote } from '../sharedPrices';
 
 const item = (key: string, productId: string | null, quantity = 1, unit = 'un'): ListItemInput => ({
   key,
@@ -189,5 +203,55 @@ describe('recommendStores', () => {
     const rec = recommendStores([item('a', 'arroz')], [], 2);
     expect(rec.plans).toEqual([]);
     expect(rec.unpricedKeys).toEqual(['a']);
+  });
+});
+
+describe('"Onde comprar" só com preços de outras casas', () => {
+  const quote = (storeCnpj: string, unitPrice: number): SharedQuote => ({
+    productId: null,
+    storeId: null,
+    storeCnpj,
+    storeName: 'ATACADAO S.A.',
+    state: 'SP',
+    mine: false,
+    unit: 'un',
+    unitPrice,
+    seenWeek: '2026-11-09',
+    pack: null,
+    open: { size: null, sizeBy: null, fromPackage: null, packages: null },
+  });
+
+  it('os mercados de fora vêm também sem plano (a casa sem preço nenhum): os preços da base aberta, sem comparação', () => {
+    const elsewhere = listSharedElsewhere(
+      [{ id: 'a', name: 'Arroz', productId: null, quantity: 1, unit: 'un' }],
+      [],
+      { open: new Map([['a', [quote('11222333000181', 22.9), quote('99888777000166', 21.5)]]]) },
+    );
+    const offers = sharedStoreOffers(elsewhere, undefined);
+    expect(offers.map((offer) => [offer.storeCnpj, offer.total, offer.planTotal])).toEqual([
+      ['99888777000166', 21.5, null],
+      ['11222333000181', 22.9, null],
+    ]);
+  });
+
+  it('os textos com e sem plano', () => {
+    expect(WHERE_TO_BUY_EMPTY).toEqual({
+      title: 'Ainda sem preços para comparar',
+      message: 'Importe notas fiscais das suas compras. Itens da lista escolhidos pela sugestão de produto passam a ter preço por mercado.',
+    });
+    expect(WHERE_TO_BUY_SHARED_ONLY).toEqual({
+      title: 'Só há preços de outras casas',
+      message:
+        'A casa ainda não tem nota destes itens para comparar os mercados. Abaixo estão os preços que outras casas viram para eles nos mercados do seu estado. Com as notas das suas compras, o app monta a comparação.',
+    });
+    expect(SHARED_ONLY_TITLE).toBe('Só com preço de outras casas');
+    expect(sharedOffersIntro(true)).toBe(
+      'Mercados onde outras casas viram itens desta lista. Ficam fora da comparação acima: a casa não tem preço do resto da lista lá.',
+    );
+    expect(sharedOffersIntro(false)).toBe('Mercados onde outras casas viram itens desta lista.');
+    expect(sharedOnlyFooter(true)).toBe('A casa ainda não comprou esses itens: ficam fora da comparação e dos totais acima.');
+    expect(sharedOnlyFooter(false)).toBe('A casa ainda não comprou esses itens: cada um aparece com o preço visto por último em outra casa.');
+    expect(unpricedFooter(true)).toBe('Esses itens ficam fora dos totais.');
+    expect(unpricedFooter(false)).toBe('Esses itens ainda não têm preço.');
   });
 });

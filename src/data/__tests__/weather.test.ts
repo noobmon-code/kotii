@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 
-import { findPlaceByCep } from '../weather';
+import { findPlaceByCep, findStateByPoint } from '../weather';
 
 jest.mock('@/lib/supabase', () => ({ supabase: {}, unwrap: (r: { data: unknown }) => r.data }));
 
@@ -29,13 +29,19 @@ describe('bairro pelo CEP', () => {
   it('o bairro vem do mapa, na cidade do CEP', async () => {
     replies['viacep.com.br'] = { bairro: 'Asa Sul', localidade: 'Brasília', uf: 'DF' };
     replies['nominatim'] = [{ lat: '-15.8169455', lon: '-47.900049', addresstype: 'suburb', address: { suburb: 'Asa Sul', city: 'Brasília' } }];
-    await expect(findPlaceByCep('70297400')).resolves.toEqual({ label: 'Asa Sul, Brasília', latitude: -15.82, longitude: -47.9, source: 'cep' });
+    await expect(findPlaceByCep('70297400')).resolves.toEqual({
+      label: 'Asa Sul, Brasília',
+      latitude: -15.82,
+      longitude: -47.9,
+      source: 'cep',
+      state_code: '53',
+    });
   });
 
   it('sem o bairro no mapa, fica a cidade; a segunda busca espera um segundo (limite do OpenStreetMap)', async () => {
     replies['viacep.com.br'] = { bairro: 'Jardim Inexistente', localidade: 'Limeira', uf: 'SP' };
     replies['q=Limeira'] = [{ lat: '-22.5647', lon: '-47.4017', addresstype: 'city', address: { city: 'Limeira' } }];
-    await expect(findPlaceByCep('13480000')).resolves.toEqual({ label: 'Limeira', latitude: -22.56, longitude: -47.4, source: 'cep' });
+    await expect(findPlaceByCep('13480000')).resolves.toEqual({ label: 'Limeira', latitude: -22.56, longitude: -47.4, source: 'cep', state_code: '35' });
     const osm = calls.filter((c) => c.url.includes('nominatim'));
     expect(osm).toHaveLength(2);
     expect(osm[1].at - osm[0].at).toBeGreaterThanOrEqual(1000);
@@ -50,11 +56,28 @@ describe('bairro pelo CEP', () => {
       location: { coordinates: { latitude: '-23.5475', longitude: '-46.63611' } },
     };
     replies['nominatim'] = failure(429);
-    await expect(findPlaceByCep('05422010')).resolves.toEqual({ label: 'São Paulo', latitude: -23.55, longitude: -46.64, source: 'cep' });
+    await expect(findPlaceByCep('05422010')).resolves.toEqual({
+      label: 'São Paulo',
+      latitude: -23.55,
+      longitude: -46.64,
+      source: 'cep',
+      state_code: '35',
+    });
   });
 
   it('CEP que não existe', async () => {
     replies['viacep.com.br'] = { erro: 'true' };
     await expect(findPlaceByCep('99999999')).rejects.toThrow('CEP não encontrado');
+  });
+});
+
+describe('o estado do ponto da casa, pelo mapa', () => {
+  it('o código do OpenStreetMap ("BR-SP") vira o do IBGE; fora do Brasil, nenhum', async () => {
+    replies['reverse'] = { lat: '-23.56', lon: '-46.69', address: { suburb: 'Pinheiros', city: 'São Paulo', 'ISO3166-2-lvl4': 'BR-SP' } };
+    await expect(findStateByPoint(-23.56, -46.69)).resolves.toBe('35');
+    replies['reverse'] = { lat: '32.36', lon: '-86.3', address: { city: 'Montgomery', 'ISO3166-2-lvl4': 'US-AL' } };
+    await expect(findStateByPoint(32.36, -86.3)).resolves.toBeNull();
+    replies['reverse'] = { lat: '0', lon: '0', address: {} };
+    await expect(findStateByPoint(0, 0)).resolves.toBeNull();
   });
 });

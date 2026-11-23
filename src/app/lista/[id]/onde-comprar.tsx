@@ -3,10 +3,11 @@ import { useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { useLatestPrices, useListItems, useListLinks, useProducts, usePurchaseRecords, useStores } from '@/data/market';
-import { useSharedPrices } from '@/data/sharedPrices';
+import { useOpenSharedPrices, useSharedPrices } from '@/data/sharedPrices';
 import {
   formatItemCost,
   listSharedElsewhere,
+  openCandidates,
   listSharedOnly,
   listStorePrices,
   sharedOnlyNote,
@@ -16,7 +17,18 @@ import {
 } from '@/domain/listEstimate';
 import { formatBRL, formatQuantity } from '@/domain/money';
 import { storePriceIndex } from '@/domain/priceLevel';
-import { describeSharedOffer, recommendStores, sharedStoreOffers, type StorePlan } from '@/domain/recommendation';
+import {
+  describeSharedOffer,
+  recommendStores,
+  SHARED_ONLY_TITLE,
+  sharedOffersIntro,
+  sharedOnlyFooter,
+  sharedStoreOffers,
+  unpricedFooter,
+  WHERE_TO_BUY_EMPTY,
+  WHERE_TO_BUY_SHARED_ONLY,
+  type StorePlan,
+} from '@/domain/recommendation';
 import { SHARED_PRICES_NOTICE, SHARED_PRICES_OTHERS, sharedQuotes } from '@/domain/sharedPrices';
 import { goBackOr } from '@/lib/navigation';
 import { chooseStore } from '@/lib/storeChoice';
@@ -57,27 +69,64 @@ export default function WhereToBuyScreen() {
   const [mode, setMode] = useState<Mode>('1');
 
   const pending = useMemo(() => (items.data ?? []).filter((i) => !i.checked_at), [items.data]);
+  // Os preços da casa como a conta os lê.
+  const quotes = useMemo(
+    () =>
+      (prices.data ?? []).map((p) => ({
+        productId: p.product_id,
+        storeId: p.store_id,
+        unit: p.unit,
+        unitPrice: Number(p.unit_price),
+        purchasedAt: p.purchased_at,
+        // Quantos vinham na embalagem desse preço (os ovos da cartela de 10): os detalhes do item dizem.
+        packCount: p.pack_count ?? null,
+      })),
+    [prices.data],
+  );
+  // Os mercados da casa se reconhecem pelo CNPJ, e o preço da casa sempre vence: sem os mercados ou sem os
+  // preços da casa carregados, nada de outras casas (eles ocupariam o lugar dos dela).
+  const seenElsewhere = useMemo(
+    () => (shared.data && stores.data && prices.data ? sharedQuotes(shared.data, prices.data, stores.data) : []),
+    [shared.data, stores.data, prices.data],
+  );
+  // A base aberta, com a mesma busca da tela da lista: a lista toda (no carrinho e a comprar), para a resposta guardada
+  // servir às duas telas sem pedir de novo. Só os itens a comprar usam os preços.
+  const priceSourcesSettled =
+    prices.data !== undefined &&
+    stores.data !== undefined &&
+    links.data !== undefined &&
+    products.data !== undefined &&
+    (shared.data !== undefined || shared.isError);
+  const openItems = useMemo(
+    () =>
+      priceSourcesSettled
+        ? openCandidates(
+            (items.data ?? []).map((i) => ({
+              id: i.id,
+              name: i.name,
+              productId: i.product_id,
+              quantity: Number(i.quantity),
+              unit: i.unit,
+              category: i.category,
+              brandPreferred: i.brand_preferred === true,
+            })),
+            quotes,
+            { links: links.data ?? undefined, products: products.data ?? [], shared: seenElsewhere },
+          )
+        : null,
+    [priceSourcesSettled, items.data, quotes, links.data, products.data, seenElsewhere],
+  );
+  const openPrices = useOpenSharedPrices(openItems, stores.data ?? undefined);
   // A mesma conta da estimativa na tela da lista: o preço de cada item em cada mercado vem de lá
   // (domain/listEstimate, listStorePrices), com todos os preços da casa. Dele saem os totais e cada linha.
   const account = useMemo(() => {
-    const quotes = (prices.data ?? []).map((p) => ({
-      productId: p.product_id,
-      storeId: p.store_id,
-      unit: p.unit,
-      unitPrice: Number(p.unit_price),
-      purchasedAt: p.purchased_at,
-      // Quantos vinham na embalagem desse preço (os ovos da cartela de 10): os detalhes do item dizem.
-      packCount: p.pack_count ?? null,
-    }));
-    // Os mercados da casa se reconhecem pelo CNPJ, e o preço da casa sempre vence: sem os mercados ou sem os
-    // preços da casa carregados, nada de outras casas (eles ocupariam o lugar dos dela).
-    const seenElsewhere = shared.data && stores.data && prices.data ? sharedQuotes(shared.data, prices.data, stores.data) : [];
     // Sem o histórico de compras (a busca falhou, ou parada): o costume não entra, e a linha do item diz isso. A tela
     // só mostra a conta depois da primeira busca (ver onTheWay, abaixo).
     const sources = {
       links: links.data,
       products: products.data ?? [],
       shared: seenElsewhere,
+      open: openPrices.quotes,
       usual: usualAmounts(purchases.data ?? []),
       historyMissing: purchases.data === undefined,
     };
@@ -102,7 +151,7 @@ export default function WhereToBuyScreen() {
       sharedOnly,
       storeIndex: storePriceIndex(quotes),
     };
-  }, [pending, prices.data, links.data, products.data, shared.data, stores.data, purchases.data]);
+  }, [pending, quotes, links.data, products.data, seenElsewhere, openPrices.quotes, purchases.data]);
   const recommendation = useMemo(
     () => recommendStores(account.wanted, account.quotes, Number(mode), { storeIndex: account.storeIndex, priceAt: account.priceAt }),
     [account, mode],
@@ -122,7 +171,10 @@ export default function WhereToBuyScreen() {
     onTheWay(links) ||
     onTheWay(products) ||
     onTheWay(shared) ||
-    onTheWay(purchases)
+    onTheWay(purchases) ||
+    // A base aberta também muda o total: a primeira busca é esperada (uma parada, um erro ou a função que não existe
+    // não seguram nada).
+    openPrices.waiting
   ) {
     return <Loading label="Comparando preços…" />;
   }
@@ -168,10 +220,10 @@ export default function WhereToBuyScreen() {
       />
 
       {!best ? (
+        // Sem plano: com preços de outras casas (a primeira compra), a tela diz que só há esses; sem nada, o de sempre.
         <EmptyState
           icon="store-search-outline"
-          title="Ainda sem preços para comparar"
-          message="Importe notas fiscais das suas compras. Itens da lista escolhidos pela sugestão de produto passam a ter preço por mercado."
+          {...(offers.length || sharedOnly.length ? WHERE_TO_BUY_SHARED_ONLY : WHERE_TO_BUY_EMPTY)}
         />
       ) : (
         <>
@@ -249,10 +301,7 @@ export default function WhereToBuyScreen() {
 
       {offers.length ? (
         <Section title={SHARED_PRICES_OTHERS}>
-          <Text variant="small">
-            Mercados onde outras casas viram itens desta lista. Ficam fora da comparação acima: a casa não tem preço do resto da
-            lista lá.
-          </Text>
+          <Text variant="small">{sharedOffersIntro(Boolean(best))}</Text>
           {offers.map((offer) => (
             <View key={offer.storeCnpj} style={styles.offer}>
               <Text variant="label">{offer.storeLabel}</Text>
@@ -277,7 +326,7 @@ export default function WhereToBuyScreen() {
       ) : null}
 
       {sharedOnly.length ? (
-        <Section title="Só com preço de outras casas">
+        <Section title={SHARED_ONLY_TITLE}>
           <ListCard>
             {sharedOnly.map(([item, price]) => (
               <ListRow
@@ -289,7 +338,7 @@ export default function WhereToBuyScreen() {
               />
             ))}
           </ListCard>
-          <Text variant="small">A casa ainda não comprou esses itens: ficam fora da comparação e dos totais acima.</Text>
+          <Text variant="small">{sharedOnlyFooter(Boolean(best))}</Text>
         </Section>
       ) : null}
 
@@ -308,7 +357,7 @@ export default function WhereToBuyScreen() {
               />
             ))}
           </ListCard>
-          <Text variant="small">Esses itens ficam fora dos totais.</Text>
+          <Text variant="small">{unpricedFooter(Boolean(best))}</Text>
           {!sourcesLoaded ? (
             <>
               <Text variant="small">

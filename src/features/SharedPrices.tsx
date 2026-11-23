@@ -29,7 +29,7 @@ import { space } from '@/ui/theme';
 /**
  * "Visto em outras casas", na tela do produto: quanto ele custou nas notas de
  * outras casas, primeiro nos mercados da própria casa (com o nome que ela
- * conhece) e depois em outros do estado, com o dia em que foi visto e o aviso
+ * conhece) e depois em outros do estado, com a semana em que foi visto e o aviso
  * de que não é em tempo real. Só aparece com algo a mostrar, e só com os
  * preços e os mercados da casa em dia: durante uma busca nova (ou depois de
  * uma que falhou) o que ficou guardado é de antes, e a compra de agora

@@ -1,19 +1,36 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useState } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
+import { openSearchPlan, type OpenGroup, type OpenSearchItem } from '@/domain/openPrices';
 import { SHARING_ABOUT, SHARING_SUMMARY, SHARING_TITLE, type SharedPrice } from '@/domain/sharedPrices';
 import { SharedPricesAbout } from '@/features/SharedPrices';
 import { persistOptions, queryClient as appQueryClient } from '@/lib/queryClient';
 
 import { useConfirmReceipt, useDeleteReceipt, useFillReceiptItemValue } from '../receipts';
-import { fetchSharedPrices, fetchSharedPricesAvailable, useSharedPrices, useSharedPricesAvailable } from '../sharedPrices';
+import { MERGE_REFRESHES } from '../productMerge';
+import {
+  fetchSharedItemKeys,
+  fetchSharedItemPrices,
+  fetchSharedPrices,
+  fetchSharedPricesAvailable,
+  useOpenSharedPrices,
+  useSharedPrices,
+  useSharedPricesAvailable,
+  type OpenSharedPrices,
+} from '../sharedPrices';
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim. O que o banco de mentira responde a cada função.
-const mockRpc: { answer: (name: string) => { data: unknown; error: unknown }; called: string[] } = {
+const mockRpc: {
+  answer: (name: string, args?: unknown) => { data: unknown; error: unknown } | Promise<{ data: unknown; error: unknown }>;
+  called: string[];
+  args: unknown[];
+} = {
   answer: () => ({ data: null, error: null }),
   called: [],
+  args: [],
 };
 
 jest.mock('@react-native-async-storage/async-storage', () =>
@@ -46,11 +63,16 @@ jest.mock('@/lib/supabase', () => {
         return write();
       },
       storage: { from: () => ({ remove: async () => ({ data: [], error: null }) }) },
-      rpc: (name: string) => {
+      rpc: (name: string, args?: unknown) => {
         mockRpc.called.push(name);
-        const result = mockRpc.answer(name);
+        mockRpc.args.push(args);
+        const result = mockRpc.answer(name, args);
         // Com .order().range() (os preços de outras casas) ou direto (confirmar a nota).
-        const query = { order: () => query, range: async () => result, then: (resolve: (value: unknown) => void) => resolve(result) };
+        const query = {
+          order: () => query,
+          range: async () => result,
+          then: (resolve: (value: unknown) => void, reject: (reason: unknown) => void) => Promise.resolve(result).then(resolve, reject),
+        };
         return query;
       },
     },
@@ -73,7 +95,8 @@ const price = (n: number): SharedPrice => ({
   store_uf: '35',
   unit: 'un',
   unit_price: 10 + (n % 7),
-  seen_on: '2026-10-10',
+  // A segunda-feira da semana da compra: o banco da lista aberta nunca devolve o dia.
+  seen_on: '2026-10-05',
   mine: n % 2 === 0,
 });
 
@@ -105,6 +128,7 @@ function fakeDb(rows: unknown[], error: unknown = null) {
 afterEach(() => {
   mockRpc.answer = () => ({ data: null, error: null });
   mockRpc.called = [];
+  mockRpc.args = [];
   appQueryClient.clear();
 });
 
@@ -130,6 +154,11 @@ describe('preços de outras casas', () => {
     const { db, asked } = fakeDb([], error);
     await expect(fetchSharedPrices(db)).resolves.toBeNull();
     expect(asked).toHaveLength(1);
+  });
+
+  it('o banco de antes da lista aberta ainda devolve o dia: o app fica com a segunda-feira da semana dele', async () => {
+    const { db } = fakeDb([{ ...price(1), seen_on: '2026-10-10' }, { ...price(2), seen_on: '2026-10-11' }, { ...price(3), seen_on: '2026-10-12' }]);
+    expect((await fetchSharedPrices(db))?.map((row) => row.seen_on)).toEqual(['2026-10-05', '2026-10-05', '2026-10-12']);
   });
 
   it('com a função e nada para a casa: lista vazia, que não é o mesmo que "não disponível"', async () => {
@@ -409,5 +438,169 @@ describe('no cache do app', () => {
     expect(mockRpc.called).toEqual(['from receipts', 'from receipt_items']);
     await act(async () => renderer.unmount());
     queryClient.clear();
+  });
+});
+
+describe('a base aberta (shared_item_keys e shared_item_prices)', () => {
+  const STORES = [{ id: 'meu', cnpj: '11222333000181', name: 'Atacadão da esquina' }];
+  const arroz: OpenSearchItem = { id: 'a', name: 'Arroz', category: 'graos', quantity: 1, unit: 'un' };
+  const leite: OpenSearchItem = { id: 'l', name: 'Leite', category: 'laticinios', quantity: 1, unit: 'un' };
+  /** Um banco de mentira para os dois passos: guarda o que recebeu e responde o combinado. */
+  function openDb(answer: { data: unknown; error: unknown }) {
+    const asked: { name: string; args: unknown }[] = [];
+    const db = {
+      rpc: async (name: string, args: unknown) => {
+        asked.push({ name, args });
+        return answer;
+      },
+    };
+    return { db: db as unknown as SupabaseClient, asked };
+  }
+  const GROUP: OpenGroup = { signature: 'ARROZ CAMIL 5KG', keys: ['ARROZ CAMIL 5KG'], expected: { unit: 'kg', amount: 5, label: '5 kg' }, items: [] };
+
+  it.each<[string, string, unknown]>([
+    ['shared_item_keys', 'PostgREST, fora do cache de esquema', { code: 'PGRST202', message: 'Could not find the function public.shared_item_keys(p_items) in the schema cache' }],
+    ['shared_item_keys', 'Postgres, a função não existe', { code: '42883', message: 'function public.shared_item_keys(jsonb) does not exist' }],
+    ['shared_item_prices', 'PostgREST, fora do cache de esquema', { code: 'PGRST202', message: 'Could not find the function public.shared_item_prices(p_groups) in the schema cache' }],
+    ['shared_item_prices', 'Postgres, a função não existe', { code: '42883', message: 'function public.shared_item_prices(jsonb) does not exist' }],
+  ])('sem %s no banco (%s): null, sem erro', async (name, _case, error) => {
+    const { db } = openDb({ data: null, error });
+    const entries = openSearchPlan([arroz]).calls[0];
+    await expect(name === 'shared_item_keys' ? fetchSharedItemKeys(entries, db) : fetchSharedItemPrices([GROUP], db)).resolves.toBeNull();
+  });
+
+  it('o que vai a cada função: as palavras de cada busca, e as chaves e o tamanho de cada grupo', async () => {
+    const entries = openSearchPlan([arroz]).calls[0];
+    const keys = openDb({ data: [{ k: [['ARROZ CAMIL 5KG', 'un', '2026-11-09', 2]], more: false }], error: null });
+    await expect(fetchSharedItemKeys(entries, keys.db)).resolves.toEqual({
+      entries: [entries[0].signature],
+      keys: [[{ key: 'ARROZ CAMIL 5KG', unit: 'un', week: '2026-11-09', seen: 2 }]],
+      more: [false],
+    });
+    expect(keys.asked).toEqual([{ name: 'shared_item_keys', args: { p_items: [{ f: ['ARROZ', 'ARROZES', 'ARROZS'], s: ['ARROZ', 'ARROZES', 'ARROZS'], x: [] }] } }]);
+    const prices = openDb({ data: [[0, '11222333000181', 'ATACADAO', '35', 'un', 22.9, '2026-11-12', true]], error: null });
+    await expect(fetchSharedItemPrices([GROUP], prices.db)).resolves.toEqual({
+      groups: ['ARROZ CAMIL 5KG'],
+      // Um banco que devolvesse o dia: a segunda-feira dele.
+      rows: [expect.objectContaining({ group: 0, unit_price: 22.9, seen_on: '2026-11-09', mine: true })],
+    });
+    expect(prices.asked).toEqual([{ name: 'shared_item_prices', args: { p_groups: [{ k: ['ARROZ CAMIL 5KG'], p: { u: 'kg', a: 5 } }] } }]);
+  });
+
+  it('uma resposta do passo 1 com outro número de buscas é erro (a busca tenta de novo), nunca meia resposta', async () => {
+    const entries = openSearchPlan([arroz, leite]).calls[0];
+    await expect(fetchSharedItemKeys(entries, openDb({ data: [{ k: [], more: false }], error: null }).db)).rejects.toThrow();
+    // Outro erro sobe.
+    await expect(fetchSharedItemKeys(entries, openDb({ data: null, error: offline }).db)).rejects.toBe(offline);
+  });
+
+  /** O banco de mentira do app: o passo 1 dá a cada busca as chaves do item dela; o passo 2, um preço por grupo. */
+  const answering = (name: string, args?: unknown) => {
+    if (name === 'shared_item_keys') {
+      const items = (args as { p_items: { f: string[] }[] }).p_items;
+      return {
+        data: items.map((entry) => ({ k: entry.f.includes('ARROZ') ? [['ARROZ CAMIL 5KG', 'un', '2026-11-09', 2]] : [['LEITE INT ITALAC 1L', 'un', '2026-11-09', 1]], more: false })),
+        error: null,
+      };
+    }
+    const groups = (args as { p_groups: unknown[] }).p_groups;
+    return { data: groups.map((_, g) => [g, '11222333000181', 'ATACADAO', '35', 'un', 20 + g, '2026-11-09', true]), error: null };
+  };
+
+  /** Monta o gancho com estes itens (que mudam com `set`) e espera as buscas. */
+  async function hook(queryClient: QueryClient, first: OpenSearchItem[] | null) {
+    const seen: OpenSharedPrices[] = [];
+    let set: (items: OpenSearchItem[] | null) => void = () => undefined;
+    function Probe() {
+      const [items, setItems] = useState(first);
+      set = setItems;
+      seen.push(useOpenSharedPrices(items, STORES));
+      return null;
+    }
+    const renderer = await mount(Probe, queryClient, () => false);
+    const change = async (items: OpenSearchItem[] | null) => {
+      await act(async () => set(items));
+      for (let turn = 0; turn < 20; turn++) await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    };
+    return { seen, renderer, change };
+  }
+  const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+
+  it('uma chamada de cada passo para a lista toda; a lista que não sabe os itens (null) não pede nada', async () => {
+    mockRpc.answer = answering;
+    const queryClient = newClient();
+    const { seen, renderer, change } = await hook(queryClient, null);
+    expect(mockRpc.called).toEqual([]);
+    expect(seen.at(-1)?.waiting).toBe(false);
+    await change([arroz, leite]);
+    expect(mockRpc.called).toEqual(['shared_item_keys', 'shared_item_prices']);
+    expect([...seen.at(-1)!.quotes.keys()].sort()).toEqual(['a', 'l']);
+    expect(seen.at(-1)!.quotes.get('a')?.[0]).toMatchObject({ storeId: 'meu', productId: null, open: { size: '5 kg', sizeBy: 'only' } });
+    // A lista que muda sem mudar as buscas (outra ordem) não pede de novo.
+    await change([leite, arroz]);
+    expect(mockRpc.called).toEqual(['shared_item_keys', 'shared_item_prices']);
+    await act(async () => renderer.unmount());
+    queryClient.clear();
+  });
+
+  it('duas listas com o mesmo item, uma depois da outra: as duas com preço, e a segunda sem pedido nenhum', async () => {
+    mockRpc.answer = answering;
+    const queryClient = newClient();
+    const first = await hook(queryClient, [arroz]);
+    expect(first.seen.at(-1)!.quotes.get('a')).toHaveLength(1);
+    await act(async () => first.renderer.unmount());
+    const calls = [...mockRpc.called];
+    const second = await hook(queryClient, [{ ...arroz, id: 'outro-arroz' }]);
+    expect(second.seen.at(-1)!.quotes.get('outro-arroz')).toEqual([expect.objectContaining({ unitPrice: 20 })]);
+    expect(mockRpc.called).toEqual(calls);
+    await act(async () => second.renderer.unmount());
+    queryClient.clear();
+  });
+
+  it('`waiting` só na primeira busca a caminho: um erro, sem internet ou a função que não existe não esperam', async () => {
+    let release: (value: { data: unknown; error: unknown }) => void = () => undefined;
+    mockRpc.answer = () => new Promise((resolve) => (release = resolve));
+    const queryClient = newClient();
+    const { seen, renderer } = await hook(queryClient, [arroz]);
+    expect(seen.at(-1)?.waiting).toBe(true);
+    await act(async () => release({ data: null, error: offline }));
+    for (let turn = 0; turn < 10; turn++) await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(seen.at(-1)?.waiting).toBe(false);
+    await act(async () => renderer.unmount());
+    queryClient.clear();
+
+    mockRpc.answer = () => ({ data: null, error: { code: 'PGRST202', message: 'Could not find the function public.shared_item_keys' } });
+    const missingClient = newClient();
+    const missing = await hook(missingClient, [arroz]);
+    expect(missing.seen.at(-1)).toMatchObject({ waiting: false });
+    expect(missing.seen.at(-1)!.quotes.size).toBe(0);
+    await act(async () => missing.renderer.unmount());
+    missingClient.clear();
+
+    // Sem internet, a busca fica parada (não "a caminho").
+    const offlineNow = jest.spyOn(onlineManager, 'isOnline').mockReturnValue(false);
+    mockRpc.called = [];
+    const pausedClient = newClient();
+    const paused = await hook(pausedClient, [arroz]);
+    expect(pausedClient.getQueryCache().findAll({ queryKey: ['sharedPrices', 'open'] }).map((query) => query.state.fetchStatus)).toEqual(['paused']);
+    expect(paused.seen.at(-1)?.waiting).toBe(false);
+    expect(mockRpc.called).toEqual([]);
+    await act(async () => paused.renderer.unmount());
+    pausedClient.clear();
+    offlineNow.mockRestore();
+  });
+
+  it('fora do cache guardado no aparelho, e nas invalidações dos preços de outras casas (o prefixo)', async () => {
+    appQueryClient.setQueryData(['sharedPrices', 'open', 'keys', ['x']], null);
+    appQueryClient.setQueryData(['sharedPrices', 'open', 'prices', ['x']], null);
+    for (const kind of ['keys', 'prices']) {
+      const query = appQueryClient.getQueryCache().find({ queryKey: ['sharedPrices', 'open', kind, ['x']] })!;
+      expect(persistOptions.dehydrateOptions.shouldDehydrateQuery(query)).toBe(false);
+    }
+    // Confirmar uma nota, os nomes dos mercados e juntar produtos invalidam pelo prefixo 'sharedPrices'.
+    expect(MERGE_REFRESHES).toContain('sharedPrices');
+    await appQueryClient.invalidateQueries({ queryKey: ['sharedPrices'] });
+    expect(appQueryClient.getQueryState(['sharedPrices', 'open', 'keys', ['x']])?.isInvalidated).toBe(true);
+    expect(appQueryClient.getQueryState(['sharedPrices', 'open', 'prices', ['x']])?.isInvalidated).toBe(true);
   });
 });

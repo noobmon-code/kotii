@@ -37,6 +37,7 @@ jest.mock('@/data/weather', () => ({
     return { data: location ? mockWeather.forecast : undefined };
   },
   useRefreshWeather: () => () => undefined,
+  useFillHouseState: () => undefined,
 }));
 jest.mock('@/data/home', () => ({
   toSchedules: () => [],

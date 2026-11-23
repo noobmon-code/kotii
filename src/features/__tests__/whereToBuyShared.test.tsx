@@ -7,7 +7,8 @@ import WhereToBuyScreen from '@/app/lista/[id]/onde-comprar';
 import { formatShortDate, toISODate } from '@/domain/dates';
 import * as listEstimate from '@/domain/listEstimate';
 import { LinkIndex } from '@/domain/listLinks';
-import { SHARED_PRICES_NOTICE, type SharedPrice } from '@/domain/sharedPrices';
+import type { OpenSearchItem } from '@/domain/openPrices';
+import { SHARED_PRICES_NOTICE, sharedWeekStart, type SharedPrice, type SharedQuote } from '@/domain/sharedPrices';
 import type { LatestPrice, Product, ShoppingListItem, Store } from '@/lib/types';
 import { Button } from '@/ui/primitives';
 
@@ -26,6 +27,12 @@ interface Query {
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockQueries: Record<string, Query> = {};
+/** A base aberta (useOpenSharedPrices): o que ela responde e o que a tela pediu a ela. */
+const mockOpen: { quotes: Map<string, SharedQuote[]>; waiting: boolean; asked: (OpenSearchItem[] | null)[] } = {
+  quotes: new Map(),
+  waiting: false,
+  asked: [],
+};
 
 jest.mock('expo-router', () => ({
   router: { back: jest.fn(), canGoBack: () => true, replace: jest.fn() },
@@ -42,7 +49,13 @@ jest.mock('@/data/market', () => ({
   usePurchaseRecords: () => mockQueries.purchases,
   useStores: () => mockQueries.stores,
 }));
-jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => mockQueries.shared }));
+jest.mock('@/data/sharedPrices', () => ({
+  useSharedPrices: () => mockQueries.shared,
+  useOpenSharedPrices: (items: OpenSearchItem[] | null) => {
+    mockOpen.asked.push(items);
+    return { quotes: mockOpen.quotes, waiting: mockOpen.waiting, refetch: async () => undefined };
+  },
+}));
 // Os desenhos animados (reanimated) e o fundo não entram no que se confere aqui.
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
@@ -51,12 +64,14 @@ const loaded = (data: unknown): Query => ({ data, isPending: false, isError: fal
 const failed = (): Query => ({ ...loaded(undefined), isError: true, error: new Error('sem rede') });
 const onTheWay = (): Query => ({ ...loaded(undefined), isPending: true, fetchStatus: 'fetching' });
 
-/** O dia de `ago` dias atrás: a tela diz "visto em" com a data de hoje como referência do ano. */
+/** O dia de `ago` dias atrás: a tela diz "visto na semana de" com a data de hoje como referência do ano. */
 const day = (ago: number) => {
   const date = new Date();
   date.setDate(date.getDate() - ago);
   return toISODate(date);
 };
+/** A segunda-feira da semana de `ago` dias atrás: o preço de outra casa aparece com a semana, nunca com o dia. */
+const week = (ago: number) => formatShortDate(sharedWeekStart(day(ago)));
 
 const ASSAI = '11222333000181';
 const DIA = '22333444000172';
@@ -129,6 +144,7 @@ beforeEach(() => {
     purchases: loaded([]),
     shared: loaded(null),
   });
+  Object.assign(mockOpen, { quotes: new Map(), waiting: false, asked: [] });
 });
 
 afterEach(async () => {
@@ -151,7 +167,7 @@ describe('"Onde comprar" com os preços de outras casas', () => {
     expect(page).toContain('R$ 31,50');
     expect(page).toContain('1 preços reais');
     expect(page).toContain('1 de outras casas');
-    expect(page).toContain(`Preço de outras casas, visto em ${formatShortDate(day(3))}`);
+    expect(page).toContain(`Preço de outras casas, visto na semana de ${week(3)}`);
     expect(page).toContain('~R$ 7,50');
     expect(page).toContain('1% abaixo da média · 1 com preço real · 1 de outras casas');
     expect(page).toContain(SHARED_PRICES_NOTICE);
@@ -174,7 +190,7 @@ describe('"Onde comprar" com os preços de outras casas', () => {
     expect(page).toContain('Em outros mercados');
     expect(page).toContain('ATACADAO S.A. (SP)');
     expect(page).toContain('2 itens da lista por ~R$ 28,00; no plano acima, R$ 31,95');
-    expect(page).toContain(`Preço de outras casas, visto em ${formatShortDate(day(4))}`);
+    expect(page).toContain(`Preço de outras casas, visto na semana de ${week(4)}`);
     expect(page).toContain(SHARED_PRICES_NOTICE);
     // O plano continua só com os mercados da casa.
     expect(page).toContain('Melhor opção\nDia');
@@ -186,7 +202,7 @@ describe('"Onde comprar" com os preços de outras casas', () => {
     mockQueries.shared = loaded([seen('leite', DIA, 4.9, 2, { mine: true })]);
     const page = await mount();
     expect(page).toContain('Só com preço de outras casas');
-    expect(page).toContain(`Leite\nSó há preço de outras casas: Dia, visto em ${formatShortDate(day(2))}\n~R$ 4,90`);
+    expect(page).toContain(`Leite\nSó há preço de outras casas: Dia, visto na semana de ${week(2)}\n~R$ 4,90`);
     expect(page).not.toContain('Sem preço registrado');
     expect(page).not.toContain('Ainda não aparece em nenhuma nota');
     // Os planos seguem só com os itens que a casa tem preço: nada de "sem preço" no resumo.
@@ -221,7 +237,7 @@ describe('"Onde comprar" com os preços de outras casas', () => {
     await act(async () => renderer?.unmount());
     mockQueries.shared = loaded([seen('cerveja', DIA, 36.9, 3, { mine: true, pack_unit: 'l', pack_amount: 4.2, pack_of: 12 })]);
     const box = await mount();
-    expect(box).toContain(`Preço de outras casas, visto em ${formatShortDate(day(3))}`);
+    expect(box).toContain(`Preço de outras casas, visto na semana de ${week(3)}`);
     expect(box).toContain('~R$ 36,90');
   });
 
@@ -303,5 +319,69 @@ describe('"Vou neste"', () => {
     await act(async () => go.props.onPress());
     expect(await chosen()).toBe('assai');
     expect(router.back).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('"Onde comprar" com a base aberta (o item que a casa nunca comprou)', () => {
+  /** Um preço da base aberta: num mercado da casa (pelo CNPJ) ou num de fora. */
+  const openQuote = (storeId: string | null, storeCnpj: string, unitPrice: number): SharedQuote => ({
+    productId: null,
+    storeId,
+    storeCnpj,
+    storeName: storeId ? 'Dia' : 'ATACADAO S.A.',
+    state: storeId ? null : 'SP',
+    mine: storeId != null,
+    unit: 'un',
+    unitPrice,
+    seenWeek: sharedWeekStart(day(9)),
+    pack: { unit: 'kg', amount: 5, label: '5 kg' },
+    open: { size: '5 kg', sizeBy: 'most', fromPackage: null, packages: null },
+  });
+  const leite = { ...listItem('n', 'Leite', null as unknown as string), product_id: null, category: 'laticinios' } as ShoppingListItem;
+
+  it('à parte, com o tamanho escolhido e a semana, e o mercado de fora em "Em outros mercados"; a busca é da lista toda', async () => {
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz'), leite, { ...listItem('c', 'Café', null as unknown as string), product_id: null, checked_at: '2026-11-20T10:00:00Z' }]);
+    mockOpen.quotes = new Map([['n', [openQuote('dia', DIA, 4.9), openQuote(null, FORA, 4.5)]]]);
+    const page = await mount();
+    // A mesma busca da lista: também o item no carrinho (a resposta guardada serve às duas telas).
+    expect(mockOpen.asked.at(-1)?.map((item) => item.id)).toEqual(['n', 'c']);
+    expect(page).toContain(`Só com preço de outras casas\nLeite\nSó há preço de outras casas (5 kg): Dia, visto na semana de ${week(9)}\n~R$ 4,90`);
+    expect(page).toContain('Em outros mercados');
+    expect(page).toContain(`Preço de outras casas (5 kg), visto na semana de ${week(9)}`);
+    expect(page).toContain('A casa ainda não comprou esses itens: ficam fora da comparação e dos totais acima.');
+    expect(page).not.toContain('Sem preço registrado');
+  });
+
+  it('espera a primeira busca da base aberta; uma falha, sem internet ou a função que não existe não seguram (o gancho diz)', async () => {
+    mockOpen.waiting = true;
+    expect(await mount()).toContain('Comparando preços…');
+    await act(async () => renderer?.unmount());
+    mockOpen.waiting = false;
+    expect(await mount()).not.toContain('Comparando preços…');
+  });
+
+  it('a casa sem preço nenhum: diz que só há preços de outras casas, e os textos não falam de comparação acima', async () => {
+    mockQueries.items = loaded([leite, { ...listItem('x', 'Carregador', null as unknown as string), product_id: null }]);
+    mockQueries.prices = loaded([]);
+    mockOpen.quotes = new Map([['n', [openQuote('dia', DIA, 4.9), openQuote(null, FORA, 4.5)]]]);
+    const page = await mount();
+    expect(page).toContain('Só há preços de outras casas');
+    expect(page).toContain(
+      'A casa ainda não tem nota destes itens para comparar os mercados. Abaixo estão os preços que outras casas viram para eles nos mercados do seu estado. Com as notas das suas compras, o app monta a comparação.',
+    );
+    expect(page).not.toContain('Ainda sem preços para comparar');
+    expect(page).toContain('Mercados onde outras casas viram itens desta lista.');
+    expect(page).not.toContain('Ficam fora da comparação acima');
+    expect(page).toContain('A casa ainda não comprou esses itens: cada um aparece com o preço visto por último em outra casa.');
+    expect(page).toContain('Esses itens ainda não têm preço.');
+    expect(page).not.toContain('Esses itens ficam fora dos totais.');
+  });
+
+  it('sem plano e sem preço de outras casas: o vazio de sempre', async () => {
+    mockQueries.items = loaded([leite]);
+    mockQueries.prices = loaded([]);
+    const page = await mount();
+    expect(page).toContain('Ainda sem preços para comparar');
+    expect(page).not.toContain('Só há preços de outras casas');
   });
 });

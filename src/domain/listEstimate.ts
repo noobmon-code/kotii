@@ -7,11 +7,14 @@
 // mercados (priceLevel) e a mesma conversão de unidades (units).
 //
 // Onde a casa não tem preço, entra o preço visto em outras casas (`shared`,
-// sharedQuotes de domain/sharedPrices), marcado como tal e com o dia em que
+// sharedQuotes de domain/sharedPrices), marcado como tal e com a semana em que
 // foi visto. O preço da própria casa sempre vence: de qualquer produto ligado
 // ao item, em qualquer unidade, antes do de outras casas; e o de outras casas
 // vem antes da estimativa pelo nível de preço. Eles não entram no nível de
 // preço dos mercados nem no "último preço" e no "preço bom" do item.
+// Por último, o item sem preço nenhum (nem da casa, nem de outras casas pelo
+// produto) pode ter o da base aberta (`open`, domain/openPrices): o mesmo item
+// de qualquer marca, visto nas notas de outras casas do estado.
 
 import { joinNames } from './cartPantry';
 import { diffDays, formatShortDate, toISODate, todayISO } from './dates';
@@ -22,6 +25,7 @@ import { packageSize } from './packageSize';
 import { storePriceIndex } from './priceLevel';
 import { MAX_WEIGHT_KG } from './receiptWeight';
 import { SAME_TRIP_DAYS } from './restock';
+import { OPEN_PRICE_FACT, openPriceItem, openSizeFact, openSizeNote, ownSameItemKeys, type OpenSearchItem } from './openPrices';
 import { normalizeSearch } from './search';
 import type { PurchaseRecord } from './recentPurchases';
 import { SHARED_PRICES_NOTICE, seenLabel, sharedStoreLabel, type SharedQuote } from './sharedPrices';
@@ -77,8 +81,8 @@ export interface ItemEstimate {
    * cartela. Nos dois casos, aproximado.
    */
   eggs?: { count: number; pack: number | null };
-  /** O produto de onde saem o último preço, o "preço bom" e a estimativa do item (itemResolver). */
-  productId: string;
+  /** O produto de onde saem o último preço, o "preço bom" e a estimativa do item (itemResolver); null no preço da base aberta. */
+  productId: string | null;
   /**
    * O preço de nota da casa que entrou na conta; null quando é estimado ou de
    * outras casas. No mercado escolhido pode ser de outro produto ligado ao
@@ -223,23 +227,32 @@ function bestForUnit<T extends { unit: string }>(listUnit: string, quotes: T[], 
 }
 
 /**
- * O preço de outras casas visto por último. No empate de dia, sempre o mesmo: o mais barato, depois o de menor
- * produto, CNPJ, unidade e mercado da casa. A ordem em que o banco devolve as linhas não decide a conta.
+ * O preço de outras casas visto por último (pela semana). Na mesma semana, sempre o mesmo: o mais barato, depois o
+ * de menor produto, CNPJ, unidade e mercado da casa. A ordem em que o banco devolve as linhas não decide a conta.
  */
 const newestShared = (quotes: SharedQuote[]) =>
   quotes.reduce((a, b) => {
-    if (a.seenOn !== b.seenOn) return b.seenOn > a.seenOn ? b : a;
+    if (a.seenWeek !== b.seenWeek) return b.seenWeek > a.seenWeek ? b : a;
     if (a.unitPrice !== b.unitPrice) return b.unitPrice < a.unitPrice ? b : a;
     const order =
-      byId(b.productId, a.productId) || byId(b.storeCnpj, a.storeCnpj) || byId(b.unit, a.unit) || byId(b.storeId ?? '', a.storeId ?? '');
+      byId(b.productId ?? '', a.productId ?? '') ||
+      byId(b.storeCnpj, a.storeCnpj) ||
+      byId(b.unit, a.unit) ||
+      byId(b.storeId ?? '', a.storeId ?? '');
     return order < 0 ? b : a;
   });
 
-interface PriceSources {
+/** De onde saem os preços da lista, além dos da casa. */
+export interface PriceSources {
   links?: LinkIndex;
-  products?: readonly { id: string; name: string }[];
+  products?: readonly { id: string; name: string; category?: string | null }[];
   /** Os preços vistos em outras casas (sharedQuotes): só entram onde a casa não tem preço do item. */
   shared?: readonly SharedQuote[];
+  /**
+   * Os preços da base aberta, por item da lista (openQuotes de domain/openPrices): só entram no item sem preço nenhum,
+   * nem da casa nem de outras casas pelo produto.
+   */
+  open?: ReadonlyMap<string, readonly SharedQuote[]>;
   /** O que a casa costuma levar dos produtos vendidos a peso (usualAmounts): a conta do item em "un" com preço por kg. */
   usual?: UsualAmounts;
   /** O histórico de compras não carregou (sem dados, e a busca não anda): sem o costume, a conta diz isso. */
@@ -310,12 +323,13 @@ function piecePerUnit(
   usual: UsualAmounts | undefined,
   listUnit: string,
   priceUnit: string,
-  productIds: readonly string[],
+  productIds: readonly (string | null)[],
 ): { perPiece: UsualAmount; inPriceUnit: number } | null {
   if (!usual || listUnit !== 'un') return null;
   const unit = pricePerBase(1, priceUnit).unit;
   if (unit !== 'kg' && unit !== 'l') return null;
   for (const productId of productIds) {
+    if (!productId) continue;
     const amount = usual.get(productId)?.[unit];
     if (amount != null && amount > 0) return { perPiece: { unit, amount }, inPriceUnit: convertQuantity(amount, unit, priceUnit)! };
   }
@@ -445,7 +459,7 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
   const { resolve, candidates } = itemResolver(prices, sources);
   const sharedByProduct = new Map<string, SharedQuote[]>();
   for (const quote of sources.shared ?? []) {
-    if (quote.unitPrice > 0) sharedByProduct.set(quote.productId, [...(sharedByProduct.get(quote.productId) ?? []), quote]);
+    if (quote.unitPrice > 0 && quote.productId) sharedByProduct.set(quote.productId, [...(sharedByProduct.get(quote.productId) ?? []), quote]);
   }
   /**
    * Os preços de outras casas que servem ao item. Com preço da casa, só os do mesmo produto de onde ele sai (um
@@ -461,9 +475,12 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
     return all.filter((quote) => quote.productId === productId);
   };
 
-  return (item: Pick<EstimateItem, 'name' | 'productId' | 'quantity' | 'unit' | 'category'>): PricedItem | null => {
+  return (item: Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit' | 'category'>): PricedItem | null => {
     const resolved = resolve(item);
-    const shared = sharedOf(item, resolved);
+    const productShared = sharedOf(item, resolved);
+    // Sem preço nenhum (nem da casa, nem de outras casas pelo produto): o da base aberta, do mesmo item de qualquer marca.
+    const shared =
+      resolved || productShared.length ? productShared : (sources.open?.get(item.id) ?? []).filter((quote) => quote.unitPrice > 0);
     if (!resolved && !shared.length) return null;
     const own = resolved?.own ?? [];
     const all = resolved?.all ?? [];
@@ -482,10 +499,11 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
       // qualquer que seja a quantidade: "6 un" de banana são as bananas de sempre, não seis vezes elas.
       const piece = piecePerUnit(sources.usual, item.unit, priceUnit, [seen?.productId ?? used?.productId ?? productId, productId]);
       // Ovos pedidos em ovos ("1 dz" é "12 un") com o preço por cartela: pelo preço de cada ovo quando a cartela do preço
-      // diz quantos vêm; sem isso, uma cartela, e não doze. A cartela do nome ("Ovos (dúzia)") sem a do preço fica como
-      // sempre, uma por unidade. O preço estimado e o de outras casas não dizem quantos vêm.
+      // diz quantos vêm (a da nota da casa, a que o servidor leu na nota de outra casa, ou a que a base aberta escolheu);
+      // sem isso, uma cartela, e não doze. A cartela do nome ("Ovos (dúzia)") sem a do preço fica como sempre, uma por
+      // unidade. O preço estimado não diz quantos vêm.
       const asked = !piece && priceUnit === 'un' ? eggsAsked(item) : null;
-      const pack = asked && used && !seen ? countOf(used) : null;
+      const pack = asked ? (used && !seen ? countOf(used) : seen?.pack?.unit === 'un' ? seen.pack.amount : null) : null;
       const eggs = asked && (pack != null || !asked.fromName) ? { count: asked.count, pack } : null;
       const { quantity, approximate } = piece
         ? { quantity: piece.inPriceUnit, approximate: true }
@@ -619,6 +637,46 @@ export function listSharedElsewhere(
 }
 
 /**
+ * Os itens sem preço nenhum: nem da casa (de qualquer produto ligado ao item), nem de outras casas pelo produto. A
+ * base aberta (`sources.open`) não conta aqui: é para estes itens que ela procura.
+ */
+export function itemsWithoutPrice(
+  items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit' | 'category'>[],
+  prices: readonly EstimatePrice[],
+  sources: PriceSources = {},
+): Set<string> {
+  const price = itemPricer(prices, { ...sources, open: undefined });
+  return new Set(items.filter((item) => !price(item)).map((item) => item.id));
+}
+
+/**
+ * Os itens da lista que procuram preço na base aberta, na ordem da lista: os sem preço nenhum (itemsWithoutPrice) que
+ * podem buscar (openPriceItem: de qualquer marca, de categoria que se compartilha, e não o item de um produto da casa
+ * com preço, ownSameItemKeys). O item digitado "Arroz" numa casa que comprou "Arroz Camil 5kg" fica sem preço, como
+ * antes: o dado da casa vence, e dar a ele o preço do produto da casa é outra mudança.
+ */
+export function openCandidates(
+  items: readonly (Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit' | 'category'> & { brandPreferred?: boolean })[],
+  prices: readonly EstimatePrice[],
+  sources: PriceSources = {},
+  products: readonly { id: string; name: string; category?: string | null }[] = sources.products ?? [],
+): OpenSearchItem[] {
+  const without = itemsWithoutPrice(items, prices, sources);
+  const ownKeys = ownSameItemKeys(products, prices);
+  return items
+    .filter((item) => without.has(item.id))
+    .map((item) => ({
+      id: item.id,
+      name: item.name,
+      category: item.category ?? null,
+      quantity: item.quantity,
+      unit: item.unit,
+      ...(item.brandPreferred === true ? { brandPreferred: true } : {}),
+    }))
+    .filter((item) => openPriceItem(item, ownKeys));
+}
+
+/**
  * A estimativa da lista. Com `storeId` ("estou no Assaí"), vale o preço desse
  * mercado; o que a casa não tem de lá é o visto em outras casas nesse mercado
  * ou, sem ele, estimado pelo nível de preço dele. Sem mercado, vale o último
@@ -628,10 +686,11 @@ export function listSharedElsewhere(
 export function estimateList(
   items: readonly EstimateItem[],
   prices: readonly EstimatePrice[],
-  { links, products, shared, usual, storeId = null, historyMissing }: PriceSources & { storeId?: string | null } = {},
+  { storeId = null, ...sources }: PriceSources & { storeId?: string | null } = {},
 ): ListEstimate {
   const index = storePriceIndex(prices);
-  const price = itemPricer(prices, { links, products, shared, usual, historyMissing }, index);
+  // Todas as fontes vão para a regra de preço, as que existem hoje e as que vierem: a mesma de "Onde comprar".
+  const price = itemPricer(prices, sources, index);
 
   const byItem = new Map<string, ItemEstimate>();
   // Todo mercado com nível de preço pode ser escolhido, mesmo sem preço de nota para esta lista. Só esses: o
@@ -942,7 +1001,7 @@ const sameQuote = (a: EstimatePrice, b: EstimatePrice) =>
  * produto do mesmo nome ou é o visto em outras casas (não é em tempo real).
  */
 export function formatItemCost(estimate: Pick<ItemEstimate, 'cost' | 'kind' | 'approximateQuantity' | 'productId' | 'used' | 'shared'>): string {
-  const otherProduct = estimate.used != null && estimate.used.productId !== estimate.productId;
+  const otherProduct = estimate.used != null && estimate.productId != null && estimate.used.productId !== estimate.productId;
   const rough = estimate.kind === 'estimated' || estimate.approximateQuantity || otherProduct || estimate.shared != null;
   return `${rough ? '~' : ''}${formatBRL(estimate.cost)}`;
 }
@@ -995,7 +1054,9 @@ export function storePriceNote(
 ): string | null {
   const counted = countedNote(price);
   if (price.source === 'estimated') return withNote('Estimado pelo nível de preço do mercado', counted);
-  if (price.shared) return withNote(`Preço de outras casas, ${seenLabel(price.shared, referenceYear)}`, counted);
+  if (price.shared) {
+    return withNote(`Preço de outras casas${openSizeNote(price.shared.open)}, ${seenLabel(price.shared, referenceYear)}`, counted);
+  }
   if (price.source === 'otherProduct') {
     return withNote(`Preço de ${(price.used && productName?.(price.used.productId)) || 'outro produto com esse nome'}`, counted);
   }
@@ -1016,7 +1077,7 @@ export function sharedOnlyNote(
   const seen = price.shared;
   if (!seen) return 'Só há preço de outras casas';
   const place = (seen.storeId ? storeName(seen.storeId) : undefined) ?? sharedStoreLabel(seen);
-  return withNote(`Só há preço de outras casas: ${place}, ${seenLabel(seen, referenceYear)}`, countedNote(price));
+  return withNote(`Só há preço de outras casas${openSizeNote(seen.open)}: ${place}, ${seenLabel(seen, referenceYear)}`, countedNote(price));
 }
 
 /**
@@ -1091,7 +1152,17 @@ export function describeEstimate(
     ...(approximateCount ? [`em ${approximateCount} a quantidade é aproximada (o preço é por kg ou por unidade)`] : []),
   ].join('; ');
   const left = missing === 0 ? '' : missing === 1 ? ' O outro fica fora da conta.' : ` Os outros ${missing} ficam fora da conta.`;
-  if (!storeName) return `Pelo último preço que a casa pagou em cada item; ${clauses}.${left}`;
+  if (!storeName) {
+    // De onde sai a conta sem mercado escolhido: o que a casa pagou, o visto em outras casas onde ela não tem preço,
+    // ou só o visto em outras casas (a primeira compra).
+    const from =
+      sharedCount === 0
+        ? 'Pelo último preço que a casa pagou em cada item'
+        : sharedCount < pricedCount
+          ? 'Pelo último preço que a casa pagou em cada item e, onde ela não tem preço, pelo visto em outras casas'
+          : 'Pelo preço visto em outras casas, porque a casa ainda não pagou por estes itens';
+    return `${from}; ${clauses}.${left}`;
+  }
   return `Lugar escolhido: ${storeName}. ${clauses[0].toUpperCase()}${clauses.slice(1)}.${left}`;
 }
 
@@ -1191,9 +1262,15 @@ export function itemFacts(
     if (last) facts.push(`Último preço: ${quoteText(last, category)} ${where(last)}.`);
     if (cheaper) facts.push(`Menor preço: ${quoteText(lowest, category)} ${where(lowest)}.`);
     if (shared) {
-      // A casa não tem preço do item ali (ou em lugar nenhum): o de outras casas, com o mercado, o dia e o aviso.
+      // A casa não tem preço do item ali (ou em lugar nenhum): o de outras casas, com o mercado, a semana e o aviso. Da
+      // base aberta, também o que esse preço é e o tamanho que a conta usou, quando o app escolheu.
       const place = (shared.storeId ? storeName(shared.storeId) : undefined) ?? sharedStoreLabel(shared);
-      facts.push(`Preço de outras casas na conta: ${perUnit(shared.unitPrice, shared.unit)} (${place}, visto em ${day(shared.seenOn)}).`);
+      facts.push(`Preço de outras casas na conta: ${perUnit(shared.unitPrice, shared.unit)} (${place}, visto na semana de ${day(shared.seenWeek)}).`);
+      if (shared.open) {
+        facts.push(OPEN_PRICE_FACT);
+        const size = estimate.eggs ? null : openSizeFact(shared.open, shared.unit);
+        if (size) facts.push(size);
+      }
       facts.push(SHARED_PRICES_NOTICE);
     } else if (!used) {
       const place = chosenStore ? storeName(chosenStore) : undefined;

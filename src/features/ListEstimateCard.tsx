@@ -97,7 +97,9 @@ export function ListEstimateCard({
           {priced && estimate.sharedCount ? <Text variant="small">{SHARED_PRICES_NOTICE}</Text> : null}
           {unchecked ? <Text variant="muted">{`${unchecked} ${RETRY_HINT}`}</Text> : null}
           {priced && cartSplit ? <Text variant="muted">{cartSplit}</Text> : null}
-          {priced && storeNames ? (
+          {/* Sem mercado com preço da casa, a escolha estaria vazia (só a casa dá nível de preço a um mercado): o chip só
+              fica para quem já escolheu, para poder tirar. */}
+          {priced && storeNames && (estimate.stores.length > 0 || storeName) ? (
             <Row style={styles.wrap}>
               <Chip
                 label={storeName ? `Onde estou: ${storeName}` : 'Onde você está comprando?'}

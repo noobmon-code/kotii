@@ -323,3 +323,44 @@ export function describeSharedOffer(offer: Pick<SharedStoreOffer, 'items' | 'tot
   const compared = offer.planTotal == null ? '' : `; no plano acima, ${formatBRL(offer.planTotal)}`;
   return `${count} da lista por ~${formatBRL(offer.total)}${compared}`;
 }
+
+// ---------------------------------------------------------------------------
+// Os textos do "Onde comprar" que dependem de haver ou não um plano
+
+/** Sem plano nenhum e sem preço de outras casas: a casa ainda não tem notas para comparar. */
+export const WHERE_TO_BUY_EMPTY = {
+  title: 'Ainda sem preços para comparar',
+  message: 'Importe notas fiscais das suas compras. Itens da lista escolhidos pela sugestão de produto passam a ter preço por mercado.',
+};
+
+/**
+ * Sem plano, mas com preços de outras casas (a primeira compra, com a base aberta): a tela não fala de comparação
+ * que não existe e diz que só há esses preços.
+ */
+export const WHERE_TO_BUY_SHARED_ONLY = {
+  title: 'Só há preços de outras casas',
+  message:
+    'A casa ainda não tem nota destes itens para comparar os mercados. Abaixo estão os preços que outras casas viram para eles nos mercados do seu estado. Com as notas das suas compras, o app monta a comparação.',
+};
+
+/** O título dos itens que só têm preço de outras casas. */
+export const SHARED_ONLY_TITLE = 'Só com preço de outras casas';
+
+/** A frase de "Em outros mercados": com um plano acima, diz que eles ficam fora da comparação. */
+export function sharedOffersIntro(hasPlan: boolean): string {
+  return hasPlan
+    ? 'Mercados onde outras casas viram itens desta lista. Ficam fora da comparação acima: a casa não tem preço do resto da lista lá.'
+    : 'Mercados onde outras casas viram itens desta lista.';
+}
+
+/** A frase embaixo de "Só com preço de outras casas". */
+export function sharedOnlyFooter(hasPlan: boolean): string {
+  return hasPlan
+    ? 'A casa ainda não comprou esses itens: ficam fora da comparação e dos totais acima.'
+    : 'A casa ainda não comprou esses itens: cada um aparece com o preço visto por último em outra casa.';
+}
+
+/** A frase embaixo de "Sem preço registrado". */
+export function unpricedFooter(hasPlan: boolean): string {
+  return hasPlan ? 'Esses itens ficam fora dos totais.' : 'Esses itens ainda não têm preço.';
+}

@@ -9,7 +9,7 @@
 // pelo carrinho e pela nota, em domain/cartPantry).
 
 import { categoryGroup, isHouseArt, ITEM_ART_EXCEPTIONS, ITEM_ART_RULES } from './itemArt';
-import { compileTerms, firstMention, firstProductTerm, productTerms, termRegex, termText } from './itemTerms';
+import { compileTerms, firstMention, firstProductTerm, isConnector, productTerms, termRegex, termText, wordForms } from './itemTerms';
 import { LOOSE_UNITS, OTHER_THING, PACKAGING, singular } from './nameWords';
 import { packageSize, samePackageSize } from './packageSize';
 
@@ -391,6 +391,12 @@ interface KindDimension {
   lineDefault?: string;
   /** Variedades da mesma fruta ou verdura ("Banana prata" e "BANANA NANICA"): se não batem, pode ser, mas não com certeza. */
   soft?: boolean;
+  /**
+   * A forma do item (o café em pó, solúvel, em cápsula ou em grão; o sabão em pó ou líquido): na base aberta de preços
+   * (domain/openPrices), a descrição que diz uma forma que a lista não diz, e que não é a de quando a nota cala, fica
+   * de fora (addsForm). Não muda o "mesmo item" da revisão da nota.
+   */
+  form?: boolean;
 }
 
 const FLAVORS: Readonly<Record<string, readonly string[]>> = {
@@ -478,9 +484,9 @@ const KINDS: readonly KindDimension[] = [
   },
   // O nome sozinho é o de pó ("Achocolatado" e "ACHOC PO NESCAU"). O líquido é outra versão: dito só na nota
   // ("ACHOC LIQ TODDYNHO" para "Achocolatado"), pode ser, mas não com certeza; pedido pela lista, a nota calada é o pó.
-  { keys: ['achocolatado', 'gelatina', 'fermento'], values: { po: ['po'], liquido: ['liquido'] }, strict: ['liquido'], lineDefault: 'po' },
+  { keys: ['achocolatado', 'gelatina', 'fermento'], values: { po: ['po'], liquido: ['liquido'] }, strict: ['liquido'], lineDefault: 'po', form: true },
   // "Suco" é o pronto; o de pó pode ser, mas não com certeza ("SUCO TANG" não diz).
-  { keys: ['suco'], values: { po: ['po'] }, strict: ['po'], silenceSaysNothing: true },
+  { keys: ['suco'], values: { po: ['po'] }, strict: ['po'], silenceSaysNothing: true, form: true },
   { keys: ['iogurte', 'bebida_lactea'], values: { grego: ['grego'] }, strict: ['grego'] },
   {
     keys: ['feijao'],
@@ -536,6 +542,7 @@ const KINDS: readonly KindDimension[] = [
       grao: ['grao', 'graos'],
     },
     lineDefault: 'po',
+    form: true,
   },
   { keys: ['cafe'], values: { descafeinado: ['descafeinado'] }, strict: ['descafeinado'] },
   // À parte do pó e da cápsula: há cápsula de café com leite.
@@ -545,6 +552,7 @@ const KINDS: readonly KindDimension[] = [
     values: { po: ['po'], liquido: ['liquido'], barra: ['barra'], pasta: ['pasta'] },
     strict: ['po', 'liquido', 'barra', 'pasta'],
     silenceSaysNothing: true,
+    form: true,
   },
   { keys: ['sabonete'], values: { intimo: ['intimo'], liquido: ['liquido'], barra: ['barra'], infantil: ['infantil'] }, strict: ['intimo'] },
   {
@@ -810,6 +818,59 @@ export function itemIdentity(name: string, category?: string | null): ItemIdenti
   return readItem(name, category)?.identity ?? null;
 }
 
+// ---------------------------------------------------------------------------
+// As palavras com que a nota escreve o item (a busca na base aberta de preços, domain/openPrices)
+
+/** As palavras com que uma descrição de nota deste item pode começar (`first`) e vir em segundo lugar (`second`). */
+export interface ItemSearchWords {
+  first: string[];
+  second: string[];
+}
+
+/**
+ * As palavras com que a descrição de uma nota deste item pode começar, em minúsculas, sem repetir e em ordem: as
+ * formas (singular e plural, `wordForms`) da primeira palavra de cada termo do item ("leite", "leites") e as
+ * abreviações da nota que a tabela escreve por extenso como ela ("lte", "lt"). `second`: as que podem vir em segundo
+ * ("CX LEITE NINHO"), só as de 3 letras ou mais e sem as abreviações que só valem no começo ("^lt integral"). null
+ * quando o app não sabe que item é ("Pastilha Mentos"). Para "Ovos": "ovo" e "ovos".
+ */
+export function itemSearchWords(name: string, category?: string | null): ItemSearchWords | null {
+  const words = searchWords(name, category);
+  if (!words) return null;
+  const sorted = (list: Iterable<string>) => [...new Set(list)].sort();
+  return { first: sorted([...words.forms, ...words.abbreviations]), second: sorted([...words.forms.filter((w) => w.length >= 3), ...words.secondAbbreviations]) };
+}
+
+/** As palavras de itemSearchWords, com as formas do item à parte (quem corta a lista as guarda primeiro). */
+export function searchWords(
+  name: string,
+  category?: string | null,
+): { forms: string[]; abbreviations: string[]; secondAbbreviations: string[] } | null {
+  const reading = readItem(name, category);
+  if (!reading) return null;
+  const base = reading.identity.key.split('+')[0];
+  const heads = new Set(COMPILED.terms.filter((term) => term.key === base).map((term) => term.term.split(' ')[0]));
+  const forms = [...new Set([...heads].flatMap(wordForms))].sort();
+  const abbreviations = new Set<string>();
+  const secondAbbreviations = new Set<string>();
+  for (const { from, to, atStart } of SPELLED_OUT_WORDS) {
+    if (!heads.has(to[0])) continue;
+    abbreviations.add(from[0]);
+    if (from[0].length >= 3 && !atStart) secondAbbreviations.add(from[0]);
+  }
+  return { forms, abbreviations: [...abbreviations].sort(), secondAbbreviations: [...secondAbbreviations].sort() };
+}
+
+/**
+ * As outras palavras do nome, que só ordenam as descrições achadas (as que soletram mais delas vêm antes): as de
+ * termText sem a primeira, sem as de ligação e com 2 letras ou mais, na ordem do nome, sem repetir, até `limit`.
+ * "Leite sem lactose": sem, lactose. "Papel higiênico": higienico.
+ */
+export function itemExtraWords(name: string, limit = 12): string[] {
+  const words = termText(name).split(' ').slice(1);
+  return [...new Set(words.filter((word) => word.length >= 2 && word.length <= 40 && !isConnector(word)))].slice(0, limit);
+}
+
 /** Um valor de tipo que este item conhece, para quem lê as palavras de fora (o nome genérico da lista). */
 export function isItemKindWord(word: string, identity: Pick<ItemIdentity, 'key' | 'family'>): boolean {
   return isKindWord(word, identity.key, identity.family) || isKindWord(singular(word), identity.key, identity.family);
@@ -938,6 +999,20 @@ export function sameItemFit(
 /** O nome da nota, lido como o item da lista, diz os tipos que ela pede (ou o que a nota calada quer dizer, o café em pó)? */
 const printedKindsFit = (want: ItemIdentity, name: string) =>
   kindsFit(want, { ...want, kinds: readKinds(spelledOut(name), want.key, want.family) }) === 'mesmo';
+
+/**
+ * O item da nota diz uma forma (`form` em KINDS: o café solúvel, em cápsula ou em grão; o sabão em pó) que o da
+ * lista não diz, e que não é a de quando a nota cala (o café em pó)? Para "Café", "CAFE SOLUVEL NESCAFE" é outra
+ * compra, mesmo que sameItemFit diga `mesmo` (a forma não é estrita lá). Só a base aberta de preços usa isto.
+ */
+export function addsForm(wanted: ItemIdentity, found: ItemIdentity): boolean {
+  for (const [at, values] of found.kinds) {
+    const { form, lineDefault } = KINDS[at];
+    if (!form || wanted.kinds.has(at)) continue;
+    if ([...values].some((value) => value !== lineDefault)) return true;
+  }
+  return false;
+}
 
 /**
  * Uma linha da nota que o app não sabe que item é ("SAB LIQ OMO 3L", "BAT

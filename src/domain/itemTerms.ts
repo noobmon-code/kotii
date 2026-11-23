@@ -30,6 +30,25 @@ function inflect(word: string): string {
   return `${stem(0)}s?`;
 }
 
+/** Uma palavra de ligação ("de", "com", "para"…): não tem plural, e a busca não a usa para achar o item. */
+export const isConnector = (word: string) => CONNECTORS.has(word);
+
+/**
+ * As formas que `inflect` aceita para a palavra, no singular e no plural, pelas mesmas regras: "mamao", "mamoes",
+ * "mamaes" e "mamaos"; "hamburguer", "hamburgueres" e "hamburguers"; "papel" e "papeis"; "atum" e "atuns"; "ovo" e
+ * "ovos". A busca na base aberta de preços (domain/openPrices) procura a descrição da nota que começa por uma delas.
+ */
+export function wordForms(word: string): string[] {
+  if (CONNECTORS.has(word)) return [word];
+  const stem = (cut: number) => word.slice(0, word.length - cut);
+  if (word.endsWith('ao')) return ['ao', 'oes', 'aes', 'aos'].map((end) => stem(2) + end);
+  if (/[rz]$/.test(word)) return [word, `${word}es`, `${word}s`];
+  if (word.endsWith('s')) return [word, `${word}es`];
+  if (word.endsWith('l')) return [word, `${stem(1)}is`];
+  if (word.endsWith('m')) return [word, `${stem(1)}ns`];
+  return [word, `${word}s`];
+}
+
 /** O termo como palavra inteira, no singular ou no plural, com "de", "da", "em"... do meio opcionais. */
 export function termRegex(term: string): RegExp {
   const words = term.split(' ');

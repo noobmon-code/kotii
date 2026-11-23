@@ -5,6 +5,7 @@ import {
   estimateList,
   formatItemCost,
   itemFacts,
+  itemsWithoutPrice,
   listSharedElsewhere,
   listSharedOnly,
   listStorePrices,
@@ -14,9 +15,10 @@ import {
   type EstimatePrice,
 } from '../listEstimate';
 import { LinkIndex, listNameKey } from '../listLinks';
+import { OPEN_PRICE_FACT } from '../openPrices';
 import { storePriceIndex } from '../priceLevel';
 import { describeSharedOffer, recommendStores, sharedStoreOffers } from '../recommendation';
-import { SHARED_PRICES_NOTICE, type SharedQuote } from '../sharedPrices';
+import { SHARED_PRICES_NOTICE, sharedWeekStart, type SharedQuote } from '../sharedPrices';
 
 // Os preços de outras casas na conta da lista e no "Onde comprar": só onde a casa não tem preço, marcados, e os
 // mercados que não são da casa à parte.
@@ -36,7 +38,7 @@ const price = (productId: string, storeId: string, unitPrice: number, purchasedA
   unit,
   purchasedAt,
 });
-/** Visto em outra casa: num mercado da casa (`storeId`) ou num de fora (null), pelo CNPJ. */
+/** Visto em outra casa: num mercado da casa (`storeId`) ou num de fora (null), pelo CNPJ, na semana do dia dado. */
 const seen = (productId: string, storeId: string | null, unitPrice: number, seenOn: string, extra: Partial<SharedQuote> = {}): SharedQuote => ({
   productId,
   storeId,
@@ -46,7 +48,8 @@ const seen = (productId: string, storeId: string | null, unitPrice: number, seen
   mine: storeId != null,
   unit: 'un',
   unitPrice,
-  seenOn,
+  seenWeek: sharedWeekStart(seenOn),
+  pack: null,
   ...extra,
 });
 
@@ -139,20 +142,25 @@ describe('preços de outras casas na conta da lista', () => {
     const feijao = estimate.byItem.get('f')!;
     expect(formatItemCost(feijao)).toBe('~R$ 7,50');
     expect(describeEstimate(estimate, 'Dia')).toBe('Lugar escolhido: Dia. Todos os itens têm preço; R$ 7,50 do total é de 1 item com preço de outras casas.');
-    expect(describeEstimate({ ...estimate, sharedCount: 2, sharedTotal: 12.4 }, null)).toBe(
-      'Pelo último preço que a casa pagou em cada item; todos os itens têm preço; R$ 12,40 do total são de 2 itens com preço de outras casas.',
+    // Sem mercado escolhido, o começo diz de onde sai a conta: só da casa, da casa e de outras casas, ou só de outras.
+    expect(describeEstimate({ ...estimate, sharedCount: 0, sharedTotal: 0 }, null)).toBe('Pelo último preço que a casa pagou em cada item; todos os itens têm preço.');
+    expect(describeEstimate({ ...estimate, sharedCount: 1, sharedTotal: 7.5 }, null)).toBe(
+      'Pelo último preço que a casa pagou em cada item e, onde ela não tem preço, pelo visto em outras casas; todos os itens têm preço; R$ 7,50 do total é de 1 item com preço de outras casas.',
     );
-    expect(storePriceNote(listStorePrices(list, prices, { shared })('f', 'dia')!, undefined, 2026)).toBe('Preço de outras casas, visto em 10 out');
+    expect(describeEstimate({ ...estimate, sharedCount: 2, sharedTotal: 12.4 }, null)).toBe(
+      'Pelo preço visto em outras casas, porque a casa ainda não pagou por estes itens; todos os itens têm preço; R$ 12,40 do total são de 2 itens com preço de outras casas.',
+    );
+    expect(storePriceNote(listStorePrices(list, prices, { shared })('f', 'dia')!, undefined, 2026)).toBe('Preço de outras casas, visto na semana de 5 out');
     const names: Record<string, string> = { assai: 'Assaí', dia: 'Dia' };
     expect(itemFacts(feijao, undefined, { storeName: (id) => names[id], chosenStore: 'dia', today: '2026-10-12' })).toEqual([
       'Último preço: R$ 8,00/un (Assaí, 1 out).',
-      'Preço de outras casas na conta: R$ 7,50/un (Dia, visto em 10 out).',
+      'Preço de outras casas na conta: R$ 7,50/un (Dia, visto na semana de 5 out).',
       SHARED_PRICES_NOTICE,
     ]);
     // Sem preço da casa, só o de outras casas; de fora, com o nome da nota e o estado.
     const leite = estimateList([item('l', 'Leite', 'leite')], [], { shared: [seen('leite', null, 4.2, '2026-10-12')] }).byItem.get('l');
     expect(itemFacts(leite, undefined, { storeName: () => undefined, today: '2026-10-12' })).toEqual([
-      'Preço de outras casas na conta: R$ 4,20/un (ATACADAO S.A. (SP), visto em 12 out).',
+      'Preço de outras casas na conta: R$ 4,20/un (ATACADAO S.A. (SP), visto na semana de 12 out).',
       SHARED_PRICES_NOTICE,
     ]);
   });
@@ -167,8 +175,8 @@ describe('o item só com preço de outras casas e a escolha do mercado', () => {
     const lastPaid = estimateList(items, prices, { shared }).byItem.get('l')!;
     expect(only.get('l')).toMatchObject({ cost: lastPaid.cost, shared: lastPaid.shared, source: 'shared' });
     expect(formatItemCost(only.get('l')!)).toBe('~R$ 9,80');
-    expect(sharedOnlyNote(only.get('l')!, (id) => (id === 'dia' ? 'Dia' : undefined), 2026)).toBe('Só há preço de outras casas: Dia, visto em 8 out');
-    expect(sharedOnlyNote({ shared: shared[0] }, undefined, 2026)).toBe('Só há preço de outras casas: ATACADAO S.A. (SP), visto em 12 out');
+    expect(sharedOnlyNote(only.get('l')!, (id) => (id === 'dia' ? 'Dia' : undefined), 2026)).toBe('Só há preço de outras casas: Dia, visto na semana de 5 out');
+    expect(sharedOnlyNote({ shared: shared[0] }, undefined, 2026)).toBe('Só há preço de outras casas: ATACADAO S.A. (SP), visto na semana de 12 out');
     // Fora dos planos, nenhum item fica "sem preço" por causa dele.
     const wanted = items.filter((i) => !only.has(i.id));
     const rec = recommendStores(asWanted(wanted), prices, 1, {
@@ -227,5 +235,105 @@ describe('"Onde comprar": os mercados de fora, à parte', () => {
     expect(describeSharedOffer(offers[2])).toBe('1 item da lista por ~R$ 4,00');
     // No máximo três mercados.
     expect(sharedStoreOffers(listSharedElsewhere(items, prices, { shared, links }), plan, 2)).toHaveLength(2);
+  });
+});
+
+describe('a base aberta: o item que a casa nunca comprou', () => {
+  const OPEN = { size: '5 kg', sizeBy: 'most' as const, fromPackage: null, packages: null };
+  /** Um preço da base aberta (sem produto): num mercado da casa ou num de fora. */
+  const open = (storeId: string | null, unitPrice: number, seenOn: string, extra: Partial<SharedQuote> = {}): SharedQuote => ({
+    ...seen('x', storeId, unitPrice, seenOn, extra),
+    productId: null,
+    open: OPEN,
+    ...extra,
+  });
+  const arroz = item('n', 'Arroz', null);
+  const openFor = (quotes: SharedQuote[]) => new Map([['n', quotes]]);
+
+  it('só o item sem preço nenhum: nem da casa, nem de outras casas pelo produto', () => {
+    const quotes = openFor([open('dia', 29.9, '2026-11-09')]);
+    expect(itemsWithoutPrice([arroz, ...list], prices, {})).toEqual(new Set(['n']));
+    expect(estimateList([arroz], [], { open: quotes }).byItem.get('n')).toMatchObject({ cost: 29.9, productId: null, used: null, last: null });
+    expect(formatItemCost(estimateList([arroz], [], { open: quotes }).byItem.get('n')!)).toBe('~R$ 29,90');
+    // Com preço da casa (o item com produto), o aberto não entra.
+    const own = item('n', 'Arroz', 'arroz');
+    expect(itemsWithoutPrice([own], prices, {})).toEqual(new Set());
+    expect(estimateList([own], prices, { open: quotes }).byItem.get('n')).toMatchObject({ cost: 24 });
+    // Com o de outras casas pelo produto (o código de barras, o apelido), também não.
+    const byProduct = [seen('leite', 'dia', 4.5, '2026-11-02')];
+    const leite = item('n', 'Leite', 'leite');
+    expect(itemsWithoutPrice([leite], [], { shared: byProduct })).toEqual(new Set());
+    expect(estimateList([leite], [], { shared: byProduct, open: quotes }).byItem.get('n')).toMatchObject({ cost: 4.5, productId: 'leite' });
+  });
+
+  it('quando o preço da casa ou o de outras casas pelo produto chega depois, ele vence, e o aberto sai sozinho', () => {
+    const quotes = openFor([open('dia', 29.9, '2026-11-09')]);
+    const links = new LinkIndex([{ name_key: listNameKey('Arroz'), product_id: 'arroz' }]);
+    expect(estimateList([arroz], prices, { open: quotes, links }).byItem.get('n')).toMatchObject({ cost: 24, productId: 'arroz' });
+    expect(estimateList([arroz], prices, { open: quotes, links }).byItem.get('n')?.shared).toBeUndefined();
+  });
+
+  it('com o mercado escolhido: o preço aberto de lá; sem ele, nenhum (nunca no lugar da estimativa da casa)', () => {
+    const quotes = openFor([open('dia', 29.9, '2026-11-09'), open(null, 27, '2026-11-09')]);
+    expect(estimateList([arroz], prices, { open: quotes, storeId: 'dia' }).byItem.get('n')).toMatchObject({ cost: 29.9 });
+    expect(estimateList([arroz], prices, { open: quotes, storeId: 'assai' }).byItem.get('n')).toBeUndefined();
+    // Sem mercado: o visto por último, de preferência num mercado da casa.
+    expect(estimateList([arroz], prices, { open: quotes }).byItem.get('n')).toMatchObject({ cost: 29.9 });
+  });
+
+  it('no "Onde comprar": à parte ("Só com preço de outras casas") e em "Em outros mercados", nunca nos planos', () => {
+    const quotes = openFor([open('dia', 29.9, '2026-11-09'), open(null, 27, '2026-11-09')]);
+    const items = [...list, arroz];
+    expect([...listSharedOnly(items, prices, { open: quotes }).keys()]).toEqual(['n']);
+    expect(listSharedElsewhere(items, prices, { open: quotes }).get('n')?.map((price) => [price.shared?.storeCnpj, price.cost])).toEqual([
+      ['cnpj-fora', 27],
+    ]);
+    const only = listSharedOnly(items, prices, { open: quotes }).get('n')!;
+    expect(sharedOnlyNote(only, (id) => (id === 'dia' ? 'Dia' : undefined), 2026)).toBe('Só há preço de outras casas (5 kg): Dia, visto na semana de 9 nov');
+    expect(storePriceNote(listStorePrices(items, prices, { open: quotes })('n', 'dia')!, undefined, 2026)).toBe(
+      'Preço de outras casas (5 kg), visto na semana de 9 nov',
+    );
+    const perKg = { ...only, shared: { ...only.shared!, open: { size: null, sizeBy: null, fromPackage: '5 kg', packages: null } } };
+    expect(sharedOnlyNote(perKg, () => 'Dia', 2026)).toBe('Só há preço de outras casas (da embalagem de 5 kg): Dia, visto na semana de 9 nov');
+    // A conta conta esses itens no que veio de outras casas.
+    expect(estimateList(items, prices, { open: quotes })).toMatchObject({ sharedCount: 1, sharedTotal: 29.9 });
+  });
+
+  it('os detalhes: o preço, o que ele é, o tamanho que a conta escolheu e o aviso; com o ano quando não é o de agora', () => {
+    const estimate = estimateList([arroz], [], { open: openFor([open('dia', 29.9, '2026-11-09')]) }).byItem.get('n');
+    expect(itemFacts(estimate, undefined, { storeName: (id) => (id === 'dia' ? 'Dia' : undefined), today: '2026-11-23' })).toEqual([
+      'Preço de outras casas na conta: R$ 29,90/un (Dia, visto na semana de 9 nov).',
+      OPEN_PRICE_FACT,
+      'A lista não diz o tamanho: a conta usa o de 5 kg, o mais visto nas notas.',
+      SHARED_PRICES_NOTICE,
+    ]);
+    const fora = estimateList([arroz], [], { open: openFor([open(null, 27, '2025-12-29')]) }).byItem.get('n');
+    expect(itemFacts(fora, undefined, { storeName: () => undefined, today: '2026-11-23' })[0]).toBe(
+      'Preço de outras casas na conta: R$ 27,00/un (ATACADAO S.A. (SP), visto na semana de 29 dez 2025).',
+    );
+  });
+
+  it('os ovos pedidos em ovos contam pela cartela da base aberta, e o tamanho escolhido não se repete nos detalhes', () => {
+    const ovos = item('n', 'Ovos', null, 12);
+    const thirty = open('dia', 21, '2026-11-09', {
+      pack: { unit: 'un', amount: 30, label: '30 un' },
+      open: { size: '30 un', sizeBy: 'most', fromPackage: null, packages: null },
+    });
+    const estimate = estimateList([{ ...ovos, category: 'ovos' }], [], { open: openFor([thirty]) }).byItem.get('n')!;
+    expect(estimate).toMatchObject({ cost: 8.4, eggs: { count: 12, pack: 30 } });
+    const facts = itemFacts(estimate, undefined, { storeName: () => 'Dia', today: '2026-11-23' });
+    expect(facts).toContain('A lista pede 12 ovos: a conta usa R$ 0,70 o ovo, da cartela de 30.');
+    expect(facts.some((fact) => fact.startsWith('A lista não diz o tamanho'))).toBe(false);
+  });
+
+  it('pedido em kg, pelo preço por kg do pacote: a conta é exata e sem "tamanho" da lista', () => {
+    const quote = open('dia', 4.98, '2026-11-09', {
+      unit: 'kg',
+      pack: { unit: 'kg', amount: 5, label: '5 kg' },
+      open: { size: null, sizeBy: null, fromPackage: '5 kg', packages: null },
+    });
+    const estimate = estimateList([item('n', 'Arroz', null, 2, 'kg')], [], { open: openFor([quote]) }).byItem.get('n')!;
+    expect(estimate).toMatchObject({ cost: 9.96, unit: 'kg', approximateQuantity: false });
+    expect(itemFacts(estimate, undefined, { storeName: () => 'Dia', today: '2026-11-23' })).toContain('A conta usa o preço por kg da embalagem de 5 kg.');
   });
 });

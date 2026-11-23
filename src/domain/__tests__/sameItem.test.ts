@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { LinkIndex, matchListItems, receiptLineNames, type OpenListItem, type ReceiptLine } from '../listLinks';
-import { itemIdentity, sameItemFit, spelledOut, spellOut, termWords, wordOverlap } from '../sameItem';
+import { addsForm, itemExtraWords, itemIdentity, itemSearchWords, sameItemFit, spelledOut, spellOut, termWords, wordOverlap } from '../sameItem';
 import { guessCategory } from '../search';
 import { sameListedName } from '../similarNames';
 
@@ -638,5 +638,38 @@ describe('"Gilete" é a lâmina; com outro produto de barbear no nome, é a marc
     expect(match([listItem('l1', 'Espuma de barbear', 'higiene', true)], [line('e', 'ESP BARB GILETE 200ML')])).toEqual([
       { listItemId: 'l1', receiptItemId: 'e', reason: 'item', checked: true },
     ]);
+  });
+});
+
+describe('as palavras com que a nota escreve o item (a busca na base aberta de preços)', () => {
+  it('as formas do item e as abreviações da nota; em segundo lugar, só as de 3 letras ou mais e sem as do começo', () => {
+    expect(itemSearchWords('Leite')).toEqual({ first: ['leite', 'leites', 'lt', 'lte'], second: ['leite', 'leites', 'lte'] });
+    expect(itemSearchWords('Papel higiênico')?.first).toContain('pap');
+    expect(itemSearchWords('Ovos')).toEqual({ first: ['ovo', 'ovos'], second: ['ovo', 'ovos'] });
+    expect(itemSearchWords('Detergente')?.first).toEqual(expect.arrayContaining(['det', 'deterg', 'detergente', 'detergentes']));
+    expect(itemSearchWords('Cerveja')?.first).toEqual(['cerv', 'cerveja', 'cervejas']);
+  });
+
+  it('o item que o app não conhece não tem palavras', () => {
+    expect(itemSearchWords('Pastilha Mentos')).toBeNull();
+  });
+
+  it('as outras palavras do nome, que só ordenam: sem a primeira, sem as de ligação, na ordem do nome', () => {
+    expect(itemExtraWords('Leite sem lactose')).toEqual(['sem', 'lactose']);
+    expect(itemExtraWords('Papel higiênico')).toEqual(['higienico']);
+    expect(itemExtraWords('Pão de forma')).toEqual(['forma']);
+    expect(itemExtraWords('Arroz')).toEqual([]);
+    expect(itemExtraWords('a b c d e f g h i j k l m n o p', 3)).toEqual([]);
+    expect(itemExtraWords('Leite aa bb cc dd ee ff', 3)).toEqual(['aa', 'bb', 'cc']);
+  });
+
+  it('a forma que a lista não diz (o café solúvel para "Café"); a de quando a nota cala (o pó) não conta', () => {
+    const cafe = itemIdentity('Café')!;
+    expect(addsForm(cafe, itemIdentity('CAFE SOLUVEL NESCAFE')!)).toBe(true);
+    expect(addsForm(cafe, itemIdentity('CAFE PILAO TORRADO MOIDO')!)).toBe(false);
+    expect(addsForm(cafe, itemIdentity('CAFE PILAO 500G')!)).toBe(false);
+    expect(addsForm(itemIdentity('Café solúvel')!, itemIdentity('CAFE SOLUVEL NESCAFE')!)).toBe(false);
+    // O tipo que não é forma (integral, desnatado) não conta aqui: sameItemFit decide.
+    expect(addsForm(itemIdentity('Leite')!, itemIdentity('LEITE DESNATADO ITALAC')!)).toBe(false);
   });
 });
