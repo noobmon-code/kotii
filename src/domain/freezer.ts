@@ -7,7 +7,7 @@
 import { joinNames } from './cartPantry';
 import { addDays, diffDays, formatShortDate } from './dates';
 import { hasAnyWord } from './nameWords';
-import { isFrozen, type ExpiryEstimate, type ExpirySource, type PantryLot } from './pantry';
+import { isFrozen, PANTRY_CHANGED, PANTRY_CHANGED_TITLE, type ExpiryEstimate, type ExpirySource, type PantryLot } from './pantry';
 import { itemIdentity, spelledOut } from './sameItem';
 
 export { isFrozen };
@@ -440,6 +440,20 @@ export function thawedText(name: string, rows: readonly FreezerRow[], today: str
   return date >= today
     ? `${name} saiu do congelador. A validade volta a contar de onde parou: vence por volta de ${shortDate(date, today)}.`
     : `${name} saiu do congelador. A validade volta a contar de onde parou, e ela já tinha passado (${shortDate(date, today)}).`;
+}
+
+/** O aviso depois de congelar `asked` compras: todas, parte (o resto mudou em outro aparelho) ou nenhuma. */
+export function freezeNotice(name: string, asked: number, rows: readonly FreezerRow[], today: string): { title: string; message: string } {
+  if (!rows.length) return { title: PANTRY_CHANGED_TITLE, message: PANTRY_CHANGED };
+  if (rows.length < asked) return { title: PANTRY_CHANGED_TITLE, message: FREEZE_PARTIAL };
+  return { title: FROZEN_TITLE, message: frozenText(name, rows, today) };
+}
+
+/** O aviso depois de descongelar `asked` compras. */
+export function thawNotice(name: string, asked: number, rows: readonly FreezerRow[], today: string): { title: string; message: string } {
+  if (!rows.length) return { title: PANTRY_CHANGED_TITLE, message: PANTRY_CHANGED };
+  if (rows.length < asked) return { title: PANTRY_CHANGED_TITLE, message: THAW_PARTIAL };
+  return { title: THAWED_TITLE, message: thawedText(name, rows, today) };
 }
 
 type FrozenLot = { frozen_on?: string | null; fresh_expires_on?: string | null; fresh_expiry_source?: ExpirySource | null };

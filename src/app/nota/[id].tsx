@@ -4,6 +4,7 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
+import { useFreezePantryItems, useFreezer } from '@/data/freezer';
 import { fetchPantryNear } from '@/data/home';
 import { useLearnedAbbreviations } from '@/data/learnedAbbreviations';
 import {
@@ -37,10 +38,11 @@ import {
 import { joinNames, receiptPantryRepeats } from '@/domain/cartPantry';
 import { CATEGORIES, getCategory } from '@/domain/categories';
 import { COMMON_ITEMS } from '@/domain/commonItems';
-import { formatBRDate, formatShortDate, parseBRDate, toISODate } from '@/domain/dates';
+import { formatBRDate, formatShortDate, toISODate } from '@/domain/dates';
 import { DESKTOP_PANEL_SIDE_WIDTH } from '@/domain/desktop';
 import { duplicateReceiptNotice, findDuplicateReceipt } from '@/domain/duplicateReceipt';
 import { receiptSavedText } from '@/domain/finishPurchase';
+import { repeatFreezeFailedText, repeatFreezes, type FreezeDays, type RepeatFreeze } from '@/domain/freezer';
 import {
   applyListChoices,
   forgottenLinks,
@@ -112,6 +114,7 @@ import {
   goneProducts,
   REFRESH_FAILED_NOTICE,
   resolveItem,
+  toggleFrozen,
   type CatalogProduct,
   type ConfirmItem,
   type ItemOverride,
@@ -135,6 +138,7 @@ import { PayerChips } from '@/features/finance/PayerChips';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { ReceiptItemEditor } from '@/features/ReceiptItemEditor';
 import { ReceiptListSection } from '@/features/ReceiptListSection';
+import { ReceiptPantryChoice } from '@/features/ReceiptPantryChoice';
 import { RenameStoreModal } from '@/features/RenameStoreModal';
 import { FEATURES } from '@/lib/features';
 import { handConfirmedReceipt } from '@/lib/finishPurchase';
@@ -227,6 +231,9 @@ export default function ReceiptScreen() {
   // As abreviações dos mercados da casa, que as notas confirmadas ensinaram ("AZ GALLO" é o azeite): só a nota em
   // revisão casa com a lista e confere a despensa.
   const learned = useLearnedAbbreviations({ enabled: reviewing });
+  // O congelador: só com ele no banco a linha de carne ou peixe pergunta "Congelou?" (domain/freezer).
+  const freezer = useFreezer().days;
+  const freezeItems = useFreezePantryItems();
   // As compras recentes só servem aos nomes parecidos, que só aparecem na nota em revisão.
   const purchases = usePurchaseRecords({ enabled: reviewing });
   // As notas confirmadas perto do dia do rascunho: a mesma compra lida duas vezes ganha um aviso (domain/duplicateReceipt).
@@ -344,7 +351,7 @@ export default function ReceiptScreen() {
   const savedUnshown = new Set(Object.keys(savedAt).filter((itemId) => receiptQuery.dataUpdatedAt <= savedAt[itemId]));
   const totalAccess = receiptTotalAccess(receipt.total);
 
-  const resolvedItems = new Map(items.map((item) => [item.id, resolveItem(item, overrides[item.id], catalog, purchasedOn)]));
+  const resolvedItems = new Map(items.map((item) => [item.id, resolveItem(item, overrides[item.id], catalog, purchasedOn, freezer)]));
   // Produto que sumiu do catálogo com a revisão aberta (foi juntado com outro em outro aparelho).
   const gone = goneProducts(items, overrides, catalog);
   // A descrição da nota traz o tamanho da embalagem: o pacote de 5 kg se compara pelo preço por kg. Sem ele na
@@ -751,11 +758,16 @@ export default function ReceiptScreen() {
 
   /**
    * O que já foi para a despensa pelo carrinho (ou à mão) numa data próxima:
-   * pergunta antes de repetir. Sem repetir, esses itens salvam só na nota.
+   * pergunta antes de repetir. Sem repetir, esses itens salvam só na nota, e a
+   * compra do carrinho que uma linha "Congelei" repete vai para o congelador
+   * depois da confirmação (`freezeAfter`, domain/freezer repeatFreezes).
    */
-  async function skipPantryRepeats(payload: ConfirmItem[]): Promise<ConfirmItem[]> {
-    const repeats = receiptPantryRepeats(payload, purchasedOn, await fetchPantryNear(purchasedOn), links.data, learned);
-    if (!repeats.length) return payload;
+  async function skipPantryRepeats<T extends { id: string; product_id?: string; pantry?: ConfirmItem['pantry'] }>(
+    payload: T[],
+    learnedNow = learned,
+  ): Promise<{ payload: T[]; freezeAfter: RepeatFreeze[] }> {
+    const repeats = receiptPantryRepeats(payload, purchasedOn, await fetchPantryNear(purchasedOn), links.data, learnedNow);
+    if (!repeats.length) return { payload, freezeAfter: [] };
     const dates = new Set(repeats.map((r) => r.since));
     const names = joinNames(repeats.map((r) => r.name));
     const again = await askYesNo(
@@ -766,9 +778,27 @@ export default function ReceiptScreen() {
       'Colocar de novo',
       'Não colocar',
     );
-    if (again) return payload;
+    if (again) return { payload, freezeAfter: [] };
     const skip = new Set(repeats.map((r) => r.id));
-    return payload.map((p) => (skip.has(p.id) ? { ...p, pantry: undefined } : p));
+    const freezeAfter = repeatFreezes(repeats, payload);
+    return { payload: payload.map((p) => (skip.has(p.id) ? { ...p, pantry: undefined } : p)), freezeAfter };
+  }
+
+  /**
+   * Congela, depois da confirmação, a compra do carrinho que cada linha "Congelei" que não foi de novo repete. A
+   * revisão já saiu: o aviso da falha sai depois (mutateAsync segue sem a tela). Menos compras (a do carrinho já
+   * foi consumida ou já está no congelador) fica calado.
+   */
+  async function freezeRepeated(groups: RepeatFreeze[]) {
+    const failed: string[] = [];
+    for (const group of groups) {
+      try {
+        await freezeItems.mutateAsync({ ids: group.ids, kind: group.kind, frozenOn: group.frozenOn });
+      } catch {
+        failed.push(...group.names);
+      }
+    }
+    if (failed.length) notify('Não deu certo', repeatFreezeFailedText(failed));
   }
 
   /**
@@ -840,7 +870,7 @@ export default function ReceiptScreen() {
     }
     const removals = listRemovals(listMatches, listItems, receiptLines);
     const forgotten = forgottenLinks(suggestedMatches, listChoices, listItems);
-    let payload = buildConfirmPayload(items, overrides, catalog, purchasedOn).map((entry) => ({
+    let payload = buildConfirmPayload(items, overrides, catalog, purchasedOn, freezer).map((entry) => ({
       ...entry,
       ...(removals.has(entry.id) ? { list_items: removals.get(entry.id) } : {}),
       ...(forgotten.has(entry.id) ? { forget_links: forgotten.get(entry.id) } : {}),
@@ -848,8 +878,9 @@ export default function ReceiptScreen() {
     const listCount = [...removals.values()].reduce((n, list) => n + list.length, 0);
     confirming.current = true;
     setCheckingPantry(true);
+    let freezeAfter: RepeatFreeze[] = [];
     try {
-      payload = await skipPantryRepeats(payload);
+      ({ payload, freezeAfter } = await skipPantryRepeats(payload));
     } catch (err) {
       onError(err);
       return;
@@ -871,6 +902,7 @@ export default function ReceiptScreen() {
           if (!handConfirmedReceipt({ tappedAt, onlineAtTap, pantryCount, removedListItems })) {
             notify('Nota salva', receiptSavedText(pantryCount, listCount));
           }
+          if (freezeAfter.length) void freezeRepeated(freezeAfter);
           // Volta para quem abriu a revisão (a lista, no "Finalizar compra"; o QR code e a pendente já saíram do
           // caminho). Sem tela para voltar (no navegador, a página recarregada), as notas da casa.
           goBackOr({ pathname: '/compras', params: { aba: 'notas' } });
@@ -1316,6 +1348,8 @@ export default function ReceiptScreen() {
                 onPickCategory={() => setPicker({ kind: 'category', itemId: item.id })}
                 onTogglePantry={() => override(item.id, { pantry: !resolved.pantry })}
                 onChangeExpiry={(iso) => override(item.id, { expiryManual: true, expiresOn: iso })}
+                freezer={freezer}
+                onToggleFrozen={(on) => setOverrides((prev) => ({ ...prev, [item.id]: toggleFrozen(prev[item.id], on) }))}
                 houseNames={houseNames}
                 keepsName={keptNames[item.id] === resolved.productName}
                 onUseName={(name) => applyHouseName(item.id, name)}
@@ -1528,6 +1562,8 @@ function DraftItemCard({
   onPickCategory,
   onTogglePantry,
   onChangeExpiry,
+  freezer,
+  onToggleFrozen,
   houseNames,
   keepsName,
   onUseName,
@@ -1555,6 +1591,9 @@ function DraftItemCard({
   onPickCategory: () => void;
   onTogglePantry: () => void;
   onChangeExpiry: (iso: string | null) => void;
+  /** Os dias do congelador (useFreezer): null sem ele no banco. */
+  freezer: FreezeDays | null;
+  onToggleFrozen: (on: boolean) => void;
   /** Os nomes que a casa já usa (domain/similarNames). */
   houseNames: NameIndex;
   /** A pessoa já decidiu o nome deste produto novo: sem sugestão. */
@@ -1565,7 +1604,6 @@ function DraftItemCard({
   previousName?: string | null;
   onUndoName: () => void;
 }) {
-  const [expiryText, setExpiryText] = useState<string | null>(null);
   const { product } = resolved;
   // Produto novo com o nome que veio da leitura: se a casa já usa um nome que serve, a sugestão fica no próprio item.
   const newName = product.kind === 'new' ? product.name : null;
@@ -1573,21 +1611,6 @@ function DraftItemCard({
     () => (newName && !keepsName ? suggestedName(newName, houseNames, { category: resolved.category }) : null),
     [newName, keepsName, houseNames, resolved.category],
   );
-
-  function commitExpiry() {
-    if (expiryText == null) return;
-    if (!expiryText.trim()) {
-      onChangeExpiry(null);
-    } else {
-      const iso = parseBRDate(expiryText);
-      if (!iso) {
-        notify('Data inválida', 'Use o formato dd/mm/aaaa.');
-        return;
-      }
-      onChangeExpiry(iso);
-    }
-    setExpiryText(null);
-  }
 
   const productLabel =
     product.kind === 'existing'
@@ -1645,31 +1668,14 @@ function DraftItemCard({
         </Row>
       ) : null}
       {product.kind !== 'none' ? (
-        <Row style={styles.wrap}>
-          <Chip
-            label={resolved.pantry ? 'Vai para a despensa' : 'Não vai para a despensa'}
-            icon="fridge-outline"
-            selected={resolved.pantry}
-            onPress={onTogglePantry}
-          />
-          {resolved.pantry ? (
-            <View style={styles.expiry}>
-              <DateField
-                value={expiryText ?? (resolved.expiresOn ? formatBRDate(resolved.expiresOn) : '')}
-                placeholder="Validade"
-                onChangeText={setExpiryText}
-                onBlur={commitExpiry}
-                onSubmitEditing={commitExpiry}
-                accessibilityLabel={`Validade de ${item.raw_description}`}
-              />
-            </View>
-          ) : null}
-        </Row>
-      ) : null}
-      {resolved.pantry && resolved.expiresOn && resolved.expirySource !== 'manual' ? (
-        <Text variant="small">
-          Validade estimada {resolved.expirySource === 'produto' ? 'pelo histórico do produto' : 'pela categoria'} — ajuste se quiser.
-        </Text>
+        <ReceiptPantryChoice
+          rawDescription={item.raw_description}
+          resolved={resolved}
+          freezer={freezer}
+          onTogglePantry={onTogglePantry}
+          onChangeExpiry={onChangeExpiry}
+          onToggleFrozen={onToggleFrozen}
+        />
       ) : null}
     </Card>
   );
@@ -1890,7 +1896,6 @@ const styles = StyleSheet.create({
   between: { justifyContent: 'space-between' },
   storeRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   totalRow: { flexDirection: 'row', alignItems: 'center' },
-  expiry: { width: 140 },
   weight: { width: 190 },
   viewerHeader: { padding: space.lg },
   photos: { gap: space.sm, paddingBottom: space.xl },

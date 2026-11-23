@@ -167,11 +167,12 @@ export function useNukeContext(today: string): NukeContextState {
         due_on: c.due_on,
         assignee: rotationLabel(c, rotationOf(rotations.data, c.id), who) ?? memberName(c.assigned_to),
       })),
-    // Um produto por linha, pela validade mais próxima entre as compras.
+    // Um produto por linha, pela validade mais próxima entre as compras (o que está no congelador é outra linha), e
+    // se ela é estimada: o Nuke diz "por volta de".
     expiring: pantryGroups
       .filter((g) => g.expiresOn && ['vencido', 'vence_logo'].includes(expiryStatus(g.expiresOn, today).kind))
-      .map((g) => ({ name: g.name, expires_on: g.expiresOn! })),
-    pantry: pantryGroups.map((group) => group.name),
+      .map((g) => ({ name: g.name, expires_on: g.expiresOn!, estimated: g.expiryEstimated, frozen: g.frozen })),
+    pantry: pantryGroups.map((group) => (group.frozen ? `${group.name} (no congelador)` : group.name)),
     supplies: supplies.data ? supplyLines(supplies.data.supplies, today) : undefined,
     shopping: [...shopping].map(([list, items]) => ({ list, items })),
     menu: menuLines(menu.data ?? []),

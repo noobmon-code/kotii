@@ -65,16 +65,16 @@ export function isValidISODate(value: string): boolean {
 export const APP_MIN_DATE = '2000-01-01';
 export const APP_MAX_DATE = '2100-12-31';
 
-/**
- * O aviso para um aparelho cuja data de hoje o banco não aceitaria (ver APP_MIN_DATE); null quando a data serve.
- * `purpose` termina a frase: "quando foi para o congelador".
- */
+export const DEVICE_DAY_TITLE = 'Confira a data do aparelho';
+
+/** A frase de deviceDayError; `purpose` termina a frase ("o dia do congelador"). */
+export const deviceDayMessage = (purpose?: string) =>
+  `A data deste aparelho parece errada. Acerte o dia e a hora dele${purpose ? ` para o Kotii guardar ${purpose}` : ' e tente de novo'}.`;
+
+/** O aviso para um aparelho cuja data de hoje o banco não aceitaria (ver APP_MIN_DATE); null quando a data serve. */
 export function deviceDayError(today: string, purpose?: string): { title: string; message: string } | null {
   if (isValidISODate(today) && today >= APP_MIN_DATE && today <= APP_MAX_DATE) return null;
-  return {
-    title: 'Confira a data do aparelho',
-    message: `A data deste aparelho parece errada. Acerte o dia e a hora dele${purpose ? ` para o Kotii guardar ${purpose}` : ' e tente de novo'}.`,
-  };
+  return { title: DEVICE_DAY_TITLE, message: deviceDayMessage(purpose) };
 }
 
 /** "2026-12-20" -> "20/12/2026" */

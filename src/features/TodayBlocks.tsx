@@ -12,7 +12,8 @@ import { getFinanceCategory } from '@/domain/finance';
 import { financeAddress } from '@/domain/tabs';
 import { doseKey } from '@/domain/medications';
 import { MEALS, type MenuItem } from '@/domain/menu';
-import { describeExpiry } from '@/domain/pantry';
+import { FROZEN_ROW_SUBTITLE, thawedRowSubtitle } from '@/domain/freezer';
+import { expiryBadge, isEstimatedExpiry, isFrozen } from '@/domain/pantry';
 import { describeRestock, type RestockItem } from '@/domain/restock';
 import { seeAllLabel, SUGGESTION_TITLES, TODAY_BLOCK_TITLES, type TodayBlockContent, type TodayItem } from '@/domain/today';
 import { announceCompletion } from '@/features/ChoresPanel';
@@ -165,12 +166,24 @@ export function useTodayRow(context: TodayRowContext): (item: TodayItem) => Reac
       }
       case 'pantry': {
         const { item: pantryItem, status } = item.data;
+        // A validade estimada (pela categoria, pelo congelador, depois de descongelar) é neutra, com "~"; o lugar e a
+        // contagem no Hoje não mudam.
+        const badge = expiryBadge(status, isEstimatedExpiry(pantryItem.expiry_source));
+        const subtitle = isFrozen(pantryItem)
+          ? FROZEN_ROW_SUBTITLE
+          : pantryItem.thawed_on
+            ? thawedRowSubtitle(pantryItem.thawed_on, today)
+            : undefined;
         return (
           <ListRow
             key={pantryItem.id}
             left={<CategoryIcon category={pantryItem.category} name={pantryItem.name} />}
             title={pantryItem.name}
-            right={<Badge label={describeExpiry(status)} tone={status.kind === 'vencido' ? 'danger' : 'warning'} />}
+            subtitle={subtitle}
+            right={
+              badge ? <Badge label={badge.label} tone={badge.estimated ? 'neutral' : status.kind === 'vencido' ? 'danger' : 'warning'} /> : null
+            }
+            accessibilityLabel={badge ? [pantryItem.name, subtitle, badge.accessibilityLabel].filter(Boolean).join(', ') : undefined}
             onPress={() => router.push({ pathname: '/despensa/[id]', params: { id: pantryItem.id } })}
           />
         );

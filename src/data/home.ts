@@ -14,29 +14,43 @@ import {
   type StockCount,
   type StockedMedication,
 } from '@/domain/medicationStock';
+import { FREEZER_NOT_READY, hasFreezerFields, wasFrozen, type FreezerFields } from '@/domain/freezer';
 import { doseKey, takenOn } from '@/domain/medications';
-import type { PantryTake } from '@/domain/pantry';
+import { PANTRY_CHANGED, type PantryTake } from '@/domain/pantry';
+import { EXPECTS_ROWS_META } from '@/lib/accessErrors';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Chore, ChoreRotationRow, Medication, MedicationDose, PantryItem, Unit } from '@/lib/types';
+
+import { FREEZER_COLUMNS, isMissingFreezerColumn } from './freezer';
 
 // ---------------------------------------------------------------------------
 // Despensa
 
-const PANTRY_COLUMNS =
+const PANTRY_BASE_COLUMNS =
   'id, product_id, name, category, quantity, unit, purchased_on, expires_on, expiry_source, consumed_at';
+// Com o congelador (20261122110000_pantry_freezer.sql). Sem as colunas no banco, ou no cache de esquema da API, a
+// leitura repete sem elas: as compras vêm sem os campos do congelador (undefined), e congelar fica de fora.
+const PANTRY_COLUMNS = `${PANTRY_BASE_COLUMNS}, ${FREEZER_COLUMNS.join(', ')}`;
+
+/** A leitura da despensa com as colunas do congelador, ou sem elas quando o banco ainda não as tem. */
+async function readPantry<T>(read: (columns: string) => PromiseLike<{ data: unknown; error: unknown }>): Promise<T> {
+  const first = await read(PANTRY_COLUMNS);
+  const result = first.error && isMissingFreezerColumn(first.error) ? await read(PANTRY_BASE_COLUMNS) : first;
+  return unwrap(result) as T;
+}
 
 export function usePantry() {
   return useQuery({
     queryKey: ['pantry'],
-    queryFn: async () =>
-      unwrap(
-        await supabase
+    queryFn: () =>
+      readPantry<PantryItem[]>((columns) =>
+        supabase
           .from('pantry_items')
-          .select(PANTRY_COLUMNS)
+          .select(columns)
           .is('consumed_at', null)
           .order('expires_on', { ascending: true, nullsFirst: false })
           .order('name'),
-      ) as PantryItem[],
+      ),
   });
 }
 
@@ -48,7 +62,7 @@ export async function fetchPantryNear(purchasedOn: string): Promise<PantryEntry[
   return unwrap(
     await supabase
       .from('pantry_items')
-      .select('product_id, name, purchased_on')
+      .select('id, product_id, name, purchased_on')
       .is('receipt_item_id', null)
       .gte('purchased_on', addDays(purchasedOn, -SAME_PURCHASE_DAYS))
       .lte('purchased_on', addDays(purchasedOn, SAME_PURCHASE_DAYS)),
@@ -59,12 +73,12 @@ export function usePantryItem(id: string | undefined) {
   return useQuery({
     queryKey: ['pantry', id],
     enabled: Boolean(id),
-    queryFn: async () =>
-      unwrap(await supabase.from('pantry_items').select(PANTRY_COLUMNS).eq('id', id!).single()) as PantryItem,
+    queryFn: () => readPantry<PantryItem>((columns) => supabase.from('pantry_items').select(columns).eq('id', id!).single()),
   });
 }
 
-export interface PantryValues {
+/** O que o formulário da despensa grava; as colunas do congelador só com o item congelando ou já no congelador. */
+export interface PantryValues extends Partial<FreezerFields> {
   name: string;
   category: string;
   quantity: number;
@@ -96,19 +110,64 @@ export async function learnShelfLife(productId: string, days: number, pantryItem
   }
 }
 
+export interface SavePantryInput {
+  id?: string;
+  values: PantryValues;
+  productId?: string | null;
+  /** A compra como o formulário a abriu: a gravação só vale se o congelador dela ainda é o mesmo. */
+  copy?: Pick<PantryItem, 'frozen_on' | 'thawed_on'> | null;
+  /** O banco já tem o congelador (useFreezer): a cópia sem as colunas conta como fora do congelador. */
+  freezerAvailable?: boolean;
+}
+
+/**
+ * Salva a compra e devolve a linha gravada; [] quando nada foi gravado (a compra mudou de congelador em outro
+ * aparelho, ou sumiu: a tela diz PANTRY_ITEM_CHANGED, e EXPECTS_ROWS_META confere a casa de novo). A mudança só vale
+ * se a compra ainda está dentro (ou fora) do congelador como o formulário a viu: com a cópia que traz as colunas,
+ * pelo frozen_on e thawed_on dela; com uma cópia de antes desta versão e o congelador no banco, fora dele
+ * (`frozen_on is null`), repetindo sem essa condição se o cache de esquema da API ainda não tem a coluna. A validade
+ * digitada ensina o produto, menos a de uma compra que esteve no congelador (a cópia, o que vai e a linha que
+ * volta: a cópia pode não ter visto o congelador).
+ */
 export function useSavePantryItem() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, values, productId }: { id?: string; values: PantryValues; productId?: string | null }) => {
-      if (id) unwrap(await supabase.from('pantry_items').update(values).eq('id', id));
-      else unwrap(await supabase.from('pantry_items').insert(values));
-      // Validade corrigida à mão ensina o produto: a próxima compra já vem certa.
-      if (productId && values.expiry_source === 'manual' && values.expires_on) {
+    mutationFn: async ({ id, values, productId, copy, freezerAvailable }: SavePantryInput): Promise<PantryItem[]> => {
+      const carriesFreezer = FREEZER_COLUMNS.some((column) => column in values);
+      let rows: PantryItem[];
+      try {
+        if (id) {
+          const update = (guard: 'copy' | 'unfrozen' | 'none') => {
+            let query = supabase.from('pantry_items').update(values).eq('id', id);
+            if (guard === 'copy' && copy) {
+              query = copy.frozen_on ? query.eq('frozen_on', copy.frozen_on) : query.is('frozen_on', null);
+              query = copy.thawed_on ? query.eq('thawed_on', copy.thawed_on) : query.is('thawed_on', null);
+            } else if (guard === 'unfrozen') {
+              query = query.is('frozen_on', null);
+            }
+            return query.select();
+          };
+          const guard = copy && hasFreezerFields(copy) ? 'copy' : freezerAvailable ? 'unfrozen' : 'none';
+          let result = await update(guard);
+          if (result.error && guard === 'unfrozen' && isMissingFreezerColumn(result.error)) result = await update('none');
+          rows = (unwrap(result) ?? []) as PantryItem[];
+        } else {
+          rows = (unwrap(await supabase.from('pantry_items').insert(values).select()) ?? []) as PantryItem[];
+        }
+      } catch (err) {
+        if (carriesFreezer && isMissingFreezerColumn(err)) throw new Error(FREEZER_NOT_READY);
+        throw err;
+      }
+      // Validade corrigida à mão ensina o produto: a próxima compra já vem certa. A do congelador, não.
+      const frozen = (copy && wasFrozen(copy)) || wasFrozen(values) || rows.some(wasFrozen);
+      if (rows.length && productId && values.expiry_source === 'manual' && values.expires_on && !frozen) {
         const days = Math.max(1, diffDays(values.purchased_on, values.expires_on));
         await learnShelfLife(productId, days, id);
       }
+      return rows;
     },
-    onSuccess: () => {
+    meta: EXPECTS_ROWS_META,
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['pantry'] });
       queryClient.invalidateQueries({ queryKey: ['products'] });
     },
@@ -143,7 +202,7 @@ export function useTakeOneFromPantry() {
           .is('consumed_at', null)
           .select('id'),
       ) as { id: string }[];
-      if (!changed.length) throw new Error('A despensa mudou enquanto isso. Confira e tente de novo.');
+      if (!changed.length) throw new Error(PANTRY_CHANGED);
     },
     // Também na falha: a tela mostra o que está na despensa agora.
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['pantry'] }),
