@@ -592,6 +592,353 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+\echo '• congelador da despensa: quem chama, o tempo de cada tipo e os checks'
+reset role;
+do $$
+declare
+  fn text;
+begin
+  -- Cada papel conferido sozinho.
+  foreach fn in array array[
+    'public.pantry_freeze_days(text)', 'public.freeze_pantry_items(uuid[], text, date)',
+    'public.thaw_pantry_items(uuid[], date)', 'public.pantry_freezer_available()'] loop
+    assert has_function_privilege('authenticated', fn, 'execute'), fn || ': members call it';
+    assert not has_function_privilege('anon', fn, 'execute'), fn || ': anon does not';
+    assert not has_function_privilege('public', fn, 'execute'), fn || ': nor everyone (PUBLIC)';
+    assert (select not prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = fn::regprocedure),
+      fn || ': runs as the caller, with an empty search_path';
+  end loop;
+  -- A função do gatilho: só o gatilho a chama.
+  assert not has_function_privilege('public', 'public.pantry_items_freezer_expiry()', 'execute'), 'nobody calls the trigger (PUBLIC)';
+  assert not has_function_privilege('anon', 'public.pantry_items_freezer_expiry()', 'execute'), 'nobody calls the trigger (anon)';
+  assert not has_function_privilege('authenticated', 'public.pantry_items_freezer_expiry()', 'execute'), 'nobody calls the trigger (members)';
+  assert (select not prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = 'public.pantry_items_freezer_expiry()'::regprocedure),
+    'the trigger runs as the caller, with an empty search_path';
+  -- O tempo do tipo é fixo (DEFAULT_FREEZE_DAYS): sem tabela, sem casa.
+  assert (select provolatile = 'i' from pg_proc where oid = 'public.pantry_freeze_days(text)'::regprocedure), 'the freezer time is immutable';
+  assert public.pantry_freeze_days('carne') = 90, 'carne 90';
+  assert public.pantry_freeze_days('frango') = 90, 'frango 90';
+  assert public.pantry_freeze_days('carne_moida') = 60, 'carne moída 60';
+  assert public.pantry_freeze_days('peixe') = 60, 'peixe 60';
+  assert public.pantry_freeze_days('pao') = 60, 'pão 60';
+  assert public.pantry_freeze_days('frios') = 30, 'frios 30';
+  assert public.pantry_freeze_days('boi') is null, 'no time for an unknown kind';
+  assert not exists (select 1 from pg_class where relname = 'pantry_freeze_times'), 'no table of household freezer times';
+end $$;
+set role anon;
+do $$
+begin
+  begin
+    perform public.pantry_freezer_available();
+    raise exception 'FAIL: anon asked for the freezer';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.freeze_pantry_items(array[gen_random_uuid()], 'carne', '2026-11-01');
+    raise exception 'FAIL: anon froze';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.thaw_pantry_items(array[gen_random_uuid()], '2026-11-01');
+    raise exception 'FAIL: anon thawed';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  v uuid;
+begin
+  assert public.pantry_freezer_available() is true, 'a signed-in person learns that the freezer exists';
+  begin
+    insert into public.pantry_items (name, category, frozen_on) values ('X', 'carnes', '2026-11-01');
+    raise exception 'FAIL: frozen_on without freeze_kind';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, freeze_kind) values ('X', 'carnes', 'carne');
+    raise exception 'FAIL: freeze_kind without frozen_on';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, frozen_on, freeze_kind) values ('X', 'carnes', '2026-11-01', 'boi');
+    raise exception 'FAIL: unknown freeze kind';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, frozen_on, freeze_kind, thawed_on)
+      values ('X', 'carnes', '2026-11-05', 'carne', '2026-11-04');
+    raise exception 'FAIL: thawed before it was frozen';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, thawed_on) values ('X', 'carnes', '2026-11-04');
+    raise exception 'FAIL: thawed without being frozen';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, frozen_on, freeze_kind) values ('X', 'carnes', 'infinity', 'carne');
+    raise exception 'FAIL: frozen on infinity';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, frozen_on, freeze_kind) values ('X', 'carnes', '1999-12-31', 'carne');
+    raise exception 'FAIL: frozen before 2000';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, frozen_on, freeze_kind, thawed_on, fresh_expires_on)
+      values ('X', 'carnes', '2026-11-01', 'carne', '2026-11-05', '2026-11-04');
+    raise exception 'FAIL: fresh expiry kept on a thawed row';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, fresh_expires_on) values ('X', 'carnes', '2026-11-04');
+    raise exception 'FAIL: fresh expiry on a row never frozen';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, frozen_on, freeze_kind, fresh_expires_on, fresh_expiry_source)
+      values ('X', 'carnes', '2026-11-01', 'carne', '2026-11-04', 'congelado');
+    raise exception 'FAIL: fresh source congelado';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, frozen_on, freeze_kind, fresh_expiry_source)
+      values ('X', 'carnes', '2026-11-01', 'carne', 'categoria');
+    raise exception 'FAIL: fresh source without its date';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, expires_on, expiry_source) values ('X', 'carnes', '2026-11-04', 'outra');
+    raise exception 'FAIL: unknown expiry source';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, expires_on, expiry_source) values ('X', 'carnes', '2026-11-04', 'congelado');
+    raise exception 'FAIL: freezer expiry on a row that is not in the freezer';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, expires_on, expiry_source, frozen_on, freeze_kind, thawed_on)
+      values ('X', 'carnes', '2026-11-04', 'congelado', '2026-11-01', 'carne', '2026-11-03');
+    raise exception 'FAIL: freezer expiry on a thawed row';
+  exception when check_violation then null;
+  end;
+  -- O descongelado, fora do congelador e com a data de quando saiu, entra.
+  insert into public.pantry_items (name, category, expires_on, expiry_source, frozen_on, freeze_kind, thawed_on)
+    values ('X', 'carnes', '2026-11-08', 'descongelado', '2026-11-01', 'carne', '2026-11-05') returning id into v;
+  delete from public.pantry_items where id = v;
+end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• congelador: o banco refaz a validade do congelador de quem grava'
+do $$
+declare
+  v uuid;
+  w uuid;
+begin
+  -- O aparelho mandou outra data (um app antigo, um tempo de antes): vale o do tipo.
+  insert into public.pantry_items (name, category, purchased_on, expires_on, expiry_source, frozen_on, freeze_kind,
+    fresh_expires_on, fresh_expiry_source)
+    values ('Frango do congelador', 'carnes', '2026-11-01', '2030-01-01', 'congelado', '2026-11-01', 'frango', '2026-11-04', 'categoria')
+    returning id into v;
+  assert (select expires_on from public.pantry_items where id = v) = date '2026-11-01' + 90, 'insert: frozen day + the kind''s time';
+  update public.pantry_items set expires_on = '2031-01-01' where id = v;
+  assert (select expires_on from public.pantry_items where id = v) = date '2026-11-01' + 90, 'an update that keeps congelado is redone';
+  update public.pantry_items set freeze_kind = 'frios' where id = v;
+  assert (select expires_on from public.pantry_items where id = v) = date '2026-11-01' + 30, 'another kind, its own time';
+  update public.pantry_items set frozen_on = '2026-11-03' where id = v;
+  assert (select expires_on from public.pantry_items where id = v) = date '2026-11-03' + 30, 'another freezing day';
+  -- Digitada: fica.
+  update public.pantry_items set expires_on = '2027-01-01', expiry_source = 'manual' where id = v;
+  assert (select expires_on from public.pantry_items where id = v) = '2027-01-01', 'a typed date on a frozen row stays';
+  update public.pantry_items set quantity = 2 where id = v;
+  assert (select expires_on from public.pantry_items where id = v) = '2027-01-01', 'and other edits keep it';
+  insert into public.pantry_items (name, category, purchased_on, expires_on, expiry_source)
+    values ('Leite do congelador', 'laticinios', '2026-11-01', '2026-11-10', 'categoria') returning id into w;
+  assert (select expires_on from public.pantry_items where id = w) = '2026-11-10', 'a category date stays';
+  delete from public.pantry_items where id in (v, w);
+end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• confirm_receipt: a linha "Congelei" vai para o congelador e não ensina o produto'
+do $$
+declare
+  r uuid;
+  i_carne uuid;
+  i_peixe uuid;
+  i_arroz uuid;
+  p_peixe uuid;
+  p_arroz uuid;
+begin
+  insert into public.products (name, category) values ('Filé de tilápia do congelador', 'peixes') returning id into p_peixe;
+  insert into public.products (name, category) values ('Arroz do congelador', 'graos') returning id into p_arroz;
+  insert into public.receipts (purchased_at, source) values ('2026-11-10 12:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'ALCATRA KG CONGELADOR', 1.2, 'kg', 50, 60) returning id into i_carne;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'FILE TILAPIA CONG CONGELADOR', 1, 'un', 30, 30) returning id into i_peixe;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'ARROZ 5KG CONGELADOR', 1, 'un', 25, 25) returning id into i_arroz;
+  perform public.confirm_receipt(r, jsonb_build_array(
+    -- Estimada: a data que o aparelho mandou não vale, vale a do tipo.
+    jsonb_build_object('id', i_carne,
+      'new_product', jsonb_build_object('name', 'Alcatra do congelador', 'category', 'carnes'),
+      'pantry', jsonb_build_object('name', 'Alcatra do congelador', 'category', 'carnes', 'purchased_on', '2026-11-10',
+        'expires_on', '2026-11-13', 'expiry_source', 'congelado', 'frozen_on', '2026-11-10', 'freeze_kind', 'carne',
+        'fresh_expires_on', '2026-11-13', 'fresh_expiry_source', 'categoria')),
+    -- Digitada numa linha congelada: fica, e não ensina o produto.
+    jsonb_build_object('id', i_peixe, 'product_id', p_peixe,
+      'pantry', jsonb_build_object('name', 'Filé de tilápia do congelador', 'category', 'peixes', 'purchased_on', '2026-11-10',
+        'expires_on', '2027-06-01', 'expiry_source', 'manual', 'frozen_on', '2026-11-10', 'freeze_kind', 'peixe',
+        'fresh_expiry_source', 'categoria')),
+    -- Sem frozen_on, o resto do congelador não entra.
+    jsonb_build_object('id', i_arroz, 'product_id', p_arroz,
+      'pantry', jsonb_build_object('name', 'Arroz do congelador', 'category', 'graos', 'purchased_on', '2026-11-10',
+        'expires_on', '2027-05-10', 'expiry_source', 'manual', 'freeze_kind', 'carne', 'fresh_expires_on', '2026-11-20'))));
+  assert (select frozen_on = '2026-11-10' and freeze_kind = 'carne' and thawed_on is null
+            and fresh_expires_on = '2026-11-13' and fresh_expiry_source = 'categoria'
+            and expiry_source = 'congelado' and expires_on = date '2026-11-10' + 90
+          from public.pantry_items where receipt_item_id = i_carne), 'the frozen line stores the freezer columns and the kind''s date';
+  assert (select frozen_on = '2026-11-10' and freeze_kind = 'peixe' and expires_on = '2027-06-01' and expiry_source = 'manual'
+            and fresh_expires_on is null and fresh_expiry_source is null
+          from public.pantry_items where receipt_item_id = i_peixe), 'a typed date on a frozen line stays (no fresh source without its date)';
+  assert (select shelf_life_days from public.products where id = p_peixe) is null, 'a frozen line teaches no shelf life';
+  assert (select frozen_on is null and freeze_kind is null and thawed_on is null and fresh_expires_on is null and fresh_expiry_source is null
+          from public.pantry_items where receipt_item_id = i_arroz), 'without frozen_on the five columns stay null';
+  assert (select shelf_life_days from public.products where id = p_arroz) = 181, 'a typed date on a line not frozen is still learned';
+  delete from public.pantry_items where receipt_item_id in (i_carne, i_peixe, i_arroz);
+  delete from public.receipts where id = r;
+end $$;
+reset role;
+delete from public.products where name in ('Filé de tilápia do congelador', 'Arroz do congelador', 'Alcatra do congelador');
+set role authenticated;
+
+-- ---------------------------------------------------------------------------
+\echo '• congelar e descongelar: cada compra no seu dia, e o congelador pausa a validade'
+do $$
+declare
+  a uuid;
+  b uuid;
+  c uuid;
+  d uuid;
+  e uuid;
+  n integer;
+begin
+  insert into public.pantry_items (name, category, purchased_on, expires_on, expiry_source)
+    values ('Frango A', 'carnes', '2026-11-01', '2026-11-04', 'categoria') returning id into a;
+  insert into public.pantry_items (name, category, purchased_on, expires_on, expiry_source)
+    values ('Frango B', 'carnes', '2026-11-05', '2026-11-08', 'manual') returning id into b;
+  insert into public.pantry_items (name, category, purchased_on, consumed_at) values ('Frango C', 'carnes', '2026-11-01', now())
+    returning id into c;
+  insert into public.pantry_items (name, category, purchased_on) values ('Pão D', 'padaria', '2026-11-01') returning id into d;
+  insert into public.pantry_items (name, category, purchased_on, expires_on, expiry_source)
+    values ('Frango E', 'carnes', '2026-11-01', '2026-11-04', 'categoria') returning id into e;
+  perform set_config('test.freeze_a', a::text, false);
+
+  begin
+    perform public.freeze_pantry_items(array[a], 'boi', '2026-11-01');
+    raise exception 'FAIL: unknown kind';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.freeze_pantry_items(array[a], 'frango', '1999-12-31');
+    raise exception 'FAIL: freeze day before 2000';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.freeze_pantry_items(array[a], 'frango', null);
+    raise exception 'FAIL: no freeze day';
+  exception when invalid_parameter_value then null;
+  end;
+
+  -- "Congelei no dia de cada compra": o dia pedido é antes das duas, e cada uma fica com o seu. A consumida fica de fora.
+  select count(*) into n from public.freeze_pantry_items(array[a, b, c], 'frango', '2026-10-01');
+  assert n = 2, 'two lots frozen, the consumed one left out';
+  assert (select frozen_on = '2026-11-01' and freeze_kind = 'frango' and thawed_on is null
+            and fresh_expires_on = '2026-11-04' and fresh_expiry_source = 'categoria'
+            and expires_on = date '2026-11-01' + 90 and expiry_source = 'congelado'
+          from public.pantry_items where id = a), 'A: frozen on its purchase day, the fresh date kept';
+  assert (select frozen_on = '2026-11-05' and fresh_expires_on = '2026-11-08' and fresh_expiry_source = 'manual'
+            and expires_on = date '2026-11-05' + 90 and expiry_source = 'congelado'
+          from public.pantry_items where id = b), 'B: its own purchase day, the typed date kept as the fresh one';
+  assert (select frozen_on is null from public.pantry_items where id = c), 'the consumed lot is not frozen';
+  select count(*) into n from public.freeze_pantry_items(array[a], 'frango', '2026-11-02');
+  assert n = 0, 'a lot already in the freezer is left out';
+
+  -- Sem validade: ganha a do congelador; a de antes fica vazia.
+  select count(*) into n from public.freeze_pantry_items(array[d], 'pao', '2026-11-03');
+  assert n = 1, 'D frozen';
+  assert (select frozen_on = '2026-11-03' and expires_on = date '2026-11-03' + 60 and expiry_source = 'congelado'
+            and fresh_expires_on is null and fresh_expiry_source is null
+          from public.pantry_items where id = d), 'D: no fresh date, the freezer one';
+
+  -- Já vencida antes do dia: a validade e a origem de antes ficam, e a compra vai para o congelador do mesmo jeito.
+  select count(*) into n from public.freeze_pantry_items(array[e], 'frango', '2026-11-06');
+  assert n = 1, 'E frozen';
+  assert (select frozen_on = '2026-11-06' and expires_on = '2026-11-04' and expiry_source = 'categoria'
+            and fresh_expires_on = '2026-11-04' and fresh_expiry_source = 'categoria'
+          from public.pantry_items where id = e), 'E: already expired, keeps its date and source';
+
+  -- Descongelar. A: o que faltava (3 dias) volta a contar do dia em que saiu.
+  begin
+    perform public.thaw_pantry_items(array[a], '2101-01-01');
+    raise exception 'FAIL: thaw day after 2100';
+  exception when invalid_parameter_value then null;
+  end;
+  select count(*) into n from public.thaw_pantry_items(array[a, c], '2026-11-20');
+  assert n = 1, 'only A thaws (C is consumed)';
+  assert (select expires_on = '2026-11-23' and expiry_source = 'descongelado' and thawed_on = '2026-11-20'
+            and frozen_on = '2026-11-01' and freeze_kind = 'frango' and fresh_expires_on is null and fresh_expiry_source is null
+          from public.pantry_items where id = a), 'A: thawed 20/11, due 23/11';
+  select count(*) into n from public.thaw_pantry_items(array[a], '2026-11-21');
+  assert n = 0, 'a thawed lot does not thaw again';
+  -- B: no mesmo dia em que foi congelada, desfaz.
+  select count(*) into n from public.thaw_pantry_items(array[b], '2026-11-05');
+  assert n = 1, 'B thaws';
+  assert (select frozen_on is null and freeze_kind is null and thawed_on is null and fresh_expires_on is null
+            and expires_on = '2026-11-08' and expiry_source = 'manual'
+          from public.pantry_items where id = b), 'B: same day, undone';
+  -- D: sem validade de antes, fica sem validade.
+  select count(*) into n from public.thaw_pantry_items(array[d], '2026-11-20');
+  assert (select expires_on is null and expiry_source is null and thawed_on = '2026-11-20' from public.pantry_items where id = d),
+    'D: no fresh date, no date';
+  -- E: congelada dois dias depois de vencer, continua dois dias vencida.
+  select count(*) into n from public.thaw_pantry_items(array[e], '2026-11-20');
+  assert (select expires_on = '2026-11-18' and expiry_source = 'descongelado' from public.pantry_items where id = e),
+    'E: the past days come back too';
+
+  -- Congelar de novo a descongelada: nunca antes do dia em que saiu.
+  select count(*) into n from public.freeze_pantry_items(array[a], 'frango', '2026-11-15');
+  assert n = 1, 'A refrozen';
+  assert (select frozen_on = '2026-11-20' and thawed_on is null and expires_on = date '2026-11-20' + 90
+            and fresh_expires_on = '2026-11-23' and fresh_expiry_source = 'descongelado'
+          from public.pantry_items where id = a), 'A: refrozen on the thaw day, the thawed date as the fresh one';
+  perform set_config('test.freeze_rows', array_to_string(array[a, b, c, d, e], ','), false);
+end $$;
+-- Outra casa não acha as compras.
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+declare
+  a uuid := current_setting('test.freeze_a')::uuid;
+  n integer;
+begin
+  select count(*) into n from public.thaw_pantry_items(array[a], '2026-11-25');
+  assert n = 0, 'C cannot thaw A''s lot';
+  select count(*) into n from public.freeze_pantry_items(array[a], 'carne', '2026-11-25');
+  assert n = 0, 'C cannot freeze A''s lot';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  assert (select frozen_on = '2026-11-20' and thawed_on is null and freeze_kind = 'frango'
+          from public.pantry_items where id = current_setting('test.freeze_a')::uuid), 'A''s lot is as it was';
+  delete from public.pantry_items where id = any(string_to_array(current_setting('test.freeze_rows'), ',')::uuid[]);
+end $$;
+
+-- ---------------------------------------------------------------------------
 \echo '• a nota tira da lista o que a compra cumpriu e aprende o vínculo'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$
