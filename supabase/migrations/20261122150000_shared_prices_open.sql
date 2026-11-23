@@ -45,9 +45,10 @@
 --   2. shared_item_prices: para grupos de descrições que o app achou serem o
 --      mesmo item, o preço da semana mais recente de cada mercado (o menor da
 --      semana), dos mercados da casa e dos 5 mais baratos dos outros, com o
---      tamanho que o servidor leu na nota (pack_*). Com o tamanho que o app
---      escolheu para o grupo (p), a linha por unidade cujo tamanho lido é
---      outro fica de fora.
+--      tamanho que o servidor leu na nota (pack_*). A linha por unidade só
+--      vem das descrições que o app escolheu por unidade (k; as de w só
+--      valem vendidas a peso), e, com o tamanho que o app escolheu para o
+--      grupo (p), a linha por unidade cujo tamanho lido é outro fica de fora.
 -- As regras de 20261014120000_shared_prices.sql continuam: a lista de
 -- categorias, as camadas de remédio e de farmácia, o CPF fora do nome da loja,
 -- nenhuma coluna de casa, pessoa ou nota, e uma linha por (mercado, item,
@@ -66,12 +67,14 @@
 -- 1. A semana, o estado da casa e os índices
 -- =============================================================================
 
--- A semana de um dia: a segunda-feira dela (semana ISO). É a única data que sai da base. Sem "set search_path" de
--- propósito: uma função com SET não é expandida dentro da consulta que a chama, e as leituras a chamam em cada linha
--- (com o SET, a busca do passo 1 ficava quatro vezes mais lenta). O corpo não cita tabela nem função de esquema
--- nenhum (só extract e a conta com datas), e nenhum cliente pode executá-la.
+-- A semana de um dia: a segunda-feira dela (semana ISO). É a única data que sai da base. Com "set search_path", como
+-- toda função daqui (o Security Advisor do Supabase acusa a que não tem). Uma função com SET não é expandida dentro
+-- da consulta que a chama, então as leituras, que precisam da semana em cada linha, escrevem a mesma semana com a
+-- função do Postgres, date_trunc('week', dia::timestamp)::date (com shared_week linha a linha, a busca do passo 1
+-- ficava quatro vezes mais lenta); shared_week fica para a semana de hoje, uma vez por chamada. O teste do banco
+-- confere que as duas dão a mesma segunda-feira.
 create or replace function public.shared_week(p_day date) returns date
-language sql immutable parallel safe as $$
+language sql immutable parallel safe set search_path = '' as $$
   select p_day - (extract(isodow from p_day)::integer - 1);
 $$;
 revoke execute on function public.shared_week(date) from public, anon, authenticated;
@@ -442,7 +445,7 @@ as $$
             and p.visible_on <= (now() at time zone 'America/Sao_Paulo')::date
       ) f
       -- A semana mais nova; dentro dela, a descrição mais barata, sempre a mesma (o dia não escolhe).
-      order by f.product_id, f.store_cnpj, f.unit, public.shared_week(f.seen_on) desc, f.unit_price, f.item_key
+      order by f.product_id, f.store_cnpj, f.unit, date_trunc('week', f.seen_on::timestamp)::date desc, f.unit_price, f.item_key
   ),
   -- Nos outros: só linhas com um estado da casa (os índices são por item ou código, e estado), a da semana mais
   -- recente de cada mercado.
@@ -469,15 +472,15 @@ as $$
             and p.seen_on >= (select since from me) and p.seen_on < (select today from me)
             and p.visible_on <= (now() at time zone 'America/Sao_Paulo')::date
       ) f
-      order by f.product_id, f.store_cnpj, f.unit, public.shared_week(f.seen_on) desc, f.unit_price, f.item_key
+      order by f.product_id, f.store_cnpj, f.unit, date_trunc('week', f.seen_on::timestamp)::date desc, f.unit_price, f.item_key
   ),
   ranked as (
-    select o.*, row_number() over (partition by o.product_id, o.unit order by o.unit_price, public.shared_week(o.seen_on) desc, o.store_cnpj) as place
+    select o.*, row_number() over (partition by o.product_id, o.unit order by o.unit_price, date_trunc('week', o.seen_on::timestamp)::date desc, o.store_cnpj) as place
       from others o
   )
   select m.product_id, m.store_cnpj,
       coalesce((select n.name from public.store_names n where n.cnpj = m.store_cnpj), m.store_name),
-      m.store_uf, m.unit, m.unit_price, public.shared_week(m.seen_on), true, z.pack_unit, z.pack_amount, z.pack_of
+      m.store_uf, m.unit, m.unit_price, date_trunc('week', m.seen_on::timestamp)::date, true, z.pack_unit, z.pack_amount, z.pack_of
     from mine m
     -- O tamanho da linha escolhida, pela chave primária dela (o dia de verdade, que não sai daqui).
     join public.shared_prices z
@@ -496,12 +499,12 @@ as $$
           and ri.product_id = m.product_id
           -- Zero não é preço (a compra "sem valor"): não esconde nada, como nos outros leitores de preço.
           and ri.unit_price > 0
-          and (r.purchased_at at time zone 'America/Sao_Paulo')::date >= public.shared_week(m.seen_on)
+          and (r.purchased_at at time zone 'America/Sao_Paulo')::date >= date_trunc('week', m.seen_on::timestamp)::date
     )
   union all
   select r.product_id, r.store_cnpj,
       coalesce((select n.name from public.store_names n where n.cnpj = r.store_cnpj), r.store_name),
-      r.store_uf, r.unit, r.unit_price, public.shared_week(r.seen_on), false, z.pack_unit, z.pack_amount, z.pack_of
+      r.store_uf, r.unit, r.unit_price, date_trunc('week', r.seen_on::timestamp)::date, false, z.pack_unit, z.pack_amount, z.pack_of
     from ranked r
     join public.shared_prices z
       on z.store_cnpj = r.store_cnpj and z.item_key = r.item_key and z.unit = r.unit and z.seen_on = r.seen_on
@@ -577,7 +580,7 @@ begin
     ),
     -- Cada (chave, unidade, mercado, semana) uma vez: o dia some aqui.
     store_weeks as materialized (
-      select distinct h.item_key, h.unit, h.store_cnpj, public.shared_week(h.seen_on) as week from hits h
+      select distinct h.item_key, h.unit, h.store_cnpj, date_trunc('week', h.seen_on::timestamp)::date as week from hits h
     ),
     found as materialized (
       -- Por chave: a segunda-feira da semana mais nova e em quantos (mercado, semana) foi vista. Nunca um dia, nunca
@@ -636,12 +639,18 @@ grant execute on function public.shared_item_keys(jsonb) to authenticated;
 -- 5. A leitura aberta, passo 2: os preços de cada grupo
 -- =============================================================================
 
--- p_groups: 1 a 40 grupos {"k": [1..60 chaves normalizadas de 1..200 letras], "p": tamanho esperado, opcional}; o
--- número do grupo é a posição dele (a partir de 0). "p" é o tamanho que o app escolheu para as chaves por unidade
--- do grupo ({"u": "kg" | "l" | "un", "a": quanto, "o": de quantos, opcional}, a forma de pack_* na tabela): a
--- linha por unidade cujo tamanho lido pelo servidor é outro fica de fora (a descrição da lata, quando a nota era do
--- fardo); a que não tem tamanho lido fica (vale o que a descrição diz). Volta uma lista de [grupo, cnpj, nome,
--- estado, unidade, preço, segunda-feira da semana, é mercado da casa, pack_unit, pack_amount, pack_of].
+-- p_groups: 1 a 40 grupos {"k": [chaves], "w": [chaves], opcional, "p": tamanho esperado, opcional}, com 1 a 60
+-- chaves normalizadas de 1..200 letras entre "k" e "w", nenhuma nas duas; o número do grupo é a posição dele (a
+-- partir de 0). "k" são as descrições cujas linhas valem em toda unidade, e "w" as que só valem vendidas a peso (kg,
+-- g, l, ml): a descrição vista a peso num mercado e por unidade em outro ("ALHO": o alho a granel e a cabeça solta)
+-- entra pelo peso sem trazer a linha por unidade que o app não escolheu (ela levaria o tamanho do grupo, a bandeja de
+-- 200 g). "p" é o tamanho que o app escolheu para as chaves por unidade do grupo ({"u": "kg" | "l" | "un", "a":
+-- quanto, "o": de quantos, opcional}, a forma de pack_* na tabela): a linha por unidade cujo tamanho lido pelo
+-- servidor é outro fica de fora (uma descrição que, padronizada, ficou igual à de outra embalagem); a que não tem
+-- tamanho lido fica (vale o que a descrição diz; pode ser a do fardo vendido com a descrição da lata, que a leitura
+-- do QR code nunca mede, e o app só a usa quando o preço combina com o dos outros mercados do grupo: openQuotes, em
+-- src/domain/openPrices.ts). Volta uma lista de [grupo, cnpj, nome, estado, unidade, preço, segunda-feira da semana,
+-- é mercado da casa, pack_unit, pack_amount, pack_of].
 create or replace function public.shared_item_prices(p_groups jsonb) returns jsonb
 language plpgsql stable security definer set search_path = '' as $$
 declare
@@ -656,13 +665,22 @@ begin
   end if;
   if exists (select 1 from jsonb_array_elements(p_groups) e (v)
                where jsonb_typeof(e.v) <> 'object' or jsonb_typeof(e.v -> 'k') is distinct from 'array'
+                  or jsonb_typeof(coalesce(e.v -> 'w', '[]'::jsonb)) <> 'array'
                   or jsonb_typeof(coalesce(e.v -> 'p', '{}'::jsonb)) not in ('object', 'null')) then
     raise exception 'shared_item_prices: invalid groups' using errcode = '22023';
   end if;
-  if exists (select 1 from jsonb_array_elements(p_groups) e (v) where jsonb_array_length(e.v -> 'k') not between 1 and 60)
-     or exists (select 1 from jsonb_array_elements(p_groups) e (v) cross join lateral jsonb_array_elements(e.v -> 'k') k (key)
+  if exists (select 1 from jsonb_array_elements(p_groups) e (v)
+               where jsonb_array_length(e.v -> 'k') + jsonb_array_length(coalesce(e.v -> 'w', '[]'::jsonb)) not between 1 and 60)
+     or exists (select 1 from jsonb_array_elements(p_groups) e (v)
+                  cross join lateral jsonb_array_elements((e.v -> 'k') || coalesce(e.v -> 'w', '[]'::jsonb)) k (key)
                   where jsonb_typeof(k.key) <> 'string' or length(k.key #>> '{}') not between 1 and 200
                      or (k.key #>> '{}') <> public.normalize_alias(k.key #>> '{}')) then
+    raise exception 'shared_item_prices: invalid groups' using errcode = '22023';
+  end if;
+  -- Uma chave em "k" e em "w" ao mesmo tempo não diz o que vale.
+  if exists (select 1 from jsonb_array_elements(p_groups) e (v)
+               cross join lateral jsonb_array_elements_text(coalesce(e.v -> 'w', '[]'::jsonb)) w (key)
+               where (e.v -> 'k') ? w.key) then
     raise exception 'shared_item_prices: invalid groups' using errcode = '22023';
   end if;
   -- O tamanho esperado, quando vem: a forma do check de shared_prices (primeiro os tipos, depois os valores).
@@ -690,24 +708,31 @@ begin
   v_stores := array(select s.cnpj from public.stores s where s.household_id = v_household and s.cnpj is not null);
   return coalesce((
     with groups as (
-      select (e.at - 1)::integer as g, e.v -> 'k' as keys,
+      select (e.at - 1)::integer as g, e.v -> 'k' as keys, coalesce(e.v -> 'w', '[]'::jsonb) as weight_keys,
           case when jsonb_typeof(e.v -> 'p') = 'object' then e.v -> 'p' ->> 'u' end as pu,
           case when jsonb_typeof(e.v -> 'p') = 'object' then round((e.v -> 'p' ->> 'a')::numeric, 6) end as pa,
           case when jsonb_typeof(e.v -> 'p' -> 'o') = 'number' then (e.v -> 'p' ->> 'o')::numeric::smallint end as po
         from jsonb_array_elements(p_groups) with ordinality e (v, at)
     ),
     wanted as (
-      select distinct gr.g, k.key, gr.pu, gr.pa, gr.po
+      -- by_unit: a chave vale em toda unidade ("k"); senão, só vendida a peso ("w").
+      select distinct gr.g, k.key, true as by_unit, gr.pu, gr.pa, gr.po
         from groups gr
         cross join lateral jsonb_array_elements_text(gr.keys) k (key)
+      union all
+      select distinct gr.g, w.key, false, gr.pu, gr.pa, gr.po
+        from groups gr
+        cross join lateral jsonb_array_elements_text(gr.weight_keys) w (key)
     ),
     seen as (
       select w.g, p.store_cnpj, p.store_name, p.store_uf, p.unit, p.unit_price, p.item_key,
-          public.shared_week(p.seen_on) as week, p.store_cnpj = any (v_stores) as mine,
+          date_trunc('week', p.seen_on::timestamp)::date as week, p.store_cnpj = any (v_stores) as mine,
           p.pack_unit, p.pack_amount, p.pack_of
         from wanted w
         join public.shared_prices p on p.item_key = w.key and p.store_uf = any (v_states)   -- shared_prices_item_state_idx
         where p.seen_on >= v_since and p.visible_on <= v_today
+          -- A linha por unidade só da chave que o app escolheu por unidade.
+          and (w.by_unit or p.unit <> 'un')
           -- O tamanho que o servidor leu na nota, quando é outro que o do grupo: a linha é de outra embalagem.
           and (p.unit <> 'un' or w.pu is null or p.pack_unit is null
                or (p.pack_unit = w.pu and p.pack_amount = w.pa and p.pack_of is not distinct from w.po))
@@ -721,7 +746,7 @@ begin
               join public.stores st on st.id = r.store_id and st.household_id = r.household_id
               where a.household_id = v_household and a.alias = p.item_key
                 and r.status = 'confirmed' and st.cnpj = p.store_cnpj and ri.unit_price > 0
-                and (r.purchased_at at time zone 'America/Sao_Paulo')::date >= public.shared_week(p.seen_on))
+                and (r.purchased_at at time zone 'America/Sao_Paulo')::date >= date_trunc('week', p.seen_on::timestamp)::date)
     ),
     newest as (
       -- Uma linha por grupo, mercado e unidade: a SEMANA mais nova, depois a mais barata. O dia não escolhe.

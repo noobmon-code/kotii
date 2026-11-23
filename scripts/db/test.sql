@@ -13321,7 +13321,12 @@ begin
     -- descrição (tamanho lido 12 x 350 ml).
     ('64000000000201', '35', 'MERCADO A', 'CERV SKOL LT 350ML', 'un', week - 5, 3.49, week, 'l', 0.35, null),
     ('64000000000202', '35', 'MERCADO B', 'CERV SKOL LT 350ML', 'un', week - 5, 39.90, week, null, null, null),
-    ('64000000000203', '35', 'MERCADO C', 'CERV SKOL LT 350ML', 'un', week - 5, 41.90, week, 'l', 4.2, 12);
+    ('64000000000203', '35', 'MERCADO C', 'CERV SKOL LT 350ML', 'un', week - 5, 41.90, week, 'l', 4.2, 12),
+    -- O alho a granel (por kg) no mercado A, a cabeça solta com a mesma descrição (por unidade) no B, e a bandeja de
+    -- 200 g no C.
+    ('64000000000201', '35', 'MERCADO A', 'ALHO', 'kg', week - 5, 30.00, week, null, null, null),
+    ('64000000000202', '35', 'MERCADO B', 'ALHO', 'un', week - 5, 2.50, week, null, null, null),
+    ('64000000000203', '35', 'MERCADO C', 'ALHO 200G', 'un', week - 5, 7.90, week, 'kg', 0.2, null);
   -- Sete mercados com o mesmo macarrão: dos que não são da casa, só os 5 mais baratos.
   insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
     select '6400000000030' || g, '35', 'MERCADO E' || g, 'MACARRAO SETE 500G', 'un', week - 5, 3 + g / 10.0, week from generate_series(1, 7) as g;
@@ -13384,6 +13389,19 @@ begin
             from jsonb_array_elements(public.shared_item_prices('[{"k": ["CERV SKOL LT 350ML"], "p": {"u": "l", "a": 4.2, "o": 12}}]')) e (v)
             where v ->> 1 = '64000000000203') = '64000000000203 l 4.200000 12',
     'the expected size with "of how many" matches the case of 12';
+
+  -- As só a peso ("w"): a descrição entra pelo que é vendido a peso, sem trazer a linha por unidade que o app não
+  -- escolheu (a cabeça solta do B levaria o tamanho da bandeja); em "k", toda unidade.
+  assert (select array_agg((v ->> 1) || ' ' || (v ->> 4) || ' ' || (v ->> 5) order by v ->> 1)
+            from jsonb_array_elements(public.shared_item_prices('[{"k": ["ALHO 200G"], "w": ["ALHO"], "p": {"u": "kg", "a": 0.2}}]')) e (v))
+    = array['64000000000201 kg 30.0000', '64000000000203 un 7.9000'],
+    'a weight-only key brings its weight rows and never its unit rows';
+  assert (select array_agg((v ->> 1) || ' ' || (v ->> 4) order by v ->> 1)
+            from jsonb_array_elements(public.shared_item_prices('[{"k": [], "w": ["ALHO"]}]')) e (v))
+    = array['64000000000201 kg'], 'a group of weight-only keys alone';
+  assert (select array_agg((v ->> 1) || ' ' || (v ->> 4) order by v ->> 1)
+            from jsonb_array_elements(public.shared_item_prices('[{"k": ["ALHO", "ALHO 200G"]}]')) e (v))
+    = array['64000000000201 kg', '64000000000202 un', '64000000000203 un'], 'in "k", every unit';
 
   -- A compra da própria casa, pela SEMANA: o feijão que ela comprou no mercado dela na quarta-feira da semana
   -- retrasada esconde a linha da sexta-feira daquela semana ali, e não a do mercado A.
@@ -13489,7 +13507,13 @@ begin
       '[{"k": ["arroz"]}]', jsonb_build_array(jsonb_build_object('k', jsonb_build_array(repeat('A', 201)))), '[{"k": []}]',
       '[{"k": ["A"], "p": "5kg"}]', '[{"k": ["A"], "p": {"u": "g", "a": 500}}]', '[{"k": ["A"], "p": {"u": "kg", "a": 0}}]',
       '[{"k": ["A"], "p": {"u": "kg", "a": "5"}}]', '[{"k": ["A"], "p": {"u": "un", "a": 12, "o": 2}}]',
-      '[{"k": ["A"], "p": {"u": "un", "a": 1}}]', '[{"k": ["A"], "p": {"u": "l", "a": 4.2, "o": 1}}]'
+      '[{"k": ["A"], "p": {"u": "un", "a": 1}}]', '[{"k": ["A"], "p": {"u": "l", "a": 4.2, "o": 1}}]',
+      '[{"k": ["A"], "p": {"u": "l", "a": 700, "o": 2000}}]', '[{"k": ["A"], "p": {"u": "kg", "a": 100001}}]',
+      -- As só a peso ("w"): uma lista de chaves normalizadas, fora de "k", com as de "k" no máximo 60 e no mínimo 1.
+      '[{"k": [], "w": []}]', '[{"k": ["A"], "w": "B"}]', '[{"k": ["A"], "w": null}]', '[{"k": ["A"], "w": [1]}]',
+      '[{"k": ["A"], "w": ["b"]}]', '[{"k": ["A"], "w": ["A"]}]', '[{"w": ["A"]}]',
+      (select jsonb_build_array(jsonb_build_object('k', jsonb_agg('A' || g) filter (where g <= 30), 'w', jsonb_agg('A' || g) filter (where g > 30)))
+         from generate_series(1, 61) g)
     ] loop
       begin
         perform public.shared_item_prices(bad);
@@ -13535,9 +13559,13 @@ begin
   end loop;
   assert not (select prosecdef from pg_proc where oid = 'public.shared_household_states(uuid)'::regprocedure),
     'the states of a household are read as the caller (only the definer readers call it)';
-  -- Sem SET, para ser expandida dentro das leituras (com ele, cada linha seria uma chamada de função).
-  assert (select proconfig is null and provolatile = 'i' from pg_proc where oid = 'public.shared_week(date)'::regprocedure),
-    'shared_week is immutable and can be inlined';
+  -- Com o search_path, como toda função; as leituras escrevem a semana de cada linha com date_trunc, e as duas dão a
+  -- mesma segunda-feira (três anos de dias, com as viradas de ano da semana ISO).
+  assert (select proconfig @> array['search_path=""'] and provolatile = 'i' from pg_proc where oid = 'public.shared_week(date)'::regprocedure),
+    'shared_week is immutable and has its search_path set';
+  assert (select bool_and(public.shared_week(d::date) = date_trunc('week', d::date::timestamp)::date)
+            from generate_series(date '2025-12-01', date '2028-12-31', interval '1 day') d),
+    'shared_week and the per-row date_trunc of the readers give the same Monday';
 end $$;
 
 -- A mudança única da migração: o que foi gravado nesta semana (o visible_on de antes é o dia da gravação + 1) espera a

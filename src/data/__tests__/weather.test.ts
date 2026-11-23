@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
 
 import { findPlaceByCep, findStateByPoint } from '../weather';
 
+// A casa aberta (lib/activeHousehold, que useFillHouseState lê) guarda a escolha no AsyncStorage.
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
+);
 jest.mock('@/lib/supabase', () => ({ supabase: {}, unwrap: (r: { data: unknown }) => r.data }));
 
 const calls: { url: string; at: number }[] = [];

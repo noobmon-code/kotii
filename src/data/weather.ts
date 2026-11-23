@@ -6,7 +6,7 @@
 
 import { onlineManager, queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { useEffect } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
 
 import {
@@ -23,6 +23,7 @@ import {
   type OsmPlace,
 } from '@/domain/weather';
 import { stateCode } from '@/domain/sharedPrices';
+import { useActiveHouseholdId } from '@/lib/activeHousehold';
 import { HOUSEHOLD_HEADER } from '@/lib/householdHeader';
 import { supabase, unwrap } from '@/lib/supabase';
 import { isMissingColumn } from './missingSchema';
@@ -322,21 +323,30 @@ export function forgetHouseStateTries(): void {
   triedHouseStates.clear();
 }
 
+const subscribeOnline = (listener: () => void) => onlineManager.subscribe(listener);
+
 /**
  * O local salvo antes do estado existir ganha o estado, uma vez, sem aviso: na tela Hoje, quando o local da casa
  * aberta chegou com `state_code` null e o aparelho está com internet, o ponto guardado (cerca de 1 km) vai ao mapa
  * (o mesmo da localização do celular, que os termos já citam) e só o estado é gravado, e só se ainda estiver vazio
  * (outro aparelho pode ter preenchido, ou o local pode ter saído: sem linha de volta, nada a fazer). Uma tentativa por
  * casa enquanto o app está aberto; qualquer falha fica em silêncio. Nunca para `undefined` (o banco sem a coluna, ou
- * o local guardado de antes). `householdId`: a casa aberta (a do local lido).
+ * o local guardado de antes). `householdId`: a casa da tela (a de useHousehold).
+ *
+ * O local lido não diz de que casa é (a chave dele não tem casa): ele é o da casa aberta (lib/activeHousehold), que
+ * vai no cabeçalho de cada pedido. Na troca de casa, a aberta muda e o local é buscado de novo antes de a casa da
+ * tela mudar, então o estado só é procurado quando as duas são a mesma: senão o ponto da casa nova iria para a linha
+ * da anterior. Sem internet (ou com a sessão esperando renovar), nada é tentado, e a volta da internet tenta.
  */
 export function useFillHouseState(householdId: string | null | undefined): void {
   const queryClient = useQueryClient();
   const location = useHouseholdLocation();
+  const activeId = useActiveHouseholdId();
+  const online = useSyncExternalStore(subscribeOnline, () => onlineManager.isOnline(), () => true);
   const place = location.data;
   const missing = place != null && place.state_code === null;
   useEffect(() => {
-    if (!missing || !place || !householdId || triedHouseStates.has(householdId) || !onlineManager.isOnline()) return;
+    if (!missing || !place || !householdId || householdId !== activeId || triedHouseStates.has(householdId) || !online) return;
     triedHouseStates.add(householdId);
     void (async () => {
       try {
@@ -360,5 +370,5 @@ export function useFillHouseState(householdId: string | null | undefined): void 
         // Sem o mapa ou sem o banco, o local fica sem estado: nada a dizer.
       }
     })();
-  }, [missing, place, householdId, queryClient]);
+  }, [missing, place, householdId, activeId, online, queryClient]);
 }

@@ -12,6 +12,7 @@ import {
   useSaveHouseholdLocation,
   type HouseholdLocation,
 } from '@/data/weather';
+import { forgetActiveHousehold, setActiveHousehold } from '@/lib/activeHousehold';
 import { HOUSEHOLD_HEADER } from '@/lib/householdHeader';
 
 // O estado do local da casa (household_location.state_code), de onde a lista lê os preços de outras casas: lido e
@@ -25,6 +26,10 @@ const mockDb: {
   answer: (call: Call) => { data: unknown; error: unknown };
 } = { calls: [], answer: () => ({ data: null, error: null }) };
 
+// A casa aberta (lib/activeHousehold, que useFillHouseState lê) guarda a escolha no AsyncStorage.
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
+);
 jest.mock('@/lib/supabase', () => {
   const builder = (call: Call): unknown => {
     const chain: Record<string, unknown> = {};
@@ -100,6 +105,7 @@ beforeEach(() => {
   mockDb.answer = () => ({ data: null, error: null });
   fetchMock.mockClear();
   forgetHouseStateTries();
+  forgetActiveHousehold();
   onlineManager.setOnline(true);
   // gcTime infinito também nas gravações: o relógio de limpeza delas seguraria o Jest aberto depois dos testes.
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { gcTime: Infinity } } });
@@ -179,11 +185,16 @@ describe('a Hoje preenche o estado do local salvo antes', () => {
     mockDb.answer = (call) => (call.op === 'select' ? { data: place, error: null } : { data: [{ household_id: 'casa' }], error: null });
   };
   const updates = () => mockDb.calls.filter((call) => call.op === 'update');
+  /** A Hoje da casa `householdId`, aberta neste aparelho (lib/activeHousehold), como fica depois de useHousehold. */
+  const mountHoje = async (householdId = 'casa') => {
+    void setActiveHousehold('pessoa', householdId);
+    await mount(<Hoje householdId={householdId} />);
+  };
 
   it('o local com o estado vazio: o ponto vai ao mapa, e só o estado é gravado, e só se ainda estiver vazio', async () => {
     located({ ...PLACE, state_code: null });
     client.setQueryData(['sharedPrices'], []);
-    await mount(<Hoje />);
+    await mountHoje();
     await settle(() => client.getQueryState(['sharedPrices'])?.isInvalidated === true);
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([expect.stringContaining('reverse?lat=-23.560&lon=-46.690')]);
     expect(updates()).toEqual([
@@ -204,27 +215,27 @@ describe('a Hoje preenche o estado do local salvo antes', () => {
 
   it('uma vez por casa enquanto o app está aberto: abrir a Hoje de novo não pergunta outra vez', async () => {
     located({ ...PLACE, state_code: null });
-    await mount(<Hoje />);
+    await mountHoje();
     await settle(() => updates().length === 1);
     await act(async () => renderer?.unmount());
-    await mount(<Hoje />);
+    await mountHoje();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(updates()).toHaveLength(1);
   });
 
   it('nada para o local com o estado, para o banco de antes da coluna (ausente), sem local ou sem internet', async () => {
     located(PLACE);
-    await mount(<Hoje />);
+    await mountHoje();
     await act(async () => renderer?.unmount());
     located({ label: PLACE.label, latitude: -23.56, longitude: -46.69, source: 'cep' });
-    await mount(<Hoje householdId="outra" />);
+    await mountHoje('outra');
     await act(async () => renderer?.unmount());
     located(null);
-    await mount(<Hoje householdId="terceira" />);
+    await mountHoje('terceira');
     await act(async () => renderer?.unmount());
     onlineManager.setOnline(false);
     located({ ...PLACE, state_code: null });
-    await mount(<Hoje householdId="quarta" />);
+    await mountHoje('quarta');
     // O mapa espera até 1,1 s entre dois pedidos: o tempo de um que tivesse saído.
     await settle(() => false, 1200);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -233,16 +244,61 @@ describe('a Hoje preenche o estado do local salvo antes', () => {
 
   it('qualquer falha fica em silêncio; nenhuma linha de volta (outro aparelho preencheu) não é erro', async () => {
     mockDb.answer = (call) => (call.op === 'select' ? { data: { ...PLACE, state_code: null }, error: null } : { data: [], error: null });
-    await mount(<Hoje />);
+    await mountHoje();
     await settle(() => updates().length === 1);
     expect(updates()).toHaveLength(1);
     await act(async () => renderer?.unmount());
     fetchMock.mockImplementationOnce(async () => {
       throw new TypeError('Network request failed');
     });
-    await mount(<Hoje householdId="outra" />);
+    await mountHoje('outra');
     await settle(() => fetchMock.mock.calls.length === 2);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(updates()).toHaveLength(1);
+  });
+
+  it('sem internet nada é tentado, e a volta da internet tenta (a casa não fica marcada como tentada)', async () => {
+    located({ ...PLACE, state_code: null });
+    // O local guardado no aparelho (PERSISTED): a volta da internet busca de novo e chega o mesmo local, o mesmo
+    // objeto (o TanStack reaproveita o que é igual), então só a internet faz tentar.
+    client.setQueryData(LOCATION_KEY, { ...PLACE, state_code: null });
+    onlineManager.setOnline(false);
+    await mountHoje();
+    await settle(() => false, 300);
+    expect(updates()).toEqual([]);
+    await act(async () => onlineManager.setOnline(true));
+    await settle(() => updates().length === 1);
+    expect(updates().map((call) => call.filters[0])).toEqual([['eq', 'household_id', 'casa']]);
+  });
+
+  it('na troca de casa, o local da casa nova chega antes da casa da tela: o estado dele não vai para a casa anterior', async () => {
+    const RIO: HouseholdLocation = { label: 'Tijuca, Rio de Janeiro', latitude: -22.92, longitude: -43.23, source: 'cep', state_code: null };
+    // A casa A abre sem internet (ou com a sessão esperando renovar), com o local guardado sem o estado.
+    located({ ...PLACE, state_code: null });
+    client.setQueryData(LOCATION_KEY, { ...PLACE, state_code: null });
+    onlineManager.setOnline(false);
+    await mountHoje('a');
+    // A troca (openHousehold): a casa aberta passa a ser a B, e o local é buscado de novo, já o da B, enquanto a casa
+    // da tela (useHousehold) ainda é a A.
+    mockDb.answer = (call) => (call.op === 'select' ? { data: RIO, error: null } : { data: [{ household_id: 'b' }], error: null });
+    await act(async () => {
+      void setActiveHousehold('pessoa', 'b');
+      client.setQueryData(LOCATION_KEY, RIO);
+      onlineManager.setOnline(true);
+    });
+    await settle(() => false, 300);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(updates()).toEqual([]);
+    // A casa da tela chega: o estado da B vai para a B.
+    await act(async () => {
+      renderer!.update(
+        <QueryClientProvider client={client}>
+          <Hoje householdId="b" />
+        </QueryClientProvider>,
+      );
+    });
+    await settle(() => updates().length === 1);
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([expect.stringContaining('reverse?lat=-22.920&lon=-43.230')]);
+    expect(updates().map((call) => [call.filters[0], call.headers])).toEqual([[['eq', 'household_id', 'b'], [[HOUSEHOLD_HEADER, 'b']]]]);
   });
 });

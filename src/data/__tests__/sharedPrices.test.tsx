@@ -456,7 +456,7 @@ describe('a base aberta (shared_item_keys e shared_item_prices)', () => {
     };
     return { db: db as unknown as SupabaseClient, asked };
   }
-  const GROUP: OpenGroup = { signature: 'ARROZ CAMIL 5KG', keys: ['ARROZ CAMIL 5KG'], expected: { unit: 'kg', amount: 5, label: '5 kg' }, items: [] };
+  const GROUP: OpenGroup = { signature: 'ARROZ CAMIL 5KG', keys: ['ARROZ CAMIL 5KG'], weightOnly: [], expected: { unit: 'kg', amount: 5, label: '5 kg' }, items: [] };
 
   it.each<[string, string, unknown]>([
     ['shared_item_keys', 'PostgREST, fora do cache de esquema', { code: 'PGRST202', message: 'Could not find the function public.shared_item_keys(p_items) in the schema cache' }],

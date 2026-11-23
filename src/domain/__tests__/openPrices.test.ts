@@ -1,9 +1,15 @@
 import { describe, expect, it, jest } from '@jest/globals';
+import { readFileSync } from 'fs';
+import path from 'path';
 
 import {
+  basePackSize,
   brandFreeItemKey,
+  CAN_IS_ANOTHER_PRODUCT,
   keyFit,
   keyPackageSize,
+  MAX_PACK_AMOUNT,
+  MAX_PACK_OF,
   OPEN_KEYS_PER_ENTRY,
   OPEN_MAX_CALLS,
   OPEN_MAX_ENTRIES,
@@ -63,6 +69,24 @@ function answered(items: OpenSearchItem[], keysOf: (item: OpenSearchItem) => Sha
 }
 const groupOf = (groups: OpenGroup[], id: string) => groups.find((group) => group.items.some((one) => one.id === id));
 const entryOf = (groups: OpenGroup[], id: string) => groupOf(groups, id)?.items.find((one) => one.id === id);
+
+/**
+ * O que shared_item_prices aceita num grupo (supabase/migrations/20261122150000_shared_prices_open.sql, as checagens
+ * antes de ler qualquer coisa): um grupo fora disto faz o banco recusar a chamada inteira, de até 40 grupos.
+ */
+function serverAccepts(group: { k: string[]; w?: string[]; p?: { u: string; a: number; o?: number } }): boolean {
+  const w = group.w ?? [];
+  const all = [...group.k, ...w];
+  if (all.length < 1 || all.length > 60) return false;
+  if (!all.every((key) => key.length >= 1 && key.length <= 200 && /^[A-Z0-9]+(?: [A-Z0-9]+)*$/.test(key))) return false;
+  if (w.some((key) => group.k.includes(key))) return false;
+  const p = group.p;
+  if (!p) return true;
+  if (!['kg', 'l', 'un'].includes(p.u) || !(p.a > 0 && p.a <= 100000)) return false;
+  if (p.u === 'un' && !(Number.isInteger(p.a) && p.a >= 2)) return false;
+  if (p.o === undefined) return true;
+  return p.u !== 'un' && Number.isInteger(p.o) && p.o >= 2 && p.o <= 1000;
+}
 
 describe('que itens procuram preço na base aberta', () => {
   it('o item de qualquer marca, de uma categoria que se compartilha, "outros" ou sem categoria', () => {
@@ -182,6 +206,22 @@ describe('o mesmo item: as descrições que ficam', () => {
     expect(keyPackageSize('CERV BRAHMA 350ML LT C12')).toBeNull();
   });
 
+  it('o tamanho na forma que a base guarda: o "1 x" sai, o "N x" fora de 2 a 1000 também, e o tamanho fora dos limites não é tamanho', () => {
+    expect([MAX_PACK_AMOUNT, MAX_PACK_OF]).toEqual([100000, 1000]);
+    // Os mesmos limites do tamanho esperado em shared_item_prices (e do check de pack_* de onde vêm).
+    const sql = readFileSync(path.join(__dirname, '../../../supabase/migrations/20261122150000_shared_prices_open.sql'), 'utf8');
+    expect(sql).toContain(`(e.v -> 'p' ->> 'a')::numeric <= ${MAX_PACK_AMOUNT}`);
+    expect(sql).toContain(`(e.v -> 'p' ->> 'o')::numeric between 2 and ${MAX_PACK_OF}`);
+    expect(keyPackageSize('REFRI COCA COLA 1X2L')).toEqual({ unit: 'l', amount: 2, label: '2 L' });
+    expect(keyPackageSize('CERV SKOL 2000X350ML')).toEqual({ unit: 'l', amount: 700, label: '700 L' });
+    expect(keyPackageSize('ARROZ 200000KG')).toBeNull();
+    expect(basePackSize({ unit: 'un', amount: 1, label: '1 un' })).toBeNull();
+    expect(basePackSize({ unit: 'un', amount: 2.5, label: '2,5 un' })).toBeNull();
+    expect(basePackSize({ unit: 'kg', amount: 0.0000001, label: '0 g' })).toBeNull();
+    expect(basePackSize({ unit: 'l', amount: 4.2, label: '12 x 350 ml', of: 12 })).toEqual({ unit: 'l', amount: 4.2, label: '12 x 350 ml', of: 12 });
+    expect(basePackSize(null)).toBeNull();
+  });
+
   it('só o `mesmo`: o leite zero lactose não é o "Leite"; o integral, sim; o desnatado pedido não leva o integral', () => {
     expect(keyFit({ name: 'Leite', category: 'laticinios' }, 'LEITE INT ITALAC 1L')).toBe(true);
     expect(keyFit({ name: 'Leite', category: 'laticinios' }, 'LT INTEG PIRACANJUBA 1L')).toBe(true);
@@ -210,6 +250,48 @@ describe('o mesmo item: as descrições que ficam', () => {
     expect(keyFit({ name: 'Café', category: 'cafe_cha' }, 'CAFE PILAO TORRADO MOIDO 500G')).toBe(true);
     expect(keyFit({ name: 'Café', category: 'cafe_cha' }, 'CAFE PILAO 500G')).toBe(true);
     expect(keyFit({ name: 'Café solúvel', category: 'cafe_cha' }, 'CAFE SOLUVEL NESCAFE 100G')).toBe(true);
+  });
+
+  it('o mineral como a nota abrevia: o óleo mineral não é "Óleo", com "MINERAL" ou "MIN"; a água mineral é a água', () => {
+    expect([...otherProductMarks('OLEO MIN 100ML')]).toEqual(['mineral']);
+    expect([...otherProductMarks('SAL MIN BOVINO 1KG')]).toEqual(['mineral']);
+    expect([...otherProductMarks('AGUA MINERAL CRYSTAL 500ML')]).toEqual([]);
+    expect([...otherProductMarks('AGUAS MINERAIS')]).toEqual([]);
+    expect([...otherProductMarks('QUEIJO MIN FRESCAL KG')]).toEqual([]);
+    for (const description of ['OLEO MINERAL 100ML', 'OLEO MIN 100ML']) expect(keyFit({ name: 'Óleo', category: 'oleos' }, description)).toBe(false);
+    expect(keyFit({ name: 'Óleo', category: 'oleos' }, 'OLEO SOJA LIZA 900ML')).toBe(true);
+    // A água de sempre, como a loja escrever: o mesmo veredito para as três.
+    for (const description of ['AGUA MINERAL CRYSTAL 500ML', 'AGUA MIN CRYSTAL 500ML', 'AGUA CRYSTAL 500ML']) {
+      expect(keyFit({ name: 'Água', category: 'bebidas' }, description)).toBe(true);
+      expect(keyFit({ name: 'Água mineral', category: 'bebidas' }, description)).toBe(true);
+    }
+    // O "MIN" do queijo é o minas.
+    expect(keyFit({ name: 'Queijo', category: 'laticinios' }, 'QUEIJO MIN FRESCAL KG')).toBe(true);
+  });
+
+  it('a lata é outro produto só onde a forma de sempre é seca ou fresca, com "LATA" ou o "LT" da nota; nos outros, é a embalagem', () => {
+    expect([...CAN_IS_ANOTHER_PRODUCT].sort()).toEqual(['abacaxi', 'feijao', 'milho', 'tomate']);
+    for (const description of ['FEIJAO CARIOCA LATA 400G', 'FEIJAO CARIOCA LT 400G', 'FEIJAO EM LATA 400G']) {
+      expect(keyFit({ name: 'Feijão', category: 'graos' }, description)).toBe(false);
+    }
+    for (const description of ['MILHO VERDE LATA QUERO 170G', 'MILHO VERDE LT QUERO 170G']) {
+      expect(keyFit({ name: 'Milho', category: null }, description)).toBe(false);
+      // A lista que diz a lata leva as duas.
+      expect(keyFit({ name: 'Milho verde lata', category: null }, description)).toBe(true);
+    }
+    expect(keyFit({ name: 'Feijão', category: 'graos' }, 'FEIJAO CARIOCA CAMIL 1KG')).toBe(true);
+    // A cerveja, o refrigerante, o atum e o leite condensado vêm em lata: "LATA" e "LT" dão o mesmo veredito.
+    const asPackage: [string, string, string[]][] = [
+      ['Cerveja', 'alcoolicas', ['CERVEJA SKOL LATA 350ML', 'CERV SKOL LT 350ML']],
+      ['Refrigerante', 'bebidas', ['REFRI COCA COLA LATA 350ML', 'REFRI COCA COLA LT 350ML']],
+      ['Atum', 'peixes', ['ATUM GOMES DA COSTA LATA 170G', 'ATUM GOMES DA COSTA LT 170G']],
+      ['Leite condensado', 'laticinios', ['LEITE COND MOCA LATA 395G', 'LEITE COND MOCA LT 395G']],
+    ];
+    for (const [name, category, descriptions] of asPackage) {
+      for (const description of descriptions) expect([name, description, keyFit({ name, category }, description)]).toEqual([name, description, true]);
+    }
+    // O "LT" do leite não é lata.
+    expect(keyFit({ name: 'Leite', category: 'laticinios' }, 'LEITE INTEGRAL LT 1L')).toBe(true);
   });
 });
 
@@ -256,10 +338,9 @@ describe('os grupos: as descrições e o tamanho de cada item', () => {
 
   it('a granel sempre entra; a sem tamanho sai ao lado de um tamanho, e entra quando nenhuma diz', () => {
     const sized = answered([item('a', 'Arroz', 'graos')], () => [key('ARROZ CAMIL 5KG'), key('ARROZ SEM TAMANHO'), key('ARROZ GRANEL', 'kg')]).groups;
-    expect(groupOf(sized, 'a')?.keys).toEqual(['ARROZ CAMIL 5KG', 'ARROZ GRANEL']);
+    expect(groupOf(sized, 'a')).toMatchObject({ keys: ['ARROZ CAMIL 5KG'], weightOnly: ['ARROZ GRANEL'] });
     const unsized = answered([item('a', 'Arroz', 'graos')], () => [key('ARROZ SEM TAMANHO'), key('ARROZ GRANEL', 'kg')]).groups;
-    expect(groupOf(unsized, 'a')?.keys).toEqual(['ARROZ GRANEL', 'ARROZ SEM TAMANHO']);
-    expect(groupOf(unsized, 'a')?.expected).toBeNull();
+    expect(groupOf(unsized, 'a')).toMatchObject({ keys: ['ARROZ SEM TAMANHO'], weightOnly: ['ARROZ GRANEL'], expected: null });
   });
 
   it('pedido em kg: o pacote igual; senão, o que cumpre em pacotes inteiros; senão, o mais visto, pelo preço por kg', () => {
@@ -292,20 +373,72 @@ describe('os grupos: as descrições e o tamanho de cada item', () => {
     ]);
   });
 
+  it('"1 x 2 L" é 2 L: o refrigerante vai ao banco sem o "1 x", e junto do "2L" (o banco recusaria a chamada toda)', () => {
+    const keys = [key('REFRI COCA COLA 1X2L', 'un', 10), key('REFRI GUARANA ANTARCTICA 2L', 'un', 3)];
+    const any = answered([item('r', 'Refrigerante', 'bebidas')], () => keys).groups;
+    expect(groupOf(any, 'r')?.keys).toEqual(['REFRI COCA COLA 1X2L', 'REFRI GUARANA ANTARCTICA 2L']);
+    expect(entryOf(any, 'r')).toMatchObject({ size: '2 L', sizeBy: 'only' });
+    expect(openGroupArgument(groupOf(any, 'r')!)).toEqual({ k: ['REFRI COCA COLA 1X2L', 'REFRI GUARANA ANTARCTICA 2L'], p: { u: 'l', a: 2 } });
+    const said = answered([item('r', 'Refrigerante 1x2L', 'bebidas')], () => keys).groups;
+    expect(groupOf(said, 'r')?.expected).toEqual({ unit: 'l', amount: 2, label: '2 L' });
+    expect(openGroupArgument(groupOf(said, 'r')!).p).toEqual({ u: 'l', a: 2 });
+  });
+
+  it('todo grupo vai ao banco numa forma que ele aceita, venha o tamanho da chave ou da lista', () => {
+    const descriptions = [
+      'REFRI COCA COLA 1X2L', 'REFRI COCA COLA 2L', 'REFRI COCA COLA 2000X350ML', 'REFRI COCA COLA LT 350ML C 12', 'REFRI COCA COLA 6X2L',
+      'CERV SKOL 1X350ML', 'CERV SKOL 2000X350ML', 'CERV SKOL LT 350ML C 12', 'CERV SKOL LT 350ML', 'CERV SKOL 1001X350ML',
+      'OVOS BRANCOS C 30', 'OVOS BRANCOS C 1', 'OVOS BRANCOS 1500 UN', 'OVOS BRANCOS 200000 UN', 'OVOS BRANCOS C 12',
+      'ARROZ CAMIL 5KG', 'ARROZ CAMIL 200000KG', 'ARROZ CAMIL 1X5KG', 'ARROZ CAMIL 2X5KG', 'ARROZ GRANEL',
+      'LEITE INT ITALAC 1L', 'LEITE INT ITALAC 1X1L', 'LEITE INT ITALAC 12X1L', 'LEITE INT ITALAC 1200X1L',
+    ];
+    const units: SharedItemKey['unit'][] = ['un', 'kg', 'l'];
+    const keys = descriptions.flatMap((description, n) => units.map((unit) => key(description, unit, 1 + (n % 4))));
+    const names = [
+      'Refrigerante', 'Refrigerante 1x2L', 'Refrigerante 2000x350ml', 'Cerveja', 'Cerveja 1x350ml', 'Cerveja 1001x350ml', 'Ovos',
+      'Ovos 1 un', 'Ovos (dúzia)', 'Ovos 200000 un', 'Arroz', 'Arroz 1x5kg', 'Arroz 200000kg', 'Leite', 'Leite 1x1l', 'Leite 1200x1l',
+    ];
+    const items = names.flatMap((name, n) =>
+      ([['un', 1], ['kg', 2], ['g', 500], ['l', 1], ['ml', 700]] as const).map(([unit, quantity]) => item(`${n}-${unit}`, name, null, quantity, unit)),
+    );
+    const { groups } = answered(items, () => keys);
+    expect(groups.length).toBeGreaterThan(10);
+    for (const group of groups) expect([group.signature, serverAccepts(openGroupArgument(group))]).toEqual([group.signature, true]);
+    expect(serverAccepts({ k: ['A'], p: { u: 'l', a: 2, o: 1 } })).toBe(false);
+  });
+
+  it('a descrição vista a peso e por unidade: a peso ela entra, e a linha por unidade que o app não escolheu fica no banco', () => {
+    const garlic = [key('ALHO', 'kg', 3), key('ALHO', 'un', 2), key('ALHO 200G', 'un', 1)];
+    const kilo = answered([item('a', 'Alho', 'hortifruti', 0.5, 'kg')], () => garlic).groups;
+    const group = groupOf(kilo, 'a')!;
+    expect(group).toMatchObject({ keys: ['ALHO 200G'], weightOnly: ['ALHO'], expected: { unit: 'kg', amount: 0.2 } });
+    expect(openGroupArgument(group)).toEqual({ k: ['ALHO 200G'], w: ['ALHO'], p: { u: 'kg', a: 0.2 } });
+    const lemons = [key('LIMAO TAHITI', 'kg', 4), key('LIMAO TAHITI', 'un', 1), key('LIMAO TAHITI 500G', 'un', 2)];
+    const piece = groupOf(answered([item('l', 'Limão', 'hortifruti')], () => lemons).groups, 'l')!;
+    expect(piece).toMatchObject({ keys: ['LIMAO TAHITI 500G'], weightOnly: ['LIMAO TAHITI'] });
+    // Sem tamanho nenhum por unidade, a solta é a escolhida, e a mesma descrição vale em toda unidade.
+    const loose = groupOf(answered([item('l', 'Limão', 'hortifruti')], () => lemons.slice(0, 2)).groups, 'l')!;
+    expect(loose).toMatchObject({ keys: ['LIMAO TAHITI'], weightOnly: [], expected: null });
+    // Só a peso: o grupo vai sem chave por unidade e sem tamanho esperado.
+    const weightOnly = groupOf(answered([item('a', 'Alho', 'hortifruti', 0.5, 'kg')], () => [key('ALHO', 'kg', 3), key('ALHO', 'un', 2)]).groups, 'a')!;
+    expect(openGroupArgument(weightOnly)).toEqual({ k: [], w: ['ALHO'] });
+  });
+
   it('em chamadas de 40 grupos; o que vai ao banco são as chaves e o tamanho esperado', () => {
     const groups: OpenGroup[] = Array.from({ length: 90 }, (_, n) => ({
       signature: `K${String(n).padStart(3, '0')}`,
       keys: [`K${n}`],
+      weightOnly: [],
       expected: null,
       items: [],
     }));
     expect(openGroupCalls([...groups].reverse()).map((call) => call.length)).toEqual([40, 40, 10]);
     expect(openGroupCalls(groups)[0][0].signature).toBe('K000');
-    expect(openGroupArgument({ signature: 's', keys: ['A'], expected: null, items: [] })).toEqual({ k: ['A'] });
-    expect(openGroupArgument({ signature: 's', keys: ['A'], expected: { unit: 'l', amount: 4.2, label: '12 x 350 ml', of: 12 }, items: [] })).toEqual({
-      k: ['A'],
-      p: { u: 'l', a: 4.2, o: 12 },
-    });
+    expect(openGroupArgument({ signature: 's', keys: ['A'], weightOnly: [], expected: null, items: [] })).toEqual({ k: ['A'] });
+    expect(
+      openGroupArgument({ signature: 's', keys: ['A'], weightOnly: [], expected: { unit: 'l', amount: 4.2, label: '12 x 350 ml', of: 12 }, items: [] }),
+    ).toEqual({ k: ['A'], p: { u: 'l', a: 4.2, o: 12 } });
+    expect(openGroupArgument({ signature: 's', keys: ['A'], weightOnly: ['B'], expected: null, items: [] })).toEqual({ k: ['A'], w: ['B'] });
   });
 
   it('refazer a conta não pergunta de novo ao leitor do item: o veredito fica guardado', () => {
@@ -415,6 +548,41 @@ describe('os preços (passo 2)', () => {
       STORES,
     );
     expect(quotes.get('a')?.map((quote) => quote.unitPrice)).toEqual([22]);
+  });
+
+  it('a linha por unidade sem o tamanho lido só fica quando o preço combina com o dos outros mercados (o fardo com a descrição da lata)', () => {
+    const can = answered([item('c', 'Cerveja', 'alcoolicas')], () => [key('CERV SKOL LT 350ML', 'un', 3)]).groups;
+    const at = (rows: SharedItemPrice[]) => openQuotes([answerFor(can, rows)], can, STORES).get('c')?.map((quote) => `${quote.storeCnpj} ${quote.unitPrice}`);
+    const sized = { pack_unit: 'l', pack_amount: 0.35, pack_of: null };
+    // O fardo do B ao lado das latas do A (tamanho lido) e do C (sem tamanho): sai.
+    expect(at([row(0, '64000000000201', 3.49, sized), row(0, '64000000000202', 39.9), row(0, '64000000000203', 3.59)])).toEqual([
+      '64000000000201 3.49',
+      '64000000000203 3.59',
+    ]);
+    // Ao lado de uma lata só: sai também.
+    expect(at([row(0, '64000000000201', 3.49, sized), row(0, '64000000000202', 39.9)])).toEqual(['64000000000201 3.49']);
+    // Duas sem tamanho e sem acordo: saem as duas (não há como saber qual é a lata).
+    expect(at([row(0, '64000000000202', 39.9), row(0, '64000000000203', 3.49)])).toBeUndefined();
+    // A linha com o tamanho lido sempre fica; e sozinha, a sem tamanho fica (não há com que comparar: o risco que resta).
+    expect(at([row(0, '64000000000202', 3.49), row(0, '64000000000203', 3.59), row(0, '64000000000201', 39.9, sized)])).toEqual([
+      '64000000000202 3.49',
+      '64000000000203 3.59',
+      '64000000000201 39.9',
+    ]);
+    expect(at([row(0, '64000000000202', 39.9)])).toEqual(['64000000000202 39.9']);
+    // A 2,5 vezes (inclusive) ainda combina.
+    expect(at([row(0, '64000000000201', 4, sized), row(0, '64000000000202', 10)])).toEqual(['64000000000201 4', '64000000000202 10']);
+  });
+
+  it('no preço por kg, a bandeja sem tamanho lido se compara com o que é vendido a peso', () => {
+    const garlic = answered([item('a', 'Alho', 'hortifruti', 0.5, 'kg')], () => [key('ALHO', 'kg', 3), key('ALHO 200G', 'un', 1)]).groups;
+    const at = (rows: SharedItemPrice[]) =>
+      openQuotes([answerFor(garlic, rows)], garlic, STORES).get('a')?.map((quote) => `${quote.storeCnpj} ${quote.unit} ${quote.unitPrice}`);
+    expect(at([row(0, '64000000000201', 30, { unit: 'kg' }), row(0, '64000000000203', 7.9)])).toEqual([
+      '64000000000201 kg 30',
+      '64000000000203 kg 39.5',
+    ]);
+    expect(at([row(0, '64000000000201', 30, { unit: 'kg' }), row(0, '64000000000203', 79)])).toEqual(['64000000000201 kg 30']);
   });
 });
 

@@ -24,7 +24,7 @@
 import { genericItem } from './genericItem';
 import { singular } from './nameWords';
 import { packagesFor, plainSize } from './packagePrice';
-import { packageSize, samePackageSize, sharedPackageSize, type PackageSize } from './packageSize';
+import { packageLabel, packageSize, samePackageSize, sharedPackageSize, type PackageSize } from './packageSize';
 import { addsForm, itemExtraWords, itemIdentity, sameItemFit, searchWords, spelledOut } from './sameItem';
 import { guessCategory } from './search';
 import {
@@ -33,6 +33,7 @@ import {
   sharedPack,
   sharedRowOf,
   sharedWeekStart,
+  withinBand,
   type OpenPrice,
   type SharedPrice,
   type SharedPriceRow,
@@ -106,13 +107,17 @@ export interface OpenGroupItem {
 }
 
 /**
- * Um grupo de descrições que são o mesmo item (para um ou mais itens da lista). `expected`: o tamanho das linhas por
- * unidade que o grupo quer (o banco deixa de fora a linha cujo tamanho lido é outro). A assinatura é as chaves, em
- * ordem, uma por linha, e o tamanho esperado.
+ * Um grupo de descrições que são o mesmo item (para um ou mais itens da lista). `keys`: as descrições cujas linhas
+ * valem em toda unidade (as por unidade que o app escolheu, com as vendidas a peso delas); `weightOnly`: as que só
+ * valem vendidas a peso (kg, g, l, ml): "ALHO" entra pelo alho a granel, e a cabeça solta, "ALHO" por unidade, não é o
+ * tamanho escolhido. `expected`: o tamanho das linhas por unidade que o grupo quer (o banco deixa de fora a linha
+ * cujo tamanho lido é outro), na forma que a base guarda (basePackSize). A assinatura é as chaves, em ordem, uma por
+ * linha, as só a peso depois de "~", e o tamanho esperado.
  */
 export interface OpenGroup {
   signature: string;
   keys: string[];
+  weightOnly: string[];
   expected: PackageSize | null;
   items: OpenGroupItem[];
 }
@@ -280,14 +285,35 @@ export function restorePackMark(key: string): string {
 // normalize_alias corta o decimal ("10,1KG" vira "10 1KG"): o número solto antes do tamanho deixa o tamanho em dúvida.
 const SPLIT_DECIMAL = /(?:^| )\d{1,3} \d{1,3} ?(?:KG|G|GR|GRS|L|LT|ML)(?= |$)/;
 
+/** Os limites do check de shared_prices.pack_* (20261122140000_package_sizes.sql), os mesmos de readPack no servidor. */
+export const MAX_PACK_AMOUNT = 100000;
+export const MAX_PACK_OF = 1000;
+
+/**
+ * O tamanho como a base o guarda: o que readPack (supabase/functions/_shared/receiptRead.ts) grava em pack_* e o que
+ * shared_item_prices aceita no tamanho esperado de um grupo. A quantidade com seis casas, acima de 0 e até 100 000; em
+ * "un", inteira e de 2 ou mais; o "N x" só de 2 a 1000, e fora disso o tamanho fica sem ele ("1 x 2 L" é 2 L; "2000 x
+ * 350 ml", 700 L, como o servidor guarda). null quando a base não guardaria tamanho nenhum.
+ */
+export function basePackSize(size: PackageSize | null): PackageSize | null {
+  if (!size) return null;
+  const amount = Math.round(size.amount * 1e6) / 1e6;
+  if (!(amount > 0 && amount <= MAX_PACK_AMOUNT)) return null;
+  if (size.unit === 'un') return Number.isInteger(amount) && amount >= 2 ? { unit: 'un', amount, label: packageLabel({ unit: 'un', amount }) } : null;
+  const of = size.of != null && Number.isInteger(size.of) && size.of >= 2 && size.of <= MAX_PACK_OF ? size.of : undefined;
+  const kept: Omit<PackageSize, 'label'> = { unit: size.unit, amount, ...(of !== undefined ? { of } : {}) };
+  return { ...kept, label: of === size.of ? size.label : packageLabel(kept) };
+}
+
 /**
  * O tamanho do pacote que uma chave da base diz, pela leitura estrita (sharedPackageSize, a de quando o tamanho vai
- * para a base: "C12", "FD", "SIXPACK" e um número que a leitura não explicou deixam sem tamanho) e com a caixa de
- * volta (restorePackMark). null também quando o decimal foi cortado ("ARROZ 10 1KG": 10,1 kg ou 1 kg?).
+ * para a base: "C12", "FD", "SIXPACK" e um número que a leitura não explicou deixam sem tamanho), com a caixa de
+ * volta (restorePackMark) e na forma que a base guarda (basePackSize: "REFRI COCA COLA 1X2L" é 2 L, como "… 2L").
+ * null também quando o decimal foi cortado ("ARROZ 10 1KG": 10,1 kg ou 1 kg?).
  */
 export function keyPackageSize(key: string): PackageSize | null {
   if (SPLIT_DECIMAL.test(key)) return null;
-  return sharedPackageSize(restorePackMark(key));
+  return basePackSize(sharedPackageSize(restorePackMark(key)));
 }
 
 /**
@@ -303,16 +329,25 @@ export const OTHER_PRODUCT_WORDS: ReadonlySet<string> = new Set([
   'grao',
 ]);
 
+// Depois destas, o "MIN" da nota é o mineral ("OLEO MIN", "SAL MIN"); em outro lugar ele pode ser outra coisa
+// ("QUEIJO MIN FRESCAL" é o minas).
+const MINERAL_BEFORE = new Set(['oleo', 'sal']);
+
 /**
  * As marcas de "outro produto do mesmo item" num nome (lido por extenso, spelledOut, e no singular): cada palavra de
  * OTHER_PRODUCT_WORDS; "grau" para a classificação de segunda (T2 a T9, 2A a 9A, "segunda", "tipo 2", "tipo II"); e
  * "tipo" para "tipo" antes de uma palavra ("QUEIJO TIPO MUSSARELA", "LEITE TIPO A"). "ARROZ TIPO 1" e "T1" não marcam.
+ * O mineral como a nota abrevia: "OLEO MIN" e "SAL MIN" marcam como "OLEO MINERAL"; e a água mineral é a água de
+ * sempre, não outro produto: "AGUA MINERAL" não marca, como "AGUA MIN" e "AGUA CRYSTAL".
  */
 export function otherProductMarks(name: string): ReadonlySet<string> {
   const words = spelledOut(name).split(' ').filter(Boolean);
   const marks = new Set<string>();
   words.forEach((word, at) => {
     const one = singular(word);
+    const prev = at > 0 ? singular(words[at - 1]) : null;
+    if (one === 'mineral' && prev === 'agua') return;
+    if (word === 'min' && prev && MINERAL_BEFORE.has(prev)) marks.add('mineral');
     if (OTHER_PRODUCT_WORDS.has(word) || OTHER_PRODUCT_WORDS.has(one)) marks.add(OTHER_PRODUCT_WORDS.has(word) ? word : one);
     if (/^t[2-9]$/.test(word) || /^[2-9]a$/.test(word) || word === 'segunda') marks.add('grau');
     if (word === 'tipo' || word === 'tp') {
@@ -328,11 +363,33 @@ const VERDICTS = new Map<string, boolean>();
 const VERDICTS_LIMIT = 20000;
 
 /**
+ * Os itens cuja forma de sempre é seca ou fresca, e a lata é outro produto: "FEIJAO EM LATA" é o feijão cozido,
+ * "MILHO VERDE LATA" o milho em conserva, "TOMATE PELADO LATA", "ABACAXI CALDA LATA". Para eles o "LT" da nota
+ * também é a lata ("MILHO VERDE LT QUERO 170G"; depois de um número é o litro). Para os outros itens a lata é só a
+ * embalagem (a cerveja, o refrigerante, o atum, a sardinha, o leite condensado, o creme de leite, o óleo) e não marca
+ * nada, com "LATA" ou "LT": o "LT" da nota não se lê como lata fora daqui, porque ele também é o litro, o leite e o
+ * light.
+ */
+export const CAN_IS_ANOTHER_PRODUCT: ReadonlySet<string> = new Set(['feijao', 'milho', 'tomate', 'abacaxi']);
+
+/** As marcas de um nome para o item da lista: as de otherProductMarks, com a lata só para CAN_IS_ANOTHER_PRODUCT. */
+function itemMarks(name: string, canned: boolean): ReadonlySet<string> {
+  const marks = new Set(otherProductMarks(name));
+  if (!canned) marks.delete('lata');
+  else {
+    const words = spelledOut(name).split(' ').filter(Boolean);
+    if (words.some((word, at) => word === 'lt' && at > 0 && !/\d$/.test(words[at - 1]))) marks.add('lata');
+  }
+  return marks;
+}
+
+/**
  * A descrição da base é o mesmo item da lista: `mesmo` de sameItemFit (talvez, outro e "não sei" ficam de fora), sem
- * marca de outro produto que o nome da lista não tenha (otherProductMarks) e sem forma que a lista não diz
- * (addsForm: o café solúvel para "Café"). A descrição é lida com a caixa de volta (restorePackMark) e a categoria que
- * o app adivinha dela. O resultado fica guardado (até 20 000), fora do guardado de readItem: refazer a conta quando
- * alguém marca um item no carrinho não chama sameItemFit de novo.
+ * marca de outro produto que o nome da lista não tenha (otherProductMarks, com a lata só onde ela é outro produto:
+ * CAN_IS_ANOTHER_PRODUCT) e sem forma que a lista não diz (addsForm: o café solúvel para "Café"). A descrição é lida
+ * com a caixa de volta (restorePackMark) e a categoria que o app adivinha dela. O resultado fica guardado (até
+ * 20 000), fora do guardado de readItem: refazer a conta quando alguém marca um item no carrinho não chama
+ * sameItemFit de novo.
  */
 export function keyFit(item: { name: string; category?: string | null }, key: string): boolean {
   const restored = restorePackMark(key);
@@ -341,12 +398,13 @@ export function keyFit(item: { name: string; category?: string | null }, key: st
   if (known !== undefined) return known;
   const category = guessCategory(restored, { abbreviated: true });
   let fit = sameItemFit({ name: item.name, category: item.category }, { names: [restored], category }) === 'mesmo';
+  const want = fit ? itemIdentity(item.name, item.category) : null;
   if (fit) {
-    const mine = otherProductMarks(item.name);
-    fit = [...otherProductMarks(restored)].every((mark) => mine.has(mark));
+    const canned = want != null && CAN_IS_ANOTHER_PRODUCT.has(want.key);
+    const mine = itemMarks(item.name, canned);
+    fit = [...itemMarks(restored, canned)].every((mark) => mine.has(mark));
   }
   if (fit) {
-    const want = itemIdentity(item.name, item.category);
     const have = itemIdentity(restored, category);
     fit = !(want && have && addsForm(want, have));
   }
@@ -388,16 +446,22 @@ const heaviest = (a: SizeGroup, b: SizeGroup) =>
   SIZE_UNIT_ORDER.indexOf(a.size.unit) - SIZE_UNIT_ORDER.indexOf(b.size.unit) ||
   (a.size.label < b.size.label ? -1 : a.size.label > b.size.label ? 1 : 0);
 
-/** As chaves do grupo, no máximo OPEN_KEYS_PER_ENTRY (as da semana mais nova, as mais vistas), em ordem. */
-function groupKeys(keys: readonly SharedItemKey[]): string[] {
+/**
+ * As chaves do grupo, no máximo OPEN_KEYS_PER_ENTRY (as da semana mais nova, as mais vistas), em ordem: as que entram
+ * por unidade (as escolhidas, que levam também as linhas a peso delas) e as que só entram a peso. Uma descrição vista
+ * a peso e por unidade cuja linha por unidade não foi escolhida vai só a peso: o banco não devolve a linha por unidade
+ * dela (a cabeça de alho solta no grupo da bandeja de 200 g, que levaria o tamanho da bandeja).
+ */
+function groupKeys(keys: readonly SharedItemKey[]): { keys: string[]; weightOnly: string[] } {
   const best = [...keys]
     .sort((a, b) => (a.week !== b.week ? (a.week < b.week ? 1 : -1) : b.seen - a.seen || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)))
     .slice(0, OPEN_KEYS_PER_ENTRY);
-  return [...new Set(best.map((key) => key.key))].sort();
+  const byUnit = new Set(best.filter((key) => key.unit === 'un').map((key) => key.key));
+  const weightOnly = new Set(best.filter((key) => key.unit !== 'un' && !byUnit.has(key.key)).map((key) => key.key));
+  return { keys: [...byUnit].sort(), weightOnly: [...weightOnly].sort() };
 }
 
 const expectedText = (size: PackageSize | null) => (size ? `\n#${size.unit}|${size.amount}|${size.of ?? ''}` : '');
-const hasUnitKeys = (keys: readonly SharedItemKey[]) => keys.some((key) => key.unit === 'un');
 
 /**
  * Os grupos de descrições da lista. Para cada item, na ordem da lista: as descrições da busca dele (em todas as
@@ -409,7 +473,9 @@ const hasUnitKeys = (keys: readonly SharedItemKey[]) => keys.some((key) => key.u
  * - em "un", com o tamanho no nome ("Arroz 5kg", "Ovos (dúzia)"): só as do mesmo tamanho;
  * - em "un", sem o tamanho: o tamanho mais visto (Σ seen), dito nos detalhes (`sizeBy`); sem nenhum tamanho, as sem
  *   tamanho.
- * Grupos com as mesmas descrições e o mesmo tamanho esperado viram um, com vários itens.
+ * As outras por unidade ficam de fora, também quando a mesma descrição é vendida a peso em outro mercado: ela vai ao
+ * banco só a peso (`weightOnly`). Os tamanhos estão na forma que a base guarda (basePackSize), e é nela que o tamanho
+ * esperado vai ao banco. Grupos com as mesmas descrições e o mesmo tamanho esperado viram um, com vários itens.
  */
 export function openGroups(items: readonly OpenSearchItem[], answers: readonly OpenKeysAnswer[], plan: OpenSearchPlan): OpenGroup[] {
   // As descrições de cada busca, em todas as respostas (a mesma busca pode estar em mais de uma, de outra lista).
@@ -444,7 +510,10 @@ export function openGroups(items: readonly OpenSearchItem[], answers: readonly O
         entry = { ...entry, pack: pick.size, perBase: { unit: dimension, amount: pick.size.amount, label: pick.size.label, packages: whole(pick) } };
       }
     } else {
-      const stated = item.unit === 'un' ? packageSize(item.name) : null;
+      // O tamanho da lista na forma da base ("Refrigerante 1x2L" é 2 L); um que a base não guardaria fica como foi
+      // lido, e nenhuma descrição tem esse tamanho.
+      const said = item.unit === 'un' ? packageSize(item.name) : null;
+      const stated = said && (basePackSize(said) ?? said);
       if (stated) {
         chosen = unitKeys.filter((key) => {
           const size = keyPackageSize(key.key);
@@ -461,12 +530,12 @@ export function openGroups(items: readonly OpenSearchItem[], answers: readonly O
         } else chosen = unitKeys;
       }
     }
-    const keys = groupKeys([...chosen, ...weightKeys]);
-    if (!keys.length) continue;
+    const { keys, weightOnly } = groupKeys([...chosen, ...weightKeys]);
+    if (!keys.length && !weightOnly.length) continue;
     // O tamanho que o banco confere nas linhas por unidade (o pacote do preço por kg, o da lista, o escolhido).
-    const expected = entry.pack && hasUnitKeys(chosen) ? entry.pack : null;
-    const groupSignature = keys.join('\n') + expectedText(expected);
-    const group = groups.get(groupSignature) ?? { signature: groupSignature, keys, expected, items: [] };
+    const expected = keys.length ? basePackSize(entry.pack) : null;
+    const groupSignature = [...keys, ...weightOnly.map((key) => `~${key}`)].join('\n') + expectedText(expected);
+    const group = groups.get(groupSignature) ?? { signature: groupSignature, keys, weightOnly, expected, items: [] };
     group.items.push({ id: item.id, ...entry });
     groups.set(groupSignature, group);
   }
@@ -481,11 +550,18 @@ export function openGroupCalls(groups: readonly OpenGroup[]): OpenGroup[][] {
   return calls;
 }
 
-/** O que vai ao banco por grupo: as chaves e, quando há, o tamanho esperado das linhas por unidade. */
-export function openGroupArgument(group: OpenGroup): { k: string[]; p?: { u: string; a: number; o?: number } } {
-  const size = group.expected;
-  if (!size) return { k: group.keys };
-  return { k: group.keys, p: { u: size.unit, a: Math.round(size.amount * 1e6) / 1e6, ...(size.of != null ? { o: size.of } : {}) } };
+/**
+ * O que vai ao banco por grupo: as chaves (`k`, toda unidade), as só a peso (`w`, quando há) e, quando há, o tamanho
+ * esperado das linhas por unidade (`p`), sempre dentro do que o banco aceita (basePackSize: um "1 x" ou um tamanho
+ * fora dos limites faria o banco recusar a chamada inteira, de até 40 grupos).
+ */
+export function openGroupArgument(group: OpenGroup): { k: string[]; w?: string[]; p?: { u: string; a: number; o?: number } } {
+  const size = group.keys.length ? basePackSize(group.expected) : null;
+  return {
+    k: group.keys,
+    ...(group.weightOnly.length ? { w: group.weightOnly } : {}),
+    ...(size ? { p: { u: size.unit, a: size.amount, ...(size.of != null ? { o: size.of } : {}) } } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -533,11 +609,29 @@ export function parseSharedItemPrices(raw: unknown, groups: readonly OpenGroup[]
 const round4 = (n: number) => Math.round(n * 10000) / 10000;
 
 /**
+ * As linhas de um item que ficam, uma por mercado e unidade: a linha por unidade sem o tamanho lido pelo servidor
+ * (`unsized`: pack_* vazio, porque veio da foto, é de antes do tamanho ou é o fardo vendido com a descrição da lata,
+ * que a leitura do QR code nunca mede) leva o tamanho do grupo, e só fica quando mais da metade das linhas do item na
+ * mesma unidade, ela incluída, está a no máximo 2,5 vezes dela (withinBand, a faixa do caminho do produto): o fardo a
+ * R$ 39,90 ao lado de latas a R$ 3,49 sai, e duas sem acordo saem as duas. A linha com o tamanho lido, e a vendida a
+ * peso, sempre ficam (e contam). Sozinha, a linha sem tamanho fica: não há com que comparar.
+ */
+function agreeingRows<T extends { row: SharedPriceRow; unsized: boolean }>(entries: readonly T[]): T[] {
+  return entries.filter((entry) => {
+    if (!entry.unsized) return true;
+    const same = entries.filter((other) => other.row.unit === entry.row.unit);
+    const near = same.filter((other) => withinBand(other.row.unitPrice, entry.row.unitPrice)).length;
+    return near * 2 > same.length;
+  });
+}
+
+/**
  * Os preços da base aberta de cada item, prontos para a conta da lista (SharedQuote com `productId` null e `open`).
  * Uma linha chega a um grupo de agora só pela assinatura dele (`groups[row.group]` da resposta igual à do grupo): a
  * resposta de outra lista, ou de antes, nunca põe preço em outros itens, e duas listas com os mesmos itens dividem a
  * resposta. Por item: a linha por unidade do item pedido em peso ou volume vira preço por kg ou litro, pelo pacote;
- * a outra linha por unidade leva o tamanho escolhido. Uma por mercado e unidade (a semana mais nova, a mais barata), e
+ * a outra linha por unidade leva o tamanho escolhido. Uma por mercado e unidade (a semana mais nova, a mais barata), a
+ * sem tamanho lido só quando combina com as outras (agreeingRows), e
  * os mercados da casa pelo CNPJ, como em sharedQuotes: a linha "da casa" cujo CNPJ não está nos mercados carregados
  * fica de fora; a de fora fica com `storeId` null. Não há segunda camada da compra própria aqui (não há produto): a
  * regra do banco é a garantia.
@@ -567,7 +661,7 @@ export function openQuotes(
     const rows = bySignature.get(group.signature) ?? [];
     if (!rows.length) continue;
     for (const item of group.items) {
-      const latest = new Map<string, { row: SharedPriceRow; open: OpenPrice }>();
+      const latest = new Map<string, { row: SharedPriceRow; open: OpenPrice; unsized: boolean }>();
       for (const row of rows) {
         let price: Omit<SharedPrice, 'product_id'> = row;
         let open: OpenPrice = { size: null, sizeBy: null, fromPackage: null, packages: null };
@@ -584,10 +678,10 @@ export function openQuotes(
         const shown = { ...sharedRowOf(price, nameByCnpj.get(row.store_cnpj)), pack };
         const key = `${shown.storeCnpj}\u0000${shown.unit}`;
         const seen = latest.get(key);
-        if (!seen || newerSharedRow(shown, seen.row)) latest.set(key, { row: shown, open });
+        if (!seen || newerSharedRow(shown, seen.row)) latest.set(key, { row: shown, open, unsized: row.unit === 'un' && sharedPack(row) == null });
       }
       const list: SharedQuote[] = [];
-      for (const { row, open } of latest.values()) {
+      for (const { row, open } of agreeingRows([...latest.values()])) {
         const ids = idsByCnpj.get(row.storeCnpj) ?? [];
         if (ids.length) list.push(...ids.map((storeId) => ({ ...row, productId: null, storeId, open })));
         else if (!row.mine) list.push({ ...row, productId: null, storeId: null, open });

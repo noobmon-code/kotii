@@ -9,6 +9,10 @@ import { HOUSEHOLD_HEADER } from '@/lib/householdHeader';
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockCalls: { table: string; row: unknown; options: unknown; headers: [string, string][] }[] = [];
 const mockResult = { data: null as unknown, error: null as unknown };
+// A casa aberta (lib/activeHousehold, que useFillHouseState lê) guarda a escolha no AsyncStorage.
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
+);
 jest.mock('@/lib/supabase', () => ({
   supabase: {
     from: (table: string) => ({
