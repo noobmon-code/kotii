@@ -2,7 +2,14 @@ import { useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 
-import { deleteErrorNotice, fetchDeleteFacts, refreshDeletedProduct, useDeleteProduct, useDeleteProductAvailable } from '@/data/productDelete';
+import {
+  deleteErrorNotice,
+  fetchDeleteFacts,
+  forgetDeletedProduct,
+  refreshDeletedProduct,
+  useDeleteProduct,
+  useDeleteProductAvailable,
+} from '@/data/productDelete';
 import { isProductGone } from '@/data/productMerge';
 import { DELETE_BUTTON, DELETE_CHECK_FAILED_TITLE, deleteStep, OPEN_REVIEW, type DeleteFacts } from '@/domain/productDelete';
 import type { ProductName } from '@/domain/similarNames';
@@ -59,6 +66,8 @@ export function DeleteProductButton({ productId, onDeleted }: { productId: strin
     if (facts.product && cached && facts.product.name !== cached.name) queryClient.invalidateQueries({ queryKey: ['products'] });
     const step = deleteStep(facts);
     if (step.kind === 'gone') {
+      // Outro aparelho excluiu ou juntou: sai da memória na hora, como depois de excluir aqui.
+      forgetDeletedProduct(queryClient, productId);
       refreshDeletedProduct(queryClient);
       notify(step.title, step.message);
       onDeleted();

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import ProductScreen from '@/app/produto/[id]';
@@ -21,7 +22,8 @@ import {
   PRODUCT_NOT_CHECKED,
   PRODUCT_NOT_IN_HOUSE,
 } from '@/domain/productDelete';
-import { DISTINCT_TITLE } from '@/domain/productMerge';
+import { DISTINCT_TITLE, orderedPair, type MergeSuggestion } from '@/domain/productMerge';
+import { useMergeSuggestions } from '@/features/useProductMerge';
 import { FEATURES } from '@/lib/features';
 import { OFFLINE_TRY_AGAIN } from '@/lib/networkErrors';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -41,6 +43,8 @@ const mockDb = {
   failing: new Set<string>(),
   /** As leituras destas tabelas ficam sem resposta até `release` (ou até o corte delas). */
   hold: new Set<string>(),
+  /** A busca do catálogo inteiro (fetchProducts, a que pede a contagem) fica sem resposta; a de um produto só, não. */
+  holdCatalog: false,
   release: [] as (() => void)[],
   asked: [] as string[],
   rpcs: [] as { name: string; args: unknown }[],
@@ -96,7 +100,7 @@ jest.mock('@/lib/supabase', () => {
         Promise.resolve()
           .then((): Reply | Promise<Reply> => {
             mockDb.asked.push(name);
-            if (mockDb.hold.has(name)) return untilAborted(signal);
+            if (mockDb.hold.has(name) || (mockDb.holdCatalog && name === 'products' && count === 'exact')) return untilAborted(signal);
             if (mockDb.failing.has(name)) return { data: null, count: null, error: { message: 'TypeError: Network request failed' } };
             let rows = rowsOf().filter((row) => filters.every((keep) => keep(row)));
             const total = rows.length;
@@ -179,10 +183,12 @@ const settle = async (ms = 30) => {
   });
   record();
 };
-async function open() {
+/** Abre a tela do produto; `beside` fica montado junto, como a tela de baixo na pilha (Preços). */
+async function open(beside?: ReactNode) {
   await act(async () => {
     renderer = create(
       <QueryClientProvider client={client}>
+        {beside}
         <ProductScreen />
       </QueryClientProvider>,
     );
@@ -226,6 +232,7 @@ beforeEach(() => {
   };
   mockDb.failing = new Set();
   mockDb.hold = new Set();
+  mockDb.holdCatalog = false;
   mockDb.release = [];
   mockDb.asked = [];
   mockDb.rpcs = [];
@@ -383,6 +390,68 @@ describe('o toque lê o produto de novo e pergunta', () => {
     await confirmLast();
     expect(mockRouter.replace).toHaveBeenCalledWith('/precos');
     expect(seen).not.toContain(PRODUCT_NOT_IN_HOUSE);
+  });
+});
+
+describe('o cartão "Parecem o mesmo produto" de Preços, montado embaixo da tela', () => {
+  /** O que o cartão mostrou, render a render: cada sugestão como os dois nomes. */
+  let shown: string[][] = [];
+  const pairLabel = ({ keep, other }: MergeSuggestion) => [keep.name, other.name].sort().join(' / ');
+  function PricesCard() {
+    shown.push(useMergeSuggestions().suggestions.map(pairLabel));
+    return null;
+  }
+  const refused = ['Limao', 'Limão siciliano'].sort().join(' / ');
+
+  beforeEach(() => {
+    shown = [];
+    mockParams.id = 'limao';
+    mockDb.tables.products = [
+      product('siciliano', 'Limão siciliano', 'hortifruti'),
+      product('limao', 'Limao', 'hortifruti'),
+      product('arroz', 'Arroz 5kg'),
+      product('tiojoao', 'Arroz Tio João 5 kg'),
+    ];
+    // A casa disse que "Limao" e "Limão siciliano" são diferentes.
+    mockDb.tables.product_distinct_pairs = [{ ...orderedPair('limao', 'siciliano') }];
+    // Excluir, no banco: o produto sai, e os pares dele com ele (cascade).
+    mockDb.deleteAnswer = async () => {
+      mockDb.tables.products = mockDb.tables.products.filter((row) => row.id !== 'limao');
+      mockDb.tables.product_distinct_pairs = [];
+      return { data: { deleted: 'limao', pantry: 0, list: 0, barcodes: 0 }, error: null };
+    };
+  });
+
+  it('excluiu: o par recusado não volta como sugestão enquanto a busca nova dos produtos não chega', async () => {
+    await open(<PricesCard />);
+    expect(shown.at(-1)).toEqual(['Arroz 5kg / Arroz Tio João 5 kg']);
+    // A busca nova do catálogo fica sem resposta (sinal fraco; um catálogo de várias páginas); os pares, buscados
+    // de novo na hora, e as compras chegam antes dela.
+    mockDb.holdCatalog = true;
+    await tap();
+    const from = shown.length;
+    await confirmLast();
+    for (let round = 0; round < 4; round++) await settle();
+    expect(rpcCalls('delete_product')).toHaveLength(1);
+    expect(client.getQueryState(['products'])?.fetchStatus).toBe('fetching');
+    expect(client.getQueryData(['productDistinctPairs'])).toEqual([]);
+    expect(shown.slice(from).flat()).not.toContain(refused);
+    expect(shown.at(-1)).toEqual(['Arroz 5kg / Arroz Tio João 5 kg']);
+  });
+
+  it('já tinha sido excluído em outro aparelho: o par recusado também não volta', async () => {
+    await open(<PricesCard />);
+    // Outro aparelho excluiu (o produto e os pares dele saíram do banco); este ainda tem os dois na memória.
+    mockDb.tables.products = mockDb.tables.products.filter((row) => row.id !== 'limao');
+    mockDb.tables.product_distinct_pairs = [];
+    const from = shown.length;
+    // A leitura do toque pergunta só por este produto e acha nada; a busca nova do catálogo, depois, fica sem resposta.
+    mockDb.holdCatalog = true;
+    await tap();
+    for (let round = 0; round < 4; round++) await settle();
+    expect(notifyMock).toHaveBeenCalledWith(DELETE_GONE_TITLE, PRODUCT_NOT_IN_HOUSE);
+    expect(client.getQueryState(['products'])?.fetchStatus).toBe('fetching');
+    expect(shown.slice(from).flat()).not.toContain(refused);
   });
 });
 

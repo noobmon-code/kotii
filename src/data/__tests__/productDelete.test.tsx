@@ -19,7 +19,7 @@ import {
   DELETE_UNAVAILABLE_TITLE,
   PRODUCT_NOT_IN_HOUSE,
 } from '@/domain/productDelete';
-import { orderedPair, type DistinctPair } from '@/domain/productMerge';
+import { mergeCandidates, orderedPair, type DistinctPair } from '@/domain/productMerge';
 import { BUSY_TRY_AGAIN } from '@/lib/databaseErrors';
 
 import {
@@ -410,6 +410,10 @@ describe('excluir', () => {
     });
     expect(result?.carry).toEqual([orderedPair('p00', 'p02')]);
     expect(hook.client.getQueryData(['productDistinctPairs'])).toEqual([orderedPair('p03', 'p04'), orderedPair('p00', 'p02')]);
+    // O excluído sai do catálogo guardado no mesmo passo: com ele ainda lá e o par dele já fora, o par recusado
+    // (Limão siciliano / Limao) voltaria como sugestão até a busca nova dos produtos chegar.
+    expect(hook.client.getQueryData(['products'])).toEqual(products.filter((product) => product.id !== 'p01'));
+    expect(mergeCandidates(hook.client.getQueryData(['products'])!, hook.client.getQueryData(['productDistinctPairs'])!)).toEqual([]);
     expect(mockDb.upserts).toEqual([{ table: 'product_distinct_pairs', rows: [orderedPair('p00', 'p02')], options: { ignoreDuplicates: true } }]);
     // Enquanto a gravação não volta, os pares ainda não foram buscados de novo.
     expect(hook.invalidated).not.toContain('productDistinctPairs');
@@ -475,11 +479,21 @@ describe('excluir', () => {
     for (const { error, notice, receipts } of cases) {
       mockDb.rpcReply = { data: null, error };
       const hook = await withHook(() => useDeleteProduct());
+      const catalog = [
+        { id: 'p0', name: 'Sal grosso', category: 'mercearia' },
+        { id: 'p1', name: 'Sal', category: 'mercearia' },
+      ];
+      hook.client.setQueryData(['products'], catalog);
+      hook.client.setQueryData<DistinctPair[]>(['productDistinctPairs'], [orderedPair('p0', 'p1')]);
       await act(async () => {
         await expect(hook.value().mutateAsync({ id: 'p1', name: 'Sal' })).rejects.toEqual(error);
       });
       expect(deleteErrorNotice(error)).toEqual(notice);
       expect([...hook.invalidated].sort()).toEqual([...DELETE_REFRESHES, ...(receipts ? ['receipts'] : [])].sort());
+      // Só o que já não existe sai da memória na hora (com os pares dele); nos outros, o produto continua lá.
+      const gone = (error as { code: string }).code === 'P0002';
+      expect(hook.client.getQueryData(['products'])).toEqual(gone ? [catalog[0]] : catalog);
+      expect(hook.client.getQueryData(['productDistinctPairs'])).toEqual(gone ? [] : [orderedPair('p0', 'p1')]);
       await act(async () => renderer?.unmount());
     }
   });
