@@ -428,6 +428,15 @@ export interface FreezerRow {
   frozenOn: string | null;
 }
 
+/**
+ * Uma compra como descongelar devolve: `undone` quando o banco desfez (descongelada no dia em que foi congelada, ou
+ * antes; item_undone de thaw_pantry_items). frozenOn não diz isso: a descongelada que tinha voltado ao congelador e
+ * sai no mesmo dia volta com o dia em que foi congelada antes.
+ */
+export interface ThawedRow extends FreezerRow {
+  undone: boolean;
+}
+
 export const FROZEN_SOME_KEPT = ' O que já tinha passado da validade ficou como estava.';
 
 /** Tudo já tinha passado da validade quando foi para o congelador. */
@@ -448,10 +457,30 @@ export function frozenText(name: string, rows: readonly FreezerRow[], today: str
   return moved.length < rows.length ? `${base}${FROZEN_SOME_KEPT}` : base;
 }
 
-/** O aviso de "Descongelei": desfeito, a validade que volta a contar, ou sem validade. */
-export function thawedText(name: string, rows: readonly FreezerRow[], today: string): string {
-  if (rows.length && rows.every((row) => row.frozenOn == null)) return `${name} saiu do congelador, com a validade de antes.`;
-  const date = earliest(rows.map((row) => row.expiresOn));
+/** Uma saída do congelador, feita (o que o banco devolveu) ou prevista (thawedExpiry): a validade e se desfez. */
+interface ThawOutcome {
+  expiresOn: string | null;
+  undo: boolean;
+}
+
+/**
+ * A saída de que o aviso e a prévia falam: a que vence primeiro (sem validade por último; na mesma data, a
+ * desfeita). Uma regra só para as duas frases, para o aviso dizer o que a prévia prometeu.
+ */
+function firstThaw<T extends ThawOutcome>(outcomes: readonly T[]): T | undefined {
+  return [...outcomes].sort(
+    (a, b) => (a.expiresOn ?? '9999-12-31').localeCompare(b.expiresOn ?? '9999-12-31') || Number(b.undo) - Number(a.undo),
+  )[0];
+}
+
+/**
+ * O aviso de "Descongelei", pela compra que vence primeiro, como a prévia (thawPreviewText): desfeita (a validade
+ * de antes, digitada ou não), a validade que volta a contar, ou sem validade.
+ */
+export function thawedText(name: string, rows: readonly ThawedRow[], today: string): string {
+  const first = firstThaw(rows.map((row) => ({ expiresOn: row.expiresOn, undo: row.undone })));
+  if (first?.undo) return `${name} saiu do congelador, com a validade de antes.`;
+  const date = first?.expiresOn;
   if (!date) return `${name} saiu do congelador.`;
   return date >= today
     ? `${name} saiu do congelador. A validade volta a contar de onde parou: vence por volta de ${shortDate(date, today)}.`
@@ -466,7 +495,7 @@ export function freezeNotice(name: string, asked: number, rows: readonly Freezer
 }
 
 /** O aviso depois de descongelar `asked` compras. */
-export function thawNotice(name: string, asked: number, rows: readonly FreezerRow[], today: string): { title: string; message: string } {
+export function thawNotice(name: string, asked: number, rows: readonly ThawedRow[], today: string): { title: string; message: string } {
   if (!rows.length) return { title: PANTRY_CHANGED_TITLE, message: PANTRY_CHANGED };
   if (rows.length < asked) return { title: PANTRY_CHANGED_TITLE, message: THAW_PARTIAL };
   return { title: THAWED_TITLE, message: thawedText(name, rows, today) };
@@ -481,8 +510,8 @@ export function thawPreviewText(lots: readonly FrozenLot[], today: string): stri
       ? [thawedExpiry({ frozen_on: lot.frozen_on, fresh_expires_on: lot.fresh_expires_on, fresh_expiry_source: lot.fresh_expiry_source }, today)]
       : [],
   );
-  if (!previews.length) return null;
-  const first = [...previews].sort((a, b) => (a.expiresOn ?? '9999-12-31').localeCompare(b.expiresOn ?? '9999-12-31'))[0];
+  const first = firstThaw(previews);
+  if (!first) return null;
   if (first.undo) return 'Se descongelar hoje, volta para a validade de antes.';
   if (!first.expiresOn) return 'Se descongelar hoje, fica sem validade.';
   return first.expiresOn >= today

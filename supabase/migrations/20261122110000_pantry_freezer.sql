@@ -342,9 +342,11 @@ $$;
 -- congelador volta sem congelador; a descongelada que tinha voltado para ele volta a ser a descongelada (os dias
 -- que o gatilho guardou em prev_frozen_on e prev_thawed_on; o tipo fica o desta vez), e continua sem ensinar o
 -- produto. domain/freezer.ts thawedExpiry é o espelho da validade (os mesmos casos no Jest e em
--- scripts/db/test.sql).
+-- scripts/db/test.sql). item_undone diz qual compra foi desfeita: o aviso do app (thawedText) fala do que o banco
+-- fez, como a prévia fala do que faria, e frozen_on não basta para isso (a descongelada desfeita volta com o dia
+-- em que tinha sido congelada antes).
 create function public.thaw_pantry_items(p_ids uuid[], p_thawed_on date)
-returns table (item_id uuid, item_expires_on date, item_expiry_source text, item_frozen_on date)
+returns table (item_id uuid, item_expires_on date, item_expiry_source text, item_frozen_on date, item_undone boolean)
 language plpgsql
 security invoker
 set search_path = ''
@@ -374,9 +376,10 @@ begin
         fresh_expiry_source = null,
         prev_frozen_on = null,
         prev_thawed_on = null
-      where p.id = any(v_ids) and p.consumed_at is null
+      from (select q.id, q.frozen_on from public.pantry_items q where q.id = any(v_ids)) o
+      where p.id = o.id and p.consumed_at is null
         and p.frozen_on is not null and p.thawed_on is null
-      returning p.id, p.expires_on, p.expiry_source, p.frozen_on
+      returning p.id, p.expires_on, p.expiry_source, p.frozen_on, p_thawed_on <= o.frozen_on
     )
     select * from changed;
 end;

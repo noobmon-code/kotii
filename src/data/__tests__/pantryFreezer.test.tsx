@@ -189,17 +189,27 @@ describe('congelar e descongelar', () => {
     expect(invalidated).toEqual(['pantry']);
   });
 
-  it('descongelar manda as compras e o dia', async () => {
+  it('descongelar manda as compras e o dia, e devolve qual foi desfeita', async () => {
     mockDb.replies.thaw_pantry_items = [
-      { data: [{ item_id: 'a', item_expires_on: '2026-11-23', item_expiry_source: 'descongelado', item_frozen_on: '2026-11-01' }], error: null },
+      {
+        data: [
+          { item_id: 'a', item_expires_on: '2026-11-23', item_expiry_source: 'descongelado', item_frozen_on: '2026-11-01', item_undone: false },
+          // A descongelada que tinha voltado ao congelador, desfeita: volta com frozen_on, e só item_undone diz que desfez.
+          { item_id: 'b', item_expires_on: '2026-11-23', item_expiry_source: 'descongelado', item_frozen_on: '2026-11-01', item_undone: true },
+        ],
+        error: null,
+      },
     ];
     const { client, invalidated, value } = await withHook(() => useThawPantryItems());
     let rows: unknown;
     await act(async () => {
-      rows = await value().mutateAsync({ ids: ['a'], thawedOn: '2026-11-20' });
+      rows = await value().mutateAsync({ ids: ['a', 'b'], thawedOn: '2026-11-20' });
     });
-    expect(mockDb.rpcs).toEqual([{ name: 'thaw_pantry_items', args: { p_ids: ['a'], p_thawed_on: '2026-11-20' } }]);
-    expect(rows).toEqual([{ id: 'a', expiresOn: '2026-11-23', expirySource: 'descongelado', frozenOn: '2026-11-01' }]);
+    expect(mockDb.rpcs).toEqual([{ name: 'thaw_pantry_items', args: { p_ids: ['a', 'b'], p_thawed_on: '2026-11-20' } }]);
+    expect(rows).toEqual([
+      { id: 'a', expiresOn: '2026-11-23', expirySource: 'descongelado', frozenOn: '2026-11-01', undone: false },
+      { id: 'b', expiresOn: '2026-11-23', expirySource: 'descongelado', frozenOn: '2026-11-01', undone: true },
+    ]);
     expect(client.getMutationCache().getAll()[0].options.meta).toEqual(EXPECTS_ROWS_META);
     expect(invalidated).toEqual(['pantry']);
   });

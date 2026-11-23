@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import { addDays, formatShortDate, todayISO } from '@/domain/dates';
-import { DEFAULT_FREEZE_DAYS, FREEZER_NOT_READY, type FreezerRow } from '@/domain/freezer';
+import { DEFAULT_FREEZE_DAYS, FREEZER_NOT_READY, type FreezerRow, type ThawedRow } from '@/domain/freezer';
 import { PantryPanel } from '@/features/PantryPanel';
 import type { PantryItem } from '@/lib/types';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
@@ -16,7 +16,7 @@ import { Badge, ListRow, Section } from '@/ui/primitives';
 const mockPantry: { rows: PantryItem[] } = { rows: [] };
 const mockFreezer: { available: boolean | undefined } = { available: true };
 const mockFreeze = jest.fn<(input: { ids: string[]; kind: string; frozenOn: string }) => Promise<FreezerRow[]>>();
-const mockThaw = jest.fn<(input: { ids: string[]; thawedOn: string }) => Promise<FreezerRow[]>>();
+const mockThaw = jest.fn<(input: { ids: string[]; thawedOn: string }) => Promise<ThawedRow[]>>();
 
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 jest.mock('@/data/home', () => {
@@ -235,7 +235,7 @@ describe('descongelar pelo menu', () => {
     expect(labels(actions)).toContain('Descongelei');
     expect(labels(actions).some((label) => label.startsWith('Congel'))).toBe(false);
     expect(message).toBe(`No congelador desde ${short(day(-10))}. Se descongelar hoje: vence por volta de ${short(day(3))}.`);
-    mockThaw.mockResolvedValue([{ id: 'c', expiresOn: day(3), expirySource: 'descongelado', frozenOn: day(-10) }]);
+    mockThaw.mockResolvedValue([{ id: 'c', expiresOn: day(3), expirySource: 'descongelado', frozenOn: day(-10), undone: false }]);
     await act(async () => actions.find((a) => a.label === 'Descongelei')!.onPress());
     expect(mockThaw).toHaveBeenCalledWith({ ids: ['c'], thawedOn: today });
     expect(notify).toHaveBeenCalledWith(
@@ -256,5 +256,20 @@ describe('descongelar pelo menu', () => {
     await act(async () => renderer?.unmount());
     await open([frozen('c', { fresh_expires_on: day(-12), expires_on: day(-12), expiry_source: 'categoria' })]);
     expect(sheetOf('Frango').message).toBe(`No congelador desde ${short(day(-10))}. Se descongelar hoje, a validade já tinha passado (${short(day(-2))}).`);
+  });
+
+  it('a descongelada que voltou ao congelador hoje: o aviso de desfazer, como o menu prometeu (o F e o G de test.sql)', async () => {
+    // Congelado há 10 dias, descongelado ontem (vence em 2 dias), de novo no congelador hoje por engano.
+    for (const source of ['descongelado', 'manual'] as const) {
+      await open([frozen('c', { frozen_on: today, fresh_expires_on: day(2), fresh_expiry_source: source, expires_on: addDays(today, 90) })]);
+      const { actions, message } = sheetOf('Frango');
+      expect(message).toBe(`No congelador desde ${short(today)}. Se descongelar hoje, volta para a validade de antes.`);
+      // O banco desfaz e devolve o dia em que tinha sido congelado antes: frozenOn não é null, item_undone diz que desfez.
+      mockThaw.mockResolvedValueOnce([{ id: 'c', expiresOn: day(2), expirySource: source, frozenOn: day(-10), undone: true }]);
+      jest.mocked(notify).mockClear();
+      await act(async () => actions.find((a) => a.label === 'Descongelei')!.onPress());
+      expect(notify).toHaveBeenCalledWith('Descongelado', 'Frango saiu do congelador, com a validade de antes.');
+      await act(async () => renderer?.unmount());
+    }
   });
 });

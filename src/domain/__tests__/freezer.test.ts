@@ -34,6 +34,7 @@ import {
   wasFrozen,
   type FreezeKind,
   type FreezerRow,
+  type ThawedRow,
 } from '../freezer';
 import { APP_MAX_DATE, APP_MIN_DATE } from '../dates';
 import { EXPIRY_SOURCES } from '../pantry';
@@ -218,6 +219,9 @@ describe('frozenExpiryFor e thawedExpiry', () => {
     const thaw = sql.slice(sql.indexOf('create function public.thaw_pantry_items'));
     expect(thaw).toContain('frozen_on = case when p_thawed_on <= p.frozen_on then p.prev_frozen_on else p.frozen_on end');
     expect(thaw).toContain('thawed_on = case when p_thawed_on <= p.frozen_on then p.prev_thawed_on else p_thawed_on end');
+    // E diz qual foi desfeita, pelo frozen_on de antes (a mesma condição de thawedExpiry): o aviso usa isso, não frozen_on.
+    expect(thaw).toContain('item_frozen_on date, item_undone boolean)');
+    expect(thaw).toContain('returning p.id, p.expires_on, p.expiry_source, p.frozen_on, p_thawed_on <= o.frozen_on');
     expect(sql).toContain("check (expiry_source is distinct from 'descongelado' or frozen_on is not null)");
   });
 });
@@ -450,6 +454,7 @@ describe('repeatFreezes: "Não colocar" com linhas "Congelei"', () => {
 
 describe('frases', () => {
   const row = (over: Partial<FreezerRow>): FreezerRow => ({ id: 'x', expiresOn: '2027-02-19', expirySource: 'congelado', frozenOn: '2026-11-21', ...over });
+  const thawed = (over: Partial<ThawedRow>): ThawedRow => ({ ...row({ frozenOn: '2026-11-01', expirySource: 'descongelado' }), undone: false, ...over });
 
   it('as linhas da tela, com o ano só quando é outro', () => {
     expect(thawedRowSubtitle('2026-11-20', today)).toBe('Descongelado em 20 nov');
@@ -473,20 +478,57 @@ describe('frases', () => {
   });
 
   it('o aviso de descongelar', () => {
-    expect(thawedText('Frango', [row({ frozenOn: null, expiresOn: '2026-11-23', expirySource: 'categoria' })], today)).toBe(
+    expect(thawedText('Frango', [thawed({ frozenOn: null, expiresOn: '2026-11-23', expirySource: 'categoria', undone: true })], today)).toBe(
       'Frango saiu do congelador, com a validade de antes.',
     );
-    expect(thawedText('Frango', [row({ expiresOn: '2026-11-23', expirySource: 'descongelado' })], today)).toBe(
+    expect(thawedText('Frango', [thawed({ expiresOn: '2026-11-23' })], today)).toBe(
       'Frango saiu do congelador. A validade volta a contar de onde parou: vence por volta de 23 nov.',
     );
-    expect(thawedText('Frango', [row({ expiresOn: '2026-11-18', expirySource: 'descongelado' })], today)).toBe(
+    expect(thawedText('Frango', [thawed({ expiresOn: '2026-11-18' })], today)).toBe(
       'Frango saiu do congelador. A validade volta a contar de onde parou, e ela já tinha passado (18 nov).',
     );
-    expect(thawedText('Frango', [row({ expiresOn: null, expirySource: null })], today)).toBe('Frango saiu do congelador.');
-    // A descongelada que voltou ao congelador, desfeita no mesmo dia: o banco devolve o dia em que tinha sido congelada.
-    expect(thawedText('Frango', [row({ frozenOn: '2026-11-01', expiresOn: '2026-11-23', expirySource: 'descongelado' })], today)).toBe(
-      'Frango saiu do congelador. A validade volta a contar de onde parou: vence por volta de 23 nov.',
+    expect(thawedText('Frango', [thawed({ expiresOn: null, expirySource: null })], today)).toBe('Frango saiu do congelador.');
+    // Sem validade de antes, desfeito: a validade de antes era nenhuma.
+    expect(thawedText('Frango', [thawed({ frozenOn: null, expiresOn: null, expirySource: null, undone: true })], today)).toBe(
+      'Frango saiu do congelador, com a validade de antes.',
     );
+  });
+
+  it('a descongelada que voltou ao congelador e sai no mesmo dia: o aviso de desfazer, mesmo com frozen_on (o F e o G de test.sql)', () => {
+    // O banco devolve o dia em que tinha sido congelada antes (01/11), e item_undone diz que desfez.
+    expect(thawedText('Frango', [thawed({ expiresOn: '2026-11-23', undone: true })], today)).toBe(
+      'Frango saiu do congelador, com a validade de antes.',
+    );
+    // A validade digitada depois de descongelar volta como estava: nunca "por volta de" para uma data digitada.
+    expect(thawedText('Frango', [thawed({ expiresOn: '2026-11-21', expirySource: 'manual', undone: true })], today)).toBe(
+      'Frango saiu do congelador, com a validade de antes.',
+    );
+  });
+
+  it('o aviso diz o que a prévia prometeu: a mesma regra, pela compra que vence primeiro', () => {
+    // Congelado 01/11 (vencia 04/11), descongelado 18/11 (21/11), de novo no congelador hoje (20/11).
+    const refrozen = { frozen_on: today, fresh_expires_on: '2026-11-21', fresh_expiry_source: 'descongelado' as const };
+    const old = { frozen_on: '2026-11-01', fresh_expires_on: '2026-11-10', fresh_expiry_source: 'categoria' as const };
+    const cases: { lots: (typeof refrozen | typeof old)[]; rows: ThawedRow[] }[] = [
+      { lots: [refrozen], rows: [thawed({ expiresOn: '2026-11-21', undone: true })] },
+      // Uma desfeita e uma que pausa: a que vence primeiro decide, nas duas frases.
+      { lots: [refrozen, old], rows: [thawed({ expiresOn: '2026-11-21', undone: true }), thawed({ id: 'y', expiresOn: '2026-11-29' })] },
+      { lots: [{ ...old, fresh_expires_on: '2026-11-03' }, refrozen], rows: [thawed({ expiresOn: '2026-11-22' }), thawed({ id: 'y', expiresOn: '2026-11-21', undone: true })] },
+      { lots: [{ ...old, fresh_expires_on: '2026-10-30' }, refrozen], rows: [thawed({ expiresOn: '2026-11-18' }), thawed({ id: 'y', expiresOn: '2026-11-21', undone: true })] },
+    ];
+    for (const { lots, rows } of cases) {
+      const preview = thawPreviewText(lots, today)!;
+      const notice = thawedText('Frango', rows, today);
+      expect(preview.startsWith('Se descongelar hoje, volta para a validade de antes')).toBe(notice.endsWith('com a validade de antes.'));
+    }
+    expect(thawedText('Frango', cases[3].rows, today)).toBe(
+      'Frango saiu do congelador. A validade volta a contar de onde parou, e ela já tinha passado (18 nov).',
+    );
+    // Na mesma data, a desfeita: em qualquer ordem.
+    const tie = [thawed({ expiresOn: '2026-11-21' }), thawed({ id: 'y', expiresOn: '2026-11-21', undone: true })];
+    expect(thawedText('Frango', tie, today)).toBe('Frango saiu do congelador, com a validade de antes.');
+    expect(thawedText('Frango', [...tie].reverse(), today)).toBe('Frango saiu do congelador, com a validade de antes.');
+    expect(thawPreviewText([{ ...old, fresh_expires_on: '2026-11-02' }, refrozen], today)).toBe('Se descongelar hoje, volta para a validade de antes.');
   });
 
   it('o menu de um grupo no congelador', () => {

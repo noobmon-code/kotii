@@ -3,7 +3,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'rea
 
 import PantryItemScreen from '@/app/despensa/[id]';
 import { addDays, formatBRDate, formatShortDate, todayISO } from '@/domain/dates';
-import type { FreezerRow } from '@/domain/freezer';
+import type { ThawedRow } from '@/domain/freezer';
 import type { PantryValues, SavePantryInput } from '@/data/home';
 import { closeWindow } from '@/lib/navigation';
 import type { PantryItem } from '@/lib/types';
@@ -20,7 +20,7 @@ const mockState: { id: string; item: PantryItem | undefined; available: boolean 
   rows: [{ id: 'x' }],
 };
 const mockSave = jest.fn<(input: SavePantryInput) => void>();
-const mockThaw = jest.fn<(input: { ids: string[]; thawedOn: string }) => Promise<FreezerRow[]>>();
+const mockThaw = jest.fn<(input: { ids: string[]; thawedOn: string }) => Promise<ThawedRow[]>>();
 
 jest.mock('expo-router', () => ({ useLocalSearchParams: () => ({ id: mockState.id }) }));
 jest.mock('react-native-safe-area-context', () => {
@@ -252,7 +252,7 @@ describe('o item no congelador', () => {
   it('"Descongelei" sem nada mudado descongela hoje, avisa e fecha', async () => {
     await open(inFreezer());
     expect(JSON.stringify(renderer!.toJSON())).toContain(`Se descongelar hoje: vence por volta de ${short(day(3))}.`);
-    mockThaw.mockResolvedValue([{ id: 'a', expiresOn: day(3), expirySource: 'descongelado', frozenOn: day(-2) }]);
+    mockThaw.mockResolvedValue([{ id: 'a', expiresOn: day(3), expirySource: 'descongelado', frozenOn: day(-2), undone: false }]);
     await tap(button('Descongelei'));
     expect(mockThaw).toHaveBeenCalledWith({ ids: ['a'], thawedOn: today });
     expect(confirmAction).not.toHaveBeenCalled();
@@ -261,6 +261,15 @@ describe('o item no congelador', () => {
       `Picanha saiu do congelador. A validade volta a contar de onde parou: vence por volta de ${short(day(3))}.`,
     );
     expect(closeWindow).toHaveBeenCalledWith('despensa/[id]');
+  });
+
+  it('"Descongelei" na descongelada que voltou hoje ao congelador: o aviso de desfazer, como a prévia', async () => {
+    // Descongelada ontem com a validade digitada (manual), de novo no congelador hoje.
+    await open(inFreezer({ frozen_on: today, thawed_on: null, fresh_expires_on: day(2), fresh_expiry_source: 'manual', expires_on: addDays(today, 90) }));
+    expect(JSON.stringify(renderer!.toJSON())).toContain('Se descongelar hoje, volta para a validade de antes.');
+    mockThaw.mockResolvedValue([{ id: 'a', expiresOn: day(2), expirySource: 'manual', frozenOn: day(-2), undone: true }]);
+    await tap(button('Descongelei'));
+    expect(notify).toHaveBeenCalledWith('Descongelado', 'Picanha saiu do congelador, com a validade de antes.');
   });
 
   it('"Descongelei" com algo mudado pergunta antes', async () => {

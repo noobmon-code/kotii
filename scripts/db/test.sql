@@ -856,6 +856,7 @@ declare
   f uuid;
   g uuid;
   n integer;
+  r record;
 begin
   insert into public.pantry_items (name, category, purchased_on, expires_on, expiry_source)
     values ('Frango A', 'carnes', '2026-11-01', '2026-11-04', 'categoria') returning id into a;
@@ -918,21 +919,23 @@ begin
     raise exception 'FAIL: thaw day after 2100';
   exception when invalid_parameter_value then null;
   end;
-  select count(*) into n from public.thaw_pantry_items(array[a, c], '2026-11-20');
-  assert n = 1, 'only A thaws (C is consumed)';
+  select count(*) into n from public.thaw_pantry_items(array[a, c], '2026-11-20') t where not t.item_undone;
+  assert n = 1, 'only A thaws (C is consumed), and it is not an undo';
   assert (select expires_on = '2026-11-23' and expiry_source = 'descongelado' and thawed_on = '2026-11-20'
             and frozen_on = '2026-11-01' and freeze_kind = 'frango' and fresh_expires_on is null and fresh_expiry_source is null
           from public.pantry_items where id = a), 'A: thawed 20/11, due 23/11';
   select count(*) into n from public.thaw_pantry_items(array[a], '2026-11-21');
   assert n = 0, 'a thawed lot does not thaw again';
   -- B: no mesmo dia em que foi congelada, desfaz.
-  select count(*) into n from public.thaw_pantry_items(array[b], '2026-11-05');
-  assert n = 1, 'B thaws';
+  select * into r from public.thaw_pantry_items(array[b], '2026-11-05');
+  assert r.item_id = b and r.item_undone and r.item_frozen_on is null and r.item_expires_on = '2026-11-08'
+    and r.item_expiry_source = 'manual', 'B thaws, and the rpc says it was an undo';
   assert (select frozen_on is null and freeze_kind is null and thawed_on is null and fresh_expires_on is null
             and expires_on = '2026-11-08' and expiry_source = 'manual'
           from public.pantry_items where id = b), 'B: same day, undone';
   -- D: sem validade de antes, fica sem validade.
-  select count(*) into n from public.thaw_pantry_items(array[d], '2026-11-20');
+  select * into r from public.thaw_pantry_items(array[d], '2026-11-20');
+  assert r.item_id = d and not r.item_undone and r.item_expires_on is null, 'D thaws, not an undo';
   assert (select expires_on is null and expiry_source is null and thawed_on = '2026-11-20' from public.pantry_items where id = d),
     'D: no fresh date, no date';
   -- E: congelada dois dias depois de vencer, continua dois dias vencida.
@@ -964,8 +967,10 @@ begin
   update public.pantry_items set quantity = 2, frozen_on = '2026-11-21', freeze_kind = 'frango' where id = f;
   assert (select prev_frozen_on = '2026-11-01' and prev_thawed_on = '2026-11-20' from public.pantry_items where id = f),
     'F: an edit in the freezer keeps the thawed lot';
-  select count(*) into n from public.thaw_pantry_items(array[f], '2026-11-21');
-  assert n = 1, 'F thaws';
+  -- O banco devolve frozen_on (01/11), e item_undone diz que foi desfeito: o aviso é o de desfazer, como a prévia.
+  select * into r from public.thaw_pantry_items(array[f], '2026-11-21');
+  assert r.item_id = f and r.item_undone and r.item_frozen_on = '2026-11-01' and r.item_expires_on = '2026-11-23'
+    and r.item_expiry_source = 'descongelado', 'F thaws as an undo, with the frozen_on of the thawed lot';
   assert (select frozen_on = '2026-11-01' and thawed_on = '2026-11-20' and freeze_kind = 'frango'
             and expires_on = '2026-11-23' and expiry_source = 'descongelado'
             and fresh_expires_on is null and fresh_expiry_source is null and prev_frozen_on is null and prev_thawed_on is null
@@ -985,12 +990,14 @@ begin
     where id = g;
   assert (select prev_frozen_on = '2026-11-01' and prev_thawed_on = '2026-11-10' and expires_on = date '2026-11-11' + 90
           from public.pantry_items where id = g), 'G: refrozen by the form, the thawed lot kept';
-  perform public.thaw_pantry_items(array[g], '2026-11-11');
+  select * into r from public.thaw_pantry_items(array[g], '2026-11-11');
+  assert r.item_undone and r.item_frozen_on = '2026-11-01' and r.item_expiry_source = 'manual', 'G: an undo';
   assert (select frozen_on = '2026-11-01' and thawed_on = '2026-11-10' and expires_on = '2026-11-12' and expiry_source = 'manual'
           from public.pantry_items where id = g), 'G: same day, back to the thawed lot with its typed date';
   -- Descongelada de verdade (outro dia), a de antes sai: fica a última vez no congelador.
   perform public.freeze_pantry_items(array[g], 'frango', '2026-11-12');
-  perform public.thaw_pantry_items(array[g], '2026-11-15');
+  select * into r from public.thaw_pantry_items(array[g], '2026-11-15');
+  assert not r.item_undone, 'G: a real thaw is not an undo';
   assert (select frozen_on = '2026-11-12' and thawed_on = '2026-11-15' and expires_on = '2026-11-15'
             and expiry_source = 'descongelado' and prev_frozen_on is null and prev_thawed_on is null
           from public.pantry_items where id = g), 'G: a real thaw keeps the last stint and drops the one before';

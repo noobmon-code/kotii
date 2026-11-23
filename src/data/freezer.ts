@@ -9,7 +9,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { deviceDayMessage } from '@/domain/dates';
-import { DEFAULT_FREEZE_DAYS, FREEZER_DAY_PURPOSE, FREEZER_NOT_READY, type FreezeDays, type FreezeKind, type FreezerRow } from '@/domain/freezer';
+import { DEFAULT_FREEZE_DAYS, FREEZER_DAY_PURPOSE, FREEZER_NOT_READY, type FreezeDays, type FreezeKind, type FreezerRow, type ThawedRow } from '@/domain/freezer';
 import type { ExpirySource } from '@/domain/pantry';
 import { EXPECTS_ROWS_META } from '@/lib/accessErrors';
 import { supabase, unwrap } from '@/lib/supabase';
@@ -59,12 +59,19 @@ interface RpcRow {
   item_frozen_on: string | null;
 }
 
+/** thaw_pantry_items também diz qual compra foi desfeita (no dia em que foi congelada): o aviso fala disso. */
+interface ThawRpcRow extends RpcRow {
+  item_undone: boolean;
+}
+
 const toRow = (row: RpcRow): FreezerRow => ({
   id: row.item_id,
   expiresOn: row.item_expires_on,
   expirySource: row.item_expiry_source,
   frozenOn: row.item_frozen_on,
 });
+
+const toThawedRow = (row: ThawRpcRow): ThawedRow => ({ ...toRow(row), undone: row.item_undone === true });
 
 /**
  * O erro de congelar e descongelar na frase da tela: a função que o banco ainda não tem (o cache de esquema da API,
@@ -77,10 +84,10 @@ export function freezerError(error: unknown, fn: string): unknown {
   return error;
 }
 
-async function callFreezer(fn: 'freeze_pantry_items' | 'thaw_pantry_items', args: Record<string, unknown>): Promise<FreezerRow[]> {
+async function callFreezer<T extends RpcRow>(fn: 'freeze_pantry_items' | 'thaw_pantry_items', args: Record<string, unknown>): Promise<T[]> {
   const result = await supabase.rpc(fn, args);
   if (result.error) throw freezerError(result.error, fn);
-  return ((result.data ?? []) as RpcRow[]).map(toRow);
+  return (result.data ?? []) as T[];
 }
 
 export interface FreezeInput {
@@ -97,8 +104,8 @@ export interface FreezeInput {
 export function useFreezePantryItems() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ ids, kind, frozenOn }: FreezeInput) =>
-      callFreezer('freeze_pantry_items', { p_ids: ids, p_kind: kind, p_frozen_on: frozenOn }),
+    mutationFn: async ({ ids, kind, frozenOn }: FreezeInput) =>
+      (await callFreezer<RpcRow>('freeze_pantry_items', { p_ids: ids, p_kind: kind, p_frozen_on: frozenOn })).map(toRow),
     meta: EXPECTS_ROWS_META,
     // Também na falha: a tela mostra o que está na despensa agora.
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['pantry'] }),
@@ -106,14 +113,15 @@ export function useFreezePantryItems() {
 }
 
 /**
- * "Descongelei": as compras que saíram do congelador. As desfeitas no mesmo dia voltam com frozenOn null, menos a
- * descongelada que tinha voltado ao congelador: essa volta a ser a descongelada, com o dia em que foi congelada antes.
+ * "Descongelei": as compras que saíram do congelador, cada uma dizendo se foi desfeita (`undone`, no dia em que foi
+ * congelada). A desfeita volta com frozenOn null, menos a descongelada que tinha voltado ao congelador: essa volta a
+ * ser a descongelada, com o dia em que foi congelada antes, e só `undone` diz que foi desfeita.
  */
 export function useThawPantryItems() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ ids, thawedOn }: { ids: string[]; thawedOn: string }) =>
-      callFreezer('thaw_pantry_items', { p_ids: ids, p_thawed_on: thawedOn }),
+    mutationFn: async ({ ids, thawedOn }: { ids: string[]; thawedOn: string }) =>
+      (await callFreezer<ThawRpcRow>('thaw_pantry_items', { p_ids: ids, p_thawed_on: thawedOn })).map(toThawedRow),
     meta: EXPECTS_ROWS_META,
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['pantry'] }),
   });
