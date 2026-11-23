@@ -64,6 +64,14 @@ describe('termos de uso', () => {
     expect(prices).toContain('O código que o mercado dá aos próprios produtos (como o da balança) não entra.');
   });
 
+  it('os preços compartilhados: o tamanho da embalagem lido na descrição vai; quanto você levou e o que você responde, não', () => {
+    expect(TERMS_VERSION).toBe('2026-11-22');
+    const prices = section('Preços compartilhados');
+    expect(prices).toContain('o tamanho da embalagem que o app leu na descrição (só na nota lida pelo QR code, quando ela diz, como "5 kg" ou "12 x 350 ml")');
+    expect(prices).toContain('a quantidade que você levou');
+    expect(prices).toContain('quantos vêm na embalagem, quando você responde');
+  });
+
   it('não promete o que não cumpre: no dia em que só uma casa comprou num mercado, os preços contam o que ela comprou', () => {
     const prices = section('Preços compartilhados');
     expect(prices).toContain('Ninguém vê de qual casa veio um preço');
@@ -196,7 +204,7 @@ describe('termos de uso', () => {
   });
 
   it('a foto de produto no "Escanear" é um envio novo à IA: o texto diz, e o aviso volta para todo mundo', () => {
-    expect(TERMS_VERSION).toBe('2026-11-14');
+    // O tamanho da embalagem nos preços compartilhados (22/11/2026) mudou só o texto: o aceite segue o de 14/11.
     expect(TERMS_ACCEPT_VERSION).toBe('2026-11-14');
     // Quem aceitou a versão de antes (a do código de barras) vê o aviso de novo: agora a foto de produto ou de
     // prateleira também vai para a IA.
