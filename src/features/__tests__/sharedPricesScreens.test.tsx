@@ -473,6 +473,15 @@ describe('Preços: a linha "Visto por"', () => {
       expect(await mount(<PricesScreen />)).toBe('Cerveja SkolSó em MercadinhoR$ 39,90');
     });
 
+    it('a casa tem a garrafa de 2 L e um preço sem tamanho: a de 2 L de fora se compara com a dela, não com o sem tamanho mais barato', async () => {
+      mockQueries.products = loaded([{ id: 'arroz', name: 'Refrigerante Cola', category: 'bebidas', shelf_life_days: null }]);
+      household([own('mercadinho', 10, 20, { raw_description: 'REFRIG COLA 2L' }), own('atacadao', 5, 10, { raw_description: 'REFRIG COLA' })]);
+      mockQueries.shared = loaded([seen(SUPER, 'SUPER OUTRO', 9, 3, { pack_unit: 'l', pack_amount: 2 })]);
+      const page = await mount(<PricesScreen />);
+      expect(page).toContain(`Visto por R$ 9,00/un (2 L) · SUPER OUTRO (SP) · ${short(3)}, em outra casa`);
+      expect(page.endsWith(SHARED_PRICES_NOTICE)).toBe(true);
+    });
+
     it('ovos em duas caixas na casa: a dica fala de ovos como a linha ("o ovo", "30 ovos"), não de "cada" e "un"', async () => {
       mockQueries.products = loaded([{ id: 'arroz', name: 'Ovos brancos', category: 'ovos', shelf_life_days: null }]);
       household([own('mercadinho', 11.9, 20, { raw_description: 'OVOS BRANCOS C/12' }), own('atacadao', 24.9, 10, { raw_description: 'OVOS BRANCOS 30UN' })]);

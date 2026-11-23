@@ -334,6 +334,24 @@ describe('o tamanho da embalagem nos preços de outras casas', () => {
     });
   });
 
+  it('a casa tem a garrafa de 2 L e um preço sem tamanho: a de 2 L de fora se compara só com a dela, e o sem tamanho fica de fora', () => {
+    const bottle = { pack_unit: 'l', pack_amount: 2 };
+    const ownRows = [mine('a', 10, 'REFRIG COLA 2L'), mine('b', 5, 'REFRIG COLA')];
+    const compared = compareSharedPrices([other(9, bottle)], ownRows, STORES);
+    expect(compared.unit).toBe('un');
+    // Não é o menor da casa (R$ 5,00): o de mesmo tamanho tira o sem tamanho da comparação.
+    expect(compared.rows.map((row) => [row.unitPrice, row.comparedTo])).toEqual([[9, 10]]);
+    expect(shown([other(9, bottle)], ownRows)).toEqual({
+      hint: 'Visto por R$ 9,00/un (2 L) · SUPER OUTRO (SP) · 15 nov, em outra casa',
+      rows: ['2 L · visto em 15 nov / R$ 9,00/un'],
+    });
+    // Sem a garrafa de 2 L na casa, o sem tamanho volta a contar, e R$ 9,00 não é mais barato que R$ 5,00.
+    expect(compareSharedPrices([other(9, bottle)], [mine('b', 5, 'REFRIG COLA')], STORES).rows.map((row) => row.comparedTo)).toEqual([5]);
+    expect(shown([other(9, bottle)], [mine('b', 5, 'REFRIG COLA')]).hint).toBeNull();
+    // A de fora sem tamanho se compara com todos, e o menor dos que sobram é o sem tamanho.
+    expect(compareSharedPrices([other(9)], ownRows, STORES).rows.map((row) => row.comparedTo)).toEqual([5]);
+  });
+
   it('ovos respondidos na revisão (30) e uma linha sem tamanho: o tamanho desconhecido se compara', () => {
     expect(shown([other(21.9)], [mine('a', 24.9, 'OVOS RANCHO CAIPIRA', { pack_count: 30 })])).toEqual({
       hint: 'Visto por R$ 21,90/un (tamanho não informado) · SUPER OUTRO (SP) · 15 nov, em outra casa',
@@ -507,6 +525,16 @@ describe('o preço por unidade de fora na lista e no "Onde comprar" (fitsHouseho
     expect(fits(shared(SUPER, 0.5, '2026-11-15', { product_id: 'banana' }))).toBe(true);
     expect(fits(shared(SUPER, 0.5, '2026-11-15', { product_id: 'feijao' }))).toBe(true);
     expect(fitsHouseholdPack([])(beer(3.29))).toBe(true);
+  });
+
+  it('a casa tem o mesmo tamanho e um sem tamanho: com tamanho de fora, só o mesmo tamanho conta; sem, qualquer um', () => {
+    const cola = (unit_price: number, raw_description: string) => own('a', unit_price, at, { product_id: 'cola', raw_description });
+    const fits = fitsHouseholdPack([cola(10, 'REFRIG COLA 2L'), cola(5, 'REFRIG COLA')]);
+    const row = (unit_price: number, partial: Partial<SharedPrice> = {}) => shared(SUPER, unit_price, '2026-11-15', { product_id: 'cola', ...partial });
+    // R$ 2,00 está a 2,5 vezes dos R$ 5,00 sem tamanho, mas a 5 vezes dos R$ 10,00 da garrafa de 2 L.
+    expect(fits(row(2, { pack_unit: 'l', pack_amount: 2 }))).toBe(false);
+    expect(fits(row(2))).toBe(true);
+    expect(fits(row(9, { pack_unit: 'l', pack_amount: 2 }))).toBe(true);
   });
 
   it('sharedQuotes tira exatamente essas linhas', () => {

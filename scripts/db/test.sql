@@ -12864,7 +12864,10 @@ begin
   returning id into v_id;
   update public.receipts set read_id = v_id where id = p_receipt;
 end $$;
--- Ernesto compra de novo no mesmo mercado, ontem, e a leitura traz esta linha.
+-- Ernesto compra de novo no mesmo mercado, ontem, e a leitura traz esta linha. A nota leva também uma linha de
+-- controle com uma descrição só dela ('CONTROLE NOTA <n>'): share_receipt_prices engole todo erro, então uma gravação
+-- que quebrasse o check deixaria a linha comum como estava, igual a "manteve o tamanho"; a de controle só chega quando
+-- a nota inteira compartilhou (ernesto_row confere).
 create function pg_temp.ernesto_buys(p_description text, p_price numeric, p_n int, p_line jsonb) returns void
 language plpgsql as $$
 declare
@@ -12874,10 +12877,12 @@ begin
   insert into public.receipts (store_id, purchased_at, access_key, source)
     values (current_setting('test.e_store')::uuid, yesterday, '352610' || '63000000000101' || repeat('0', 22) || lpad(p_n::text, 2, '0'), 'qrcode')
     returning id into r;
-  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
-    values (r, p_description, 'alcoolicas', 'un', p_price, p_price);
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price) values
+    (r, 0, p_description, 'alcoolicas', 'un', p_price, p_price),
+    (r, 1, 'CONTROLE NOTA ' || p_n, 'alcoolicas', 'un', 1.00, 1.00);
   perform pg_temp.read_with_lines(r, jsonb_build_array(
-    jsonb_build_object('description', p_description, 'unit', 'un', 'unit_price', p_price) || p_line));
+    jsonb_build_object('description', p_description, 'unit', 'un', 'unit_price', p_price) || p_line,
+    jsonb_build_object('description', 'CONTROLE NOTA ' || p_n, 'unit', 'un', 'unit_price', 1.00)));
   perform public.confirm_receipt(r, '[]');
 end $$;
 -- A lata (sem "de quantos") e a caixa de 12 (com ele).
@@ -12885,12 +12890,18 @@ create function pg_temp.ernesto_buys_can(p_price numeric, p_n int, p_line jsonb)
 language sql as $$ select pg_temp.ernesto_buys('CERV SKOL LT 350ML', p_price, p_n, p_line) $$;
 create function pg_temp.ernesto_buys_case(p_price numeric, p_n int, p_line jsonb) returns void
 language sql as $$ select pg_temp.ernesto_buys('CERV SKOL LT 350ML C/12', p_price, p_n, p_line) $$;
--- A linha comum de uma descrição de Ernesto ontem, com as três colunas do tamanho.
-create function pg_temp.ernesto_row(p_item_key text) returns text
-language sql as $$
-  select unit_price || ' ' || coalesce(pack_unit || ' ' || pack_amount || coalesce(' x' || pack_of, ''), '-')
-    from public.shared_prices where store_cnpj = '63000000000101' and item_key = p_item_key
-$$;
+-- A linha comum de uma descrição de Ernesto ontem, com as três colunas do tamanho, depois da nota <n>. Falha quando a
+-- linha de controle da nota <n> não chegou: a gravação falhou e o erro foi engolido, e a linha comum, como estava, não
+-- diria isso.
+create function pg_temp.ernesto_row(p_n int, p_item_key text) returns text
+language plpgsql as $$
+begin
+  if not exists (select 1 from public.shared_prices where store_cnpj = '63000000000101' and item_key = 'CONTROLE NOTA ' || p_n) then
+    raise exception 'FAIL: receipt % shared nothing (its control line is missing), so % only looks unchanged', p_n, p_item_key;
+  end if;
+  return (select unit_price || ' ' || coalesce(pack_unit || ' ' || pack_amount || coalesce(' x' || pack_of, ''), '-')
+            from public.shared_prices where store_cnpj = '63000000000101' and item_key = p_item_key);
+end $$;
 do $$
 begin
   assert (select array_agg(column_name || ' ' || is_nullable || ' ' || coalesce(column_default, '-') order by ordinal_position)
@@ -13019,21 +13030,21 @@ select set_config('request.jwt.claim.sub', :'user_pk1', false) \gset
 select pg_temp.ernesto_buys_can(3.49, 12, '{}') \gset
 reset role;
 do $$ begin
-  assert pg_temp.ernesto_row('CERV SKOL LT 350ML') = '3.4900 l 0.350000',
+  assert pg_temp.ernesto_row(12, 'CERV SKOL LT 350ML') = '3.4900 l 0.350000',
     'the same price written without a size keeps the size the row had';
 end $$;
 set role authenticated;
 select pg_temp.ernesto_buys_can(3.49, 13, '{"pack_unit": "l", "pack_amount": 0.473}') \gset
 reset role;
 do $$ begin
-  assert pg_temp.ernesto_row('CERV SKOL LT 350ML') = '3.4900 -',
+  assert pg_temp.ernesto_row(13, 'CERV SKOL LT 350ML') = '3.4900 -',
     'the same price with another size: no size';
 end $$;
 set role authenticated;
 select pg_temp.ernesto_buys_can(3.59, 14, '{"pack_unit": "l", "pack_amount": 0.35}') \gset
 reset role;
 do $$ begin
-  assert pg_temp.ernesto_row('CERV SKOL LT 350ML') = '3.5900 l 0.350000',
+  assert pg_temp.ernesto_row(14, 'CERV SKOL LT 350ML') = '3.5900 l 0.350000',
     'another price brings its own size';
 end $$;
 set role authenticated;
@@ -13041,60 +13052,61 @@ select pg_temp.ernesto_buys_can(39.90, 15, '{}') \gset
 reset role;
 do $$ begin
   -- O fardo de 12 com a descrição da lata (a Sefaz diz FD, e nfce não manda tamanho): a linha não fica com os 350 ml.
-  assert pg_temp.ernesto_row('CERV SKOL LT 350ML') = '39.9000 -',
+  assert pg_temp.ernesto_row(15, 'CERV SKOL LT 350ML') = '39.9000 -',
     'another price without a size: no size (the case priced under the description of one can)';
   update public.shared_prices set visible_on = (now() at time zone 'America/Sao_Paulo')::date
     where store_cnpj = '63000000000101' and item_key = 'CERV SKOL LT 350ML';
 end $$;
 -- A caixa de 12 (l 4,2 x12, ainda não lida), as mesmas regras com o "de quantos": as três colunas vão sempre juntas
--- (uma só que ficasse, sem as outras, quebraria o check, e a nota inteira deixaria de compartilhar, sem erro nenhum).
+-- (uma só que ficasse, sem as outras, quebraria o check, e a nota inteira deixaria de compartilhar, sem erro nenhum;
+-- nos passos que mantêm o tamanho a linha comum ficaria igual, e quem pega é a linha de controle de cada nota).
 set role authenticated;
 select pg_temp.ernesto_buys_case(39.90, 21, '{}') \gset
 reset role;
 do $$ begin
-  assert pg_temp.ernesto_row('CERV SKOL LT 350ML C 12') = '39.9000 l 4.200000 x12',
+  assert pg_temp.ernesto_row(21, 'CERV SKOL LT 350ML C 12') = '39.9000 l 4.200000 x12',
     'the same price without a size keeps the whole size, "of how many" included';
 end $$;
 set role authenticated;
 select pg_temp.ernesto_buys_case(41.90, 22, '{}') \gset
 reset role;
 do $$ begin
-  assert pg_temp.ernesto_row('CERV SKOL LT 350ML C 12') = '41.9000 -',
+  assert pg_temp.ernesto_row(22, 'CERV SKOL LT 350ML C 12') = '41.9000 -',
     'another price without a size: none of the three columns stays (and the receipt still shares)';
 end $$;
 set role authenticated;
 select pg_temp.ernesto_buys_case(41.90, 23, '{"pack_unit": "l", "pack_amount": 4.2, "pack_of": 12}') \gset
 reset role;
 do $$ begin
-  assert pg_temp.ernesto_row('CERV SKOL LT 350ML C 12') = '41.9000 l 4.200000 x12',
+  assert pg_temp.ernesto_row(23, 'CERV SKOL LT 350ML C 12') = '41.9000 l 4.200000 x12',
     'the same price on a row without a size takes the whole size of who wrote it';
 end $$;
 set role authenticated;
 select pg_temp.ernesto_buys_case(41.90, 24, '{"pack_unit": "l", "pack_amount": 4.2, "pack_of": 6}') \gset
 reset role;
 do $$ begin
-  assert pg_temp.ernesto_row('CERV SKOL LT 350ML C 12') = '41.9000 -',
+  assert pg_temp.ernesto_row(24, 'CERV SKOL LT 350ML C 12') = '41.9000 -',
     'the same price with only "of how many" different is another size: no size';
 end $$;
 set role authenticated;
 select pg_temp.ernesto_buys_case(39.90, 25, '{"pack_unit": "l", "pack_amount": 4.2, "pack_of": 12}') \gset
 reset role;
 do $$ begin
-  assert pg_temp.ernesto_row('CERV SKOL LT 350ML C 12') = '39.9000 l 4.200000 x12',
+  assert pg_temp.ernesto_row(25, 'CERV SKOL LT 350ML C 12') = '39.9000 l 4.200000 x12',
     'another price brings its own size, "of how many" included';
 end $$;
 set role authenticated;
 select pg_temp.ernesto_buys_case(39.90, 26, '{"pack_unit": "l", "pack_amount": 4.2, "pack_of": 12}') \gset
 reset role;
 do $$ begin
-  assert pg_temp.ernesto_row('CERV SKOL LT 350ML C 12') = '39.9000 l 4.200000 x12',
+  assert pg_temp.ernesto_row(26, 'CERV SKOL LT 350ML C 12') = '39.9000 l 4.200000 x12',
     'the same price with the same size keeps it';
 end $$;
 set role authenticated;
 select pg_temp.ernesto_buys_can(3.39, 16, '{"pack_unit": "l", "pack_amount": 0.35}') \gset
 reset role;
 do $$ begin
-  assert pg_temp.ernesto_row('CERV SKOL LT 350ML') = '39.9000 -',
+  assert pg_temp.ernesto_row(16, 'CERV SKOL LT 350ML') = '39.9000 -',
     'once readable, the row does not change: neither the price nor the size';
   update public.shared_prices set visible_on = (now() at time zone 'America/Sao_Paulo')::date where store_cnpj = '63000000000101';
 end $$;

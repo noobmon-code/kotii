@@ -508,9 +508,10 @@ export function cheaperSharedPrice(compared: ComparedSharedPrices): ShownSharedP
 
 /**
  * Se a linha de outra casa entra na conta da lista e no "Onde comprar". Por kg ou litro, sempre (como hoje). Por
- * unidade, só quando a casa não tem preço por unidade do produto (como hoje) ou tem um que combina com ela: o mesmo
- * tamanho, ou um dos dois sem tamanho (unitPricePool), e a no máximo 2,5 vezes (withinBand). Assim o "1 un" da lista
- * não leva o preço da lata avulsa quando a casa compra a caixa, nem o do fardo quando ela compra a lata.
+ * unidade, só quando a casa não tem preço por unidade do produto (como hoje) ou tem um que combina com ela
+ * (unitPricePool: o mesmo tamanho; sem ele na casa, um dela sem tamanho; sem tamanho de fora, qualquer um) e a no
+ * máximo 2,5 vezes (withinBand). Assim o "1 un" da lista não leva o preço da lata avulsa quando a casa compra a
+ * caixa, nem o do fardo quando ela compra a lata.
  */
 export function fitsHouseholdPack(own: readonly OwnPrice[]): (row: SharedPrice) => boolean {
   const ownByProduct = byProduct(own);
