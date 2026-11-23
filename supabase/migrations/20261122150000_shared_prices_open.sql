@@ -66,9 +66,12 @@
 -- 1. A semana, o estado da casa e os índices
 -- =============================================================================
 
--- A semana de um dia: a segunda-feira dela (semana ISO). É a única data que sai da base.
+-- A semana de um dia: a segunda-feira dela (semana ISO). É a única data que sai da base. Sem "set search_path" de
+-- propósito: uma função com SET não é expandida dentro da consulta que a chama, e as leituras a chamam em cada linha
+-- (com o SET, a busca do passo 1 ficava quatro vezes mais lenta). O corpo não cita tabela nem função de esquema
+-- nenhum (só extract e a conta com datas), e nenhum cliente pode executá-la.
 create or replace function public.shared_week(p_day date) returns date
-language sql immutable parallel safe set search_path = '' as $$
+language sql immutable parallel safe as $$
   select p_day - (extract(isodow from p_day)::integer - 1);
 $$;
 revoke execute on function public.shared_week(date) from public, anon, authenticated;
@@ -546,8 +549,10 @@ begin
     raise exception 'shared_item_keys: invalid items' using errcode = '22023';
   end if;
   v_states := case when v_household is null then '{}'::text[] else public.shared_household_states(v_household) end;
+  -- Os CTEs com as respostas de cada palavra são materialized: sem isso, o planejador leva o filtro de cada busca
+  -- para dentro deles e varre o índice uma vez por busca (40 vezes a base do estado).
   return (
-    with entries as (
+    with entries as materialized (
       select e.at,
           array(select jsonb_array_elements_text(e.v -> 'f')) as f,
           array(select jsonb_array_elements_text(e.v -> 's')) as s,
@@ -557,7 +562,7 @@ begin
     first_words as (select distinct unnest(f) as word from entries),
     second_words as (select distinct unnest(s) as word from entries),
     -- Cada palavra é procurada uma vez para a chamada toda (não uma por busca), por estado, nos dois índices.
-    hits as (
+    hits as materialized (
       select p.item_key, p.unit, p.seen_on, p.store_cnpj
         from first_words w
         cross join unnest(v_states) st (uf)
@@ -570,42 +575,56 @@ begin
         join public.shared_prices p on p.store_uf = st.uf and split_part(p.item_key, ' ', 2) = w.word
         where p.seen_on >= v_since and p.visible_on <= v_today
     ),
-    found as (
+    -- Cada (chave, unidade, mercado, semana) uma vez: o dia some aqui.
+    store_weeks as materialized (
+      select distinct h.item_key, h.unit, h.store_cnpj, public.shared_week(h.seen_on) as week from hits h
+    ),
+    found as materialized (
       -- Por chave: a segunda-feira da semana mais nova e em quantos (mercado, semana) foi vista. Nunca um dia, nunca
       -- uma conta de dias.
-      select h.item_key, h.unit, public.shared_week(max(h.seen_on)) as week,
-          count(distinct (h.store_cnpj, public.shared_week(h.seen_on)))::integer as seen
-        from hits h
+      select h.item_key, h.unit, split_part(h.item_key, ' ', 1) as first_word, split_part(h.item_key, ' ', 2) as second_word,
+          max(h.week) as week, count(*)::integer as seen
+        from store_weeks h
         group by h.item_key, h.unit
         -- A descrição com um número comprido (8 dígitos ou mais seguidos, com espaços no meio: um CPF, um telefone,
         -- um documento) nunca sai da base.
         having not exists (
           select 1 from regexp_matches(h.item_key, '(?:^| )([0-9]+(?: [0-9]+)*)(?= |$)', 'g') m (g)
             where length(replace(m.g[1], ' ', '')) >= 8)
+    ),
+    -- As chaves de cada busca: pela primeira palavra ("f") ou pela segunda ("s"), uma vez cada.
+    matched as (
+      select en.at, fo.item_key, fo.unit, fo.week, fo.seen
+        from entries en cross join lateral unnest(en.f) w (word) join found fo on fo.first_word = w.word
+      union
+      select en.at, fo.item_key, fo.unit, fo.week, fo.seen
+        from entries en cross join lateral unnest(en.s) w (word) join found fo on fo.second_word = w.word
+    ),
+    ranked as (
+      -- Por busca: primeiro as chaves cujas palavras depois da primeira soletram mais das outras palavras do item
+      -- (uma palavra da nota de 3 letras ou mais pode abreviar a da lista, "DESN" de "desnatado"; nunca o
+      -- contrário), depois as mais vistas, a mais nova, a chave. Nunca um corte em ordem alfabética.
+      select c.*, row_number() over (partition by c.at order by c.hits desc, c.seen desc, c.week desc, c.item_key, c.unit) as place
+        from (
+          select m.*,
+              (select count(*)::integer
+                 from unnest(string_to_array(m.item_key, ' ')) with ordinality t (word, pos)
+                 where t.pos > 1 and exists (
+                   select 1 from unnest(en.x) x (word)
+                     where x.word = t.word or (length(t.word) >= 3 and starts_with(x.word, t.word)))) as hits
+            from matched m
+            join entries en on en.at = m.at
+        ) c
     )
-    select coalesce(jsonb_agg(a.answer order by en.at), '[]'::jsonb)
-      from entries en
-      cross join lateral (
-        select jsonb_build_object(
+    select coalesce(jsonb_agg(a.answer order by a.at), '[]'::jsonb)
+      from (
+        select en.at, jsonb_build_object(
             'k', coalesce(jsonb_agg(jsonb_build_array(r.item_key, r.unit, r.week, r.seen) order by r.place)
                    filter (where r.place <= 60), '[]'::jsonb),
             'more', coalesce(max(r.place) > 60, false)) as answer
-          from (
-            -- Por busca: primeiro as chaves cujas palavras depois da primeira soletram mais das outras palavras do
-            -- item (uma palavra da nota de 3 letras ou mais pode abreviar a da lista, "DESN" de "desnatado"; nunca
-            -- o contrário), depois as mais vistas, a mais nova, a chave. Nunca um corte em ordem alfabética.
-            select c.*, row_number() over (order by c.hits desc, c.seen desc, c.week desc, c.item_key, c.unit) as place
-              from (
-                select fo.*,
-                    (select count(*)::integer
-                       from unnest(string_to_array(fo.item_key, ' ')) with ordinality t (word, pos)
-                       where t.pos > 1 and exists (
-                         select 1 from unnest(en.x) x (word)
-                           where x.word = t.word or (length(t.word) >= 3 and starts_with(x.word, t.word)))) as hits
-                  from found fo
-                  where split_part(fo.item_key, ' ', 1) = any (en.f) or split_part(fo.item_key, ' ', 2) = any (en.s)
-              ) c
-          ) r
+          from entries en
+          left join ranked r on r.at = en.at
+          group by en.at
       ) a
   );
 end;

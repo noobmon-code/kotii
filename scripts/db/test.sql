@@ -13535,6 +13535,9 @@ begin
   end loop;
   assert not (select prosecdef from pg_proc where oid = 'public.shared_household_states(uuid)'::regprocedure),
     'the states of a household are read as the caller (only the definer readers call it)';
+  -- Sem SET, para ser expandida dentro das leituras (com ele, cada linha seria uma chamada de função).
+  assert (select proconfig is null and provolatile = 'i' from pg_proc where oid = 'public.shared_week(date)'::regprocedure),
+    'shared_week is immutable and can be inlined';
 end $$;
 
 -- A mudança única da migração: o que foi gravado nesta semana (o visible_on de antes é o dia da gravação + 1) espera a
