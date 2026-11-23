@@ -18,6 +18,7 @@ import { diffDays, formatShortDate, toISODate, todayISO } from './dates';
 import type { LinkIndex } from './listLinks';
 import { formatBRL, formatQuantity } from './money';
 import { packLabel, perItemLabel } from './packCount';
+import { isEstimatedExpiry, type ExpirySource } from './pantry';
 import { packageSize } from './packageSize';
 import { storePriceIndex } from './priceLevel';
 import { MAX_WEIGHT_KG } from './receiptWeight';
@@ -754,6 +755,8 @@ export interface PantryStock {
   unit: string;
   purchased_on: string;
   expires_on: string | null;
+  /** De onde veio a validade (domain/pantry): a estimada sai "por volta de" nos detalhes do item. */
+  expiry_source?: ExpirySource | null;
 }
 
 export interface PantryHit {
@@ -766,6 +769,8 @@ export interface PantryHit {
   since: string;
   /** A validade que vence primeiro, se houver. */
   expiresOn: string | null;
+  /** Essa validade é estimada (todas as entradas com ela): os detalhes dizem "por volta de". */
+  expiryEstimated?: boolean;
 }
 
 /**
@@ -904,12 +909,16 @@ export function pantryHits(
       products.size <= 1 && (same.every(({ entry }) => entry.product_id != null) || same.every(({ key }) => key === first.key));
     const countable = oneThing && same.every(({ entry }) => entry.unit === first.entry.unit);
     const expiries = same.flatMap(({ entry }) => (entry.expires_on ? [entry.expires_on] : [])).sort();
+    const expiresOn = expiries[0] ?? null;
+    const deciding = same.filter(({ entry }) => expiresOn != null && entry.expires_on === expiresOn);
     hits.set(item.id, {
       name: oneThing ? first.entry.name : item.name,
       quantity: countable ? Math.round(same.reduce((s, { entry }) => s + Number(entry.quantity), 0) * 1000) / 1000 : null,
       unit: countable ? first.entry.unit : null,
       since: same.map(({ entry }) => entry.purchased_on).sort().at(-1)!,
-      expiresOn: expiries[0] ?? null,
+      expiresOn,
+      // Só quando é: a validade certa (digitada, aprendida, das compras antigas) é a de sempre.
+      ...(deciding.length > 0 && deciding.every(({ entry }) => isEstimatedExpiry(entry.expiry_source)) ? { expiryEstimated: true } : {}),
     });
   }
   return hits;
@@ -1235,7 +1244,8 @@ export function itemFacts(
   }
   if (hit) {
     const amount = hit.quantity != null && hit.unit ? `${formatQuantity(hit.quantity, hit.unit)} de ` : '';
-    const expiry = hit.expiresOn ? `; vence em ${day(hit.expiresOn)}` : '';
+    // A validade estimada (pela categoria, pelo congelador ou depois de descongelar) é "por volta de", como no Nuke.
+    const expiry = hit.expiresOn ? `; vence ${hit.expiryEstimated ? 'por volta de' : 'em'} ${day(hit.expiresOn)}` : '';
     facts.push(`Na despensa desde ${day(hit.since)}: ${amount}${hit.name}${expiry}.`);
   }
   return facts;

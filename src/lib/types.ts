@@ -2,7 +2,9 @@
 
 import type { EventDayLike, FamilyEventLike } from '@/domain/familyEvents';
 import type { DietMeal, DietShoppingItem, ExamResult, WorkoutSession } from '@/domain/health';
+import type { FreezeKind } from '@/domain/freezer';
 import type { ListPriority } from '@/domain/listItem';
+import type { ExpirySource } from '@/domain/pantry';
 
 export type Unit = 'un' | 'kg' | 'g' | 'l' | 'ml';
 export const UNITS: Unit[] = ['un', 'kg', 'g', 'l', 'ml'];
@@ -153,8 +155,17 @@ export interface PantryItem {
   unit: Unit;
   purchased_on: string;
   expires_on: string | null;
-  expiry_source: 'categoria' | 'produto' | 'manual' | null;
+  expiry_source: ExpirySource | null;
   consumed_at: string | null;
+  /**
+   * O congelador (domain/freezer): undefined antes da migração 20261122110000_pantry_freezer.sql, nas leituras que
+   * repetiram sem as colunas e nas cópias guardadas de antes desta versão.
+   */
+  frozen_on?: string | null;
+  thawed_on?: string | null;
+  freeze_kind?: FreezeKind | null;
+  fresh_expires_on?: string | null;
+  fresh_expiry_source?: ExpirySource | null;
 }
 
 /** O dia em que um novo começou (botijão, galão, saco de ração). */
