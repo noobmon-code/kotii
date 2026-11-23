@@ -36,7 +36,8 @@ const PARALLEL_PAGES = 3;
  * produto, mercado e unidade, dos últimos 90 dias e nunca de nota confirmada
  * hoje (cada preço aparece a partir do dia seguinte ao da confirmação); dos
  * mercados da própria casa (`mine`) todos e, dos outros, os 5 mais baratos do
- * estado onde ela compra. null quando a função não existe no banco. Página
+ * estado onde ela compra, com o tamanho da embalagem que o servidor leu na
+ * nota do QR code (pack_*). null quando a função não existe no banco. Página
  * por página, na ordem da chave da resposta, para as páginas se encaixarem;
  * junta-se até a primeira incompleta.
  */
@@ -64,8 +65,17 @@ export async function fetchSharedPrices(db: SupabaseClient = supabase): Promise<
     }
   }
   // O preço é numeric no banco: garante número, venha como vier. "É mercado da casa" só com um sim de
-  // verdade, e estado que não veio é "não se sabe".
-  return pages.flat().map((row) => ({ ...row, unit_price: Number(row.unit_price), store_uf: row.store_uf ?? null, mine: row.mine === true }));
+  // verdade, e estado que não veio é "não se sabe". O tamanho da embalagem (pack_*) também: a função de antes da
+  // coluna não o manda, e aí ele é "não se sabe" (null).
+  return pages.flat().map((row) => ({
+    ...row,
+    unit_price: Number(row.unit_price),
+    store_uf: row.store_uf ?? null,
+    mine: row.mine === true,
+    pack_unit: row.pack_unit ?? null,
+    pack_amount: row.pack_amount == null ? null : Number(row.pack_amount),
+    pack_of: row.pack_of == null ? null : Number(row.pack_of),
+  }));
 }
 
 /**

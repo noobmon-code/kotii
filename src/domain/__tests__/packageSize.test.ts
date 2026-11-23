@@ -1,6 +1,9 @@
 import { describe, expect, it } from '@jest/globals';
+import { readFileSync } from 'fs';
+import path from 'path';
 
-import { packageSize, samePackageSize } from '../packageSize';
+import * as server from '../../../supabase/functions/_shared/packageSize';
+import { packageLabel, packageSize, samePackageSize, sharedPackageSize } from '../packageSize';
 
 /** O tamanho como "unidade quantidade · rótulo", para comparar de uma vez. */
 const read = (description: string) => {
@@ -145,5 +148,147 @@ describe('dois tamanhos iguais', () => {
     expect(samePackageSize(packageSize('ARROZ 1KG')!, packageSize('ARROZ 1000G')!)).toBe(true);
     expect(samePackageSize(packageSize('ARROZ 1KG')!, packageSize('ARROZ 5KG')!)).toBe(false);
     expect(samePackageSize(packageSize('AGUA 1L')!, packageSize('ARROZ 1KG')!)).toBe(false);
+  });
+});
+
+/** Sorteio com semente (mulberry32): as mesmas descrições a cada rodada. */
+function seeded(seed: number) {
+  let state = seed;
+  const random = () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(state ^ (state >>> 15), state | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const int = (min: number, max: number) => min + Math.floor(random() * (max - min + 1));
+  const pick = <T,>(values: readonly T[]) => values[int(0, values.length - 1)];
+  return { random, int, pick };
+}
+
+const SWEEP_TOKENS = [
+  'ARROZ', '5', 'KG', 'X', '12', 'C/12', '350ML', '1,5L', 'UN', 'DZ', 'FD', 'TIPO', '.', '200G', 'CX', '30M', '10,1KG', 'LT',
+  '3', 'PC', 'SIXPACK', 'KIT', '6UN', '2X', 'G', 'ML', 'L', '1', '2', '6', '500', 'CERV', 'OVOS', 'T1', 'C', '/', 'LATAO', 'PCT',
+];
+
+/** 5000 descrições sorteadas, com os pedaços colados ou separados. */
+const sweep = (() => {
+  const { int, pick, random } = seeded(20261121);
+  return Array.from({ length: 5000 }, () => {
+    let text = '';
+    for (let i = int(1, 7); i > 0; i--) text += (text && random() < 0.6 ? ' ' : '') + pick(SWEEP_TOKENS);
+    return text;
+  });
+})();
+
+/** O que shared_prices guarda, como normalize_alias deixa a descrição (tudo o que não é letra nem número vira espaço). */
+const asKey = (description: string) => description.toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+
+/** As descrições da tabela da leitura estrita: o que packageSize lê e o que vai para a base comum. */
+const STRICT_CORPUS: [string, string | null, string | null][] = [
+  ['CERV SKOL LT 350ML C/12', '12 x 350 ml', '12 x 350 ml'],
+  ['CERV SKOL LT 350ML', '350 ml', '350 ml'],
+  ['CX 12X350ML', '12 x 350 ml', '12 x 350 ml'],
+  ['CERV BRAHMA 350ML LT C12', '350 ml', null],
+  ['REFRI COCA 2L C6', '2 L', null],
+  ['AGUA MIN 500ML PC 12', '500 ml', null],
+  ['IOGURTE 170G C 6', '170 g', null],
+  ['CERV 473ML LATAO 12', '473 ml', null],
+  ['CERV HEINEKEN LN 330ML SIXPACK', '330 ml', null],
+  ['CERV SKOL FD 350ML', '350 ml', null],
+  ['KIT SHAMPOO 350ML', '350 ml', null],
+  ['LEITE UHT PIRACANJUBA INT CX 1L', '1 L', null],
+  ['LEITE UHT ITALAC INT 1L CX12', '12 x 1 L', '12 x 1 L'],
+  ['PAPEL HIG NEVE FD 12X30M', '12 un', '12 un'],
+  ['CHA MATTE LEAO CX 10 SACHES', '10 un', '10 un'],
+  ['ARROZ CAMIL T1 5KG', '5 kg', '5 kg'],
+  ['ARROZ TIPO 1 5KG', '5 kg', '5 kg'],
+  ['OVOS BRANCOS C/12', '12 un', '12 un'],
+  ['OVOS BRANCOS DZ', '12 un', '12 un'],
+  ['RACAO GOLDEN 10,1KG', '10,1 kg', '10,1 kg'],
+  ['RACAO GOLDEN 10 1KG', '1 kg', null],
+  ['CAFE 3 CORACOES 500G', '500 g', null],
+  ['LEITE 3 MARIAS 1L', '1 L', null],
+  ['CACHACA 51 965ML', '965 ml', null],
+  ['NESCAU 2.0 400G', '400 g', '400 g'],
+  ['SABAO OMO 1,6KG', '1,6 kg', '1,6 kg'],
+  ['MACARRAO ADRIA 500G PCT', '500 g', '500 g'],
+];
+
+describe('quantas embalagens iguais (of) e o rótulo refeito (packageLabel)', () => {
+  it('of é a contagem do "N x …", em kg e l; ausente com uma só e em un', () => {
+    expect(packageSize('CERV SKOL LT 350ML C/12')?.of).toBe(12);
+    expect(packageSize('CX 12X350ML')?.of).toBe(12);
+    expect(packageSize('LEITE UHT ITALAC INT 1L CX12')?.of).toBe(12);
+    expect(packageSize('QJ 200G X 2 C/3')).toEqual({ unit: 'kg', amount: 0.4, label: '2 x 200 g', of: 2 });
+    expect(packageSize('ARROZ 5KG')).toEqual({ unit: 'kg', amount: 5, label: '5 kg' });
+    expect(packageSize('OVOS C/12')).toEqual({ unit: 'un', amount: 12, label: '12 un' });
+  });
+
+  it('o rótulo refeito de unidade, quantidade e of é o que packageSize escreve, em 5000 descrições sorteadas', () => {
+    let sized = 0;
+    for (const description of sweep) {
+      const size = packageSize(description);
+      if (!size) continue;
+      sized++;
+      expect([description, packageLabel(size)]).toEqual([description, size.label]);
+    }
+    // O sorteio tem tamanhos de verdade, não só nulos.
+    expect(sized).toBeGreaterThan(500);
+  });
+
+  it('todo tamanho por contagem se escreve "N un" (packSizeText conta com isso)', () => {
+    for (const description of sweep) {
+      const size = packageSize(description);
+      if (size?.unit === 'un') expect(size.label).toMatch(/^\d+ un$/);
+    }
+    expect(packageLabel({ unit: 'un', amount: 30 })).toBe('30 un');
+  });
+});
+
+describe('o tamanho que vai para a base comum (sharedPackageSize)', () => {
+  it.each(STRICT_CORPUS)('%s: packageSize %s, sharedPackageSize %s', (description, lenient, strict) => {
+    expect(packageSize(description)?.label ?? null).toBe(lenient);
+    expect(sharedPackageSize(description)?.label ?? null).toBe(strict);
+  });
+
+  it('é sempre o de packageSize ou nada, em 5000 descrições sorteadas', () => {
+    let strictSized = 0;
+    for (const description of sweep) {
+      const strict = sharedPackageSize(description);
+      if (!strict) continue;
+      strictSized++;
+      expect([description, strict]).toEqual([description, packageSize(description)]);
+    }
+    expect(strictSized).toBeGreaterThan(100);
+  });
+
+  it('a chave normalizada (normalize_alias) perde o tamanho: por isso o servidor lê a descrição impressa', () => {
+    expect(packageSize(asKey('CERV SKOL LT 350ML C/12'))?.label).toBe('350 ml');
+    expect(packageSize(asKey('RACAO GOLDEN 10,1KG'))?.label).toBe('1 kg');
+    expect(sharedPackageSize(asKey('RACAO GOLDEN 10,1KG'))).toBeNull();
+    expect(packageSize(asKey('OVOS BRANCOS C/12'))).toBeNull();
+  });
+});
+
+describe('o espelho do servidor (supabase/functions/_shared/packageSize.ts)', () => {
+  const descriptions = [...STRICT_CORPUS.map(([description]) => description), ...sweep, ...STRICT_CORPUS.map(([description]) => asKey(description))];
+
+  it('lê igual ao app: packageSize e sharedPackageSize, nas mesmas descrições', () => {
+    for (const description of descriptions) {
+      expect([description, JSON.stringify(server.packageSize(description))]).toEqual([description, JSON.stringify(packageSize(description))]);
+      expect([description, JSON.stringify(server.sharedPackageSize(description))]).toEqual([description, JSON.stringify(sharedPackageSize(description))]);
+    }
+  });
+
+  it('o mesmo rótulo e a mesma comparação de tamanhos', () => {
+    expect(server.packageLabel({ unit: 'l', amount: 4.2, of: 12 })).toBe(packageLabel({ unit: 'l', amount: 4.2, of: 12 }));
+    expect(server.samePackageSize(server.packageSize('ARROZ 1KG')!, server.packageSize('ARROZ 1000G')!)).toBe(true);
+  });
+
+  it('é o mesmo arquivo, fora o começo (o normalizeSearch copiado no lugar do import)', () => {
+    const app = readFileSync(path.resolve(__dirname, '../packageSize.ts'), 'utf8');
+    const mirror = readFileSync(path.resolve(__dirname, '../../../supabase/functions/_shared/packageSize.ts'), 'utf8');
+    const body = (source: string) => source.slice(source.indexOf('/** O tamanho de uma embalagem, na unidade em que os preços se comparam. */'));
+    expect(body(mirror)).toBe(body(app));
   });
 });

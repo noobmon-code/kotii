@@ -13,8 +13,13 @@ const mockView = {
   cap: 1000,
   /** O pedido (a contar do zero) que falha. */
   failAt: undefined as number | undefined,
-  /** O banco de antes da coluna de quantos vêm na embalagem: recusa o pedido que fala dela. */
-  withoutPack: false,
+  /**
+   * As colunas que o banco ainda não tem (o de antes de quantos vêm na embalagem, ou da descrição): recusa o pedido
+   * que fala delas, nomeando a primeira desta lista que o pedido traz (o banco escolhe qual nomeia).
+   */
+  missing: [] as string[],
+  /** Uma coluna qualquer que o banco diz não existir (outro erro de coluna, que não é das que chegaram depois). */
+  brokenColumn: undefined as string | undefined,
   asked: [] as { table: string; columns: string; order: string[]; range: [number, number] | null }[],
   /** As linhas já na ordem pedida: 20 mil linhas não se ordenam de novo a cada página. */
   sorted: undefined as { rows: LatestPrice[]; order: string; result: LatestPrice[] } | undefined,
@@ -29,9 +34,8 @@ jest.mock('@/lib/supabase', () => ({
           const request = mockView.asked.length;
           mockView.asked.push({ table, columns, order: [...order], range });
           if (request === mockView.failAt) return { data: null, error: new Error('sem permissão') };
-          if (mockView.withoutPack && columns.includes('pack_count')) {
-            return { data: null, error: { code: '42703', message: 'column latest_prices.pack_count does not exist' } };
-          }
+          const missing = mockView.missing.find((column) => columns.split(', ').includes(column)) ?? mockView.brokenColumn;
+          if (missing) return { data: null, error: { code: '42703', message: `column latest_prices.${missing} does not exist` } };
           if (mockView.sorted?.rows !== mockView.rows || mockView.sorted.order !== order.join()) {
             const keyed = mockView.rows.map((row) => ({ row, key: order.map((column) => String(row[column as keyof LatestPrice])).join(' ') }));
             keyed.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
@@ -80,7 +84,8 @@ const ranges = () => mockView.asked.map((request) => request.range);
 afterEach(() => {
   mockView.rows = [];
   mockView.failAt = undefined;
-  mockView.withoutPack = false;
+  mockView.missing = [];
+  mockView.brokenColumn = undefined;
   mockView.asked = [];
 });
 
@@ -98,7 +103,7 @@ describe('últimos preços da casa', () => {
     for (const request of mockView.asked) {
       expect(request).toMatchObject({
         table: 'latest_prices',
-        columns: 'product_id, store_id, unit, unit_price, purchased_at, pack_count',
+        columns: 'product_id, store_id, unit, unit_price, purchased_at, pack_count, raw_description',
         order: ['product_id', 'store_id', 'unit'],
       });
     }
@@ -106,14 +111,58 @@ describe('últimos preços da casa', () => {
     expect(rows[0]).toEqual({ product_id: 'p000000', store_id: 'dia', unit: 'un', unit_price: 1, purchased_at: '2026-10-01T12:00:00Z' });
   });
 
-  it('banco de antes da coluna de quantos vêm na embalagem: lê de novo sem ela, desde a primeira página', async () => {
+  it('banco de antes da coluna da descrição: lê de novo sem ela, desde a primeira página, com quantos vêm', async () => {
     mockView.rows = prices(1200);
-    mockView.withoutPack = true;
+    mockView.missing = ['raw_description'];
     expect(await fetchLatestPrices()).toHaveLength(1200);
-    expect(mockView.asked.map((request) => [request.columns.endsWith('pack_count'), request.range])).toEqual([
-      [true, [0, 999]],
-      [false, [0, 999]],
-      [false, [1000, 1999]],
+    expect(mockView.asked.map((request) => [request.columns, request.range])).toEqual([
+      ['product_id, store_id, unit, unit_price, purchased_at, pack_count, raw_description', [0, 999]],
+      ['product_id, store_id, unit, unit_price, purchased_at, pack_count', [0, 999]],
+      ['product_id, store_id, unit, unit_price, purchased_at, pack_count', [1000, 1999]],
+    ]);
+  });
+
+  it('banco de antes das duas colunas: três leituras da primeira página, na ordem em que o banco as nomeia', async () => {
+    for (const order of [
+      ['pack_count', 'raw_description'],
+      ['raw_description', 'pack_count'],
+    ]) {
+      mockView.asked = [];
+      mockView.rows = prices(1200);
+      mockView.missing = order;
+      expect(await fetchLatestPrices()).toHaveLength(1200);
+      expect(mockView.asked.map((request) => [request.columns, request.range])).toEqual([
+        ['product_id, store_id, unit, unit_price, purchased_at, pack_count, raw_description', [0, 999]],
+        [
+          order[0] === 'pack_count'
+            ? 'product_id, store_id, unit, unit_price, purchased_at, raw_description'
+            : 'product_id, store_id, unit, unit_price, purchased_at, pack_count',
+          [0, 999],
+        ],
+        ['product_id, store_id, unit, unit_price, purchased_at', [0, 999]],
+        ['product_id, store_id, unit, unit_price, purchased_at', [1000, 1999]],
+      ]);
+    }
+  });
+
+  it('um erro que nomeia outra coluna continua erro', async () => {
+    mockView.rows = prices(12);
+    mockView.brokenColumn = 'unit_price';
+    await expect(fetchLatestPrices()).rejects.toMatchObject({ code: '42703' });
+    expect(mockView.asked).toHaveLength(1);
+  });
+
+  it('a descrição fica só na linha por unidade que diz um tamanho: o cache guardado no aparelho é um só', async () => {
+    const at = '2026-10-01T12:00:00Z';
+    mockView.rows = [
+      { product_id: 'arroz', store_id: 'assai', unit: 'un', unit_price: 24.9, purchased_at: at, pack_count: null, raw_description: 'ARROZ CAMIL T1 5KG' },
+      { product_id: 'arroz', store_id: 'dia', unit: 'un', unit_price: 6.2, purchased_at: at, pack_count: null, raw_description: 'ARROZ TIO JOAO' },
+      { product_id: 'queijo', store_id: 'dia', unit: 'kg', unit_price: 41.5, purchased_at: at, pack_count: null, raw_description: 'QUEIJO MUSSARELA 1KG' },
+    ];
+    expect(await fetchLatestPrices()).toEqual([
+      { product_id: 'arroz', store_id: 'assai', unit: 'un', unit_price: 24.9, purchased_at: at, pack_count: null, raw_description: 'ARROZ CAMIL T1 5KG' },
+      { product_id: 'arroz', store_id: 'dia', unit: 'un', unit_price: 6.2, purchased_at: at, pack_count: null },
+      { product_id: 'queijo', store_id: 'dia', unit: 'kg', unit_price: 41.5, purchased_at: at, pack_count: null },
     ]);
   });
 
@@ -169,7 +218,7 @@ describe('últimos preços da casa', () => {
     for (const request of mockView.asked) {
       expect(request).toMatchObject({
         table: 'latest_prices',
-        columns: 'product_id, store_id, unit, unit_price, purchased_at, pack_count',
+        columns: 'product_id, store_id, unit, unit_price, purchased_at, pack_count, raw_description',
         order: ['product_id', 'store_id', 'unit'],
       });
     }

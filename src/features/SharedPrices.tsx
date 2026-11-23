@@ -4,8 +4,8 @@ import { StyleSheet } from 'react-native';
 import { useLatestPrices, useStores } from '@/data/market';
 import { useSharedPrices, useSharedPricesAvailable } from '@/data/sharedPrices';
 import {
+  comparedSharedForProduct,
   describeSharedPrice,
-  seenLabel,
   SHARED_PRICES_MINE,
   SHARED_PRICES_MORE,
   SHARED_PRICES_MORE_LABEL,
@@ -15,9 +15,9 @@ import {
   SHARED_ROWS_SHOWN,
   SHARED_ROWS_STEP,
   sharedPriceLabel,
-  type SharedPriceRow,
-  sharedRowsByProduct,
+  sharedRowDetail,
   sharedStoreLabel,
+  type ShownSharedPrice,
   SHARING_ABOUT,
   SHARING_SUMMARY,
   SHARING_TITLE,
@@ -34,15 +34,19 @@ import { space } from '@/ui/theme';
  * preços e os mercados da casa em dia: durante uma busca nova (ou depois de
  * uma que falhou) o que ficou guardado é de antes, e a compra de agora
  * apareceria como de outra casa. Nunca vira erro na tela.
+ * Os preços se comparam com os da casa na unidade da primeira lista do "Último
+ * preço por mercado" logo acima (`ownUnit`; enquanto ela não chega, a dos
+ * preços guardados): a linha com o tamanho da embalagem vira preço por kg,
+ * litro ou item quando a casa compara assim ("5 kg por R$ 22,90", "R$ 4,58/kg").
  */
-export function SharedPricesSection({ productId }: { productId: string }) {
+export function SharedPricesSection({ productId, ownUnit }: { productId: string; ownUnit?: string }) {
   const shared = useSharedPrices();
   const own = settledData(useLatestPrices());
   const stores = settledData(useStores());
 
   const rows = useMemo(
-    () => (shared.data && own && stores ? (sharedRowsByProduct(shared.data, own, stores).get(productId) ?? []) : []),
-    [shared.data, own, stores, productId],
+    () => (shared.data && own && stores ? comparedSharedForProduct(shared.data, own, stores, productId, ownUnit)?.rows : null) ?? [],
+    [shared.data, own, stores, productId, ownUnit],
   );
   if (!rows.length) return null;
 
@@ -59,7 +63,7 @@ export function SharedPricesSection({ productId }: { productId: string }) {
  * Uma das duas listas, só quando tem linhas. "Ver mais" traz um tanto de cada vez: a lista nunca abre inteira de uma
  * vez. `moreLabel`: o que o leitor de tela diz nesse botão, que diz de qual das duas listas ele é.
  */
-function SharedPriceList({ title, moreLabel, rows }: { title: string; moreLabel: string; rows: SharedPriceRow[] }) {
+function SharedPriceList({ title, moreLabel, rows }: { title: string; moreLabel: string; rows: ShownSharedPrice[] }) {
   const [shown, setShown] = useState(SHARED_ROWS_SHOWN);
   if (!rows.length) return null;
   return (
@@ -68,12 +72,12 @@ function SharedPriceList({ title, moreLabel, rows }: { title: string; moreLabel:
       <ListCard>
         {rows.slice(0, shown).map((row) => (
           <ListRow
-            key={`${row.storeCnpj} ${row.unit}`}
-            // Para o leitor de tela, a linha inteira de uma vez: preço, mercado e dia.
+            key={`${row.storeCnpj} ${row.unit} ${row.pack?.label ?? ''}`}
+            // Para o leitor de tela, a linha inteira de uma vez: preço, tamanho, mercado e dia.
             accessibilityLabel={describeSharedPrice(row)}
             left={<IconBadge icon="store-outline" />}
             title={sharedStoreLabel(row)}
-            subtitle={seenLabel(row)}
+            subtitle={sharedRowDetail(row)}
             right={<Text variant="label">{sharedPriceLabel(row)}</Text>}
           />
         ))}

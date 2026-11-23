@@ -204,6 +204,27 @@ describe('"Onde comprar" com os preços de outras casas', () => {
     expect(page).not.toContain(SHARED_PRICES_NOTICE);
   });
 
+  it('a casa compra a caixa de 12 latas: a lata avulsa de outra casa fica fora da conta; a caixa entra', async () => {
+    const CERVEJA = { id: 'cerveja', name: 'Cerveja Skol', category: 'alcoolicas', shelf_life_days: null } as Product;
+    mockQueries.products = loaded([...PRODUCTS, CERVEJA]);
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz'), { ...listItem('c', 'Cerveja', 'cerveja'), category: 'alcoolicas' }]);
+    mockQueries.prices = loaded([
+      own('arroz', 'assai', 25),
+      own('arroz', 'dia', 24),
+      { ...own('cerveja', 'assai', 39.9), raw_description: 'CERV SKOL LT 350ML C/12' },
+    ]);
+    mockQueries.shared = loaded([seen('cerveja', DIA, 3.29, 3, { mine: true, pack_unit: 'l', pack_amount: 0.35 })]);
+    const can = await mount();
+    expect(can).not.toContain('Preço de outras casas');
+    expect(can).not.toContain('~R$ 3,29');
+    expect(can).not.toContain(SHARED_PRICES_NOTICE);
+    await act(async () => renderer?.unmount());
+    mockQueries.shared = loaded([seen('cerveja', DIA, 36.9, 3, { mine: true, pack_unit: 'l', pack_amount: 4.2, pack_of: 12 })]);
+    const box = await mount();
+    expect(box).toContain(`Preço de outras casas, visto em ${formatShortDate(day(3))}`);
+    expect(box).toContain('~R$ 36,90');
+  });
+
   it('a primeira busca ainda anda: espera, para o total não mudar logo depois', async () => {
     mockQueries.shared = onTheWay();
     expect(await mount()).toContain('Comparando preços…');

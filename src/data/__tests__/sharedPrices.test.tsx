@@ -77,6 +77,9 @@ const price = (n: number): SharedPrice => ({
   mine: n % 2 === 0,
 });
 
+/** Como a busca devolve a linha da função de antes do tamanho da embalagem: os três campos como "não se sabe". */
+const unsized = (row: SharedPrice): SharedPrice => ({ ...row, pack_unit: null, pack_amount: null, pack_of: null });
+
 /** Um banco de mentira: guarda cada pedido e responde as linhas da página pedida (ou o erro combinado). */
 function fakeDb(rows: unknown[], error: unknown = null) {
   const asked: { name: string; order: string[]; range: [number, number] }[] = [];
@@ -135,13 +138,30 @@ describe('preços de outras casas', () => {
 
   it('lê pela função, nunca pelas tabelas, na ordem da chave da resposta', async () => {
     const { db, asked } = fakeDb([price(1), price(2)]);
-    await expect(fetchSharedPrices(db)).resolves.toEqual([price(1), price(2)]);
+    await expect(fetchSharedPrices(db)).resolves.toEqual([unsized(price(1)), unsized(price(2))]);
     expect(asked).toEqual([{ name: 'shared_latest_prices', order: ['product_id', 'store_cnpj', 'unit'], range: [0, 999] }]);
   });
 
   it('o preço chega como número, mesmo que o banco mande texto', async () => {
     const rows = await fetchSharedPrices(fakeDb([{ ...price(1), unit_price: '21.9000' }]).db);
     expect(rows?.[0].unit_price).toBe(21.9);
+  });
+
+  it('o tamanho da embalagem chega como número (numeric e smallint do banco), e a função de antes dele dá "não se sabe"', async () => {
+    const rows = await fetchSharedPrices(
+      fakeDb([
+        { ...price(1), pack_unit: 'l', pack_amount: '4.200000', pack_of: 12 },
+        { ...price(2), pack_unit: 'un', pack_amount: 30, pack_of: null },
+        { ...price(3), pack_unit: null, pack_amount: null, pack_of: null },
+        price(4),
+      ]).db,
+    );
+    expect(rows?.map((row) => [row.pack_unit, row.pack_amount, row.pack_of])).toEqual([
+      ['l', 4.2, 12],
+      ['un', 30, null],
+      [null, null, null],
+      [null, null, null],
+    ]);
   });
 
   it('"é mercado da casa" só com um sim do banco, e o estado que não veio é "não se sabe"', async () => {
@@ -244,7 +264,7 @@ async function mount(Probe: () => null, queryClient: QueryClient, done: () => bo
 describe('no cache do app', () => {
   it('a tela recebe os preços na chave sharedPrices; sem a função, null', async () => {
     for (const [answer, expected] of [
-      [{ data: [price(1)], error: null }, [price(1)]],
+      [{ data: [price(1)], error: null }, [unsized(price(1))]],
       [{ data: null, error: notInCache }, null],
     ] as const) {
       mockRpc.answer = () => answer;

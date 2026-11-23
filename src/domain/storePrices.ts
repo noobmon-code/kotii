@@ -8,13 +8,16 @@
 // Os preços se comparam como no histórico logo abaixo (toPurchases): por kg,
 // litro, unidade ou item do pacote, com o tamanho da embalagem lido na nota.
 // Preço por kg não se compara com preço por unidade: cada unidade tem a sua
-// lista e o seu "Mais barato". Os preços guardados no aparelho não têm a
-// descrição da nota: ali g vira kg e ml vira litro, e o tamanho do pacote só
-// se sabe por quantos vêm (pack_count, respondido na revisão), como no
-// histórico; o tamanho que está só na descrição ("OVOS C/30") não chega lá.
+// lista e o seu "Mais barato". Os preços guardados no aparelho trazem a
+// descrição da nota daquele último preço (latest_prices.raw_description,
+// guardada só na linha por unidade que diz um tamanho: compactSavedPrice), e
+// com ela, ou com quantos vinham (pack_count, respondido na revisão), o
+// tamanho do pacote se compara como no histórico. A tela Preços usa a mesma
+// lista para todos os produtos (savedPricesByProduct).
 
 import { formatShortDate, toISODate } from './dates';
 import { formatBRL } from './money';
+import { packageSize } from './packageSize';
 import { isPriced, PACK_ITEM, toPurchases, unitLabel, type PurchaseLine } from './priceHistory';
 
 export interface StorePrice {
@@ -40,6 +43,11 @@ export interface SavedPrice {
   purchased_at: string;
   /** Quantos vinham na embalagem (pack_count, respondido na revisão); ausente no banco de antes da coluna. */
   pack_count?: number | null;
+  /**
+   * A descrição da linha da nota desse preço ("ARROZ T1 5KG"), de onde sai o tamanho; só nas linhas por unidade que
+   * dizem um tamanho (compactSavedPrice); ausente no banco de antes da coluna.
+   */
+  raw_description?: string | null;
 }
 
 /**
@@ -92,29 +100,54 @@ export function storePricesFromPurchases(lines: readonly PurchaseLine[]): StoreP
 
 /**
  * Dos últimos preços guardados no aparelho (uma linha por produto, mercado e unidade), só os deste produto. Cada linha
- * é uma compra à parte, comparada como no caminho online (storePricesFromPurchases): com quantos vêm guardados, a
- * cartela de 10 e a de 30 se comparam por ovo.
+ * é uma compra à parte, comparada como no caminho online (storePricesFromPurchases): com a descrição guardada ("ARROZ
+ * 5KG" e "ARROZ 1KG") ou quantos vêm, a embalagem de 5 kg e a de 1 kg se comparam por kg, a cartela de 10 e a de 30
+ * por ovo.
  */
 export function storePricesFromSaved(saved: readonly SavedPrice[], productId: string): StorePrice[] {
-  return storePricesFromPurchases(
-    saved
-      .filter((row) => row.product_id === productId)
-      .map(
-        (row, index): PurchaseLine => ({
-          id: `saved${index}`,
-          // Uma nota por linha: a compra de uma linha não se junta com a de outra, nem herda o mercado dela.
-          receiptId: `saved${index}`,
-          storeId: row.store_id,
-          storeName: row.store_id,
-          purchasedAt: row.purchased_at,
-          quantity: 1,
-          unit: row.unit,
-          unitPrice: row.unit_price,
-          totalPrice: row.unit_price,
-          packCount: row.pack_count ?? null,
-        }),
-      ),
-  );
+  return storePricesFromPurchases(saved.filter((row) => row.product_id === productId).map(savedLine));
+}
+
+/** Uma linha guardada como compra à parte: uma nota por linha, que não se junta com a de outra nem herda o mercado dela. */
+export function savedLine(row: SavedPrice, index: number): PurchaseLine {
+  return {
+    id: `saved${index}`,
+    receiptId: `saved${index}`,
+    storeId: row.store_id,
+    storeName: row.store_id,
+    purchasedAt: row.purchased_at,
+    quantity: 1,
+    unit: row.unit,
+    unitPrice: row.unit_price,
+    totalPrice: row.unit_price,
+    ...(row.raw_description ? { description: row.raw_description } : {}),
+    packCount: row.pack_count ?? null,
+  };
+}
+
+/**
+ * Os últimos preços guardados de todos os produtos, comparados como storePricesFromSaved, agrupados uma vez só: a
+ * tela Preços filtra os produtos a cada letra da busca, e não a lista inteira de preços para cada produto.
+ */
+export function savedPricesByProduct(saved: readonly SavedPrice[]): Map<string, StorePrice[]> {
+  const lines = new Map<string, PurchaseLine[]>();
+  saved.forEach((row, index) => {
+    const list = lines.get(row.product_id);
+    if (list) list.push(savedLine(row, index));
+    else lines.set(row.product_id, [savedLine(row, index)]);
+  });
+  return new Map([...lines].map(([productId, rows]) => [productId, storePricesFromPurchases(rows)]));
+}
+
+/**
+ * Só a descrição que diz um tamanho fica (linha por unidade em que packageSize lê um): é a única que muda alguma
+ * conta, e o cache guardado no aparelho é um só. Toda regra que lê a descrição dá o mesmo na linha enxuta, porque a
+ * leitura estrita (sharedPackageSize) é nula sempre que packageSize é.
+ */
+export function compactSavedPrice<T extends SavedPrice>(row: T): T {
+  if (!('raw_description' in row) || (row.unit === 'un' && row.raw_description && packageSize(row.raw_description))) return row;
+  const { raw_description: _dropped, ...rest } = row;
+  return rest as T;
 }
 
 export interface StorePriceGroup {

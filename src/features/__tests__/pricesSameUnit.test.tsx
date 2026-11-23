@@ -317,6 +317,45 @@ describe('Preços', () => {
     expect(await mount(<PricesScreen />)).toBe('Queijo mussarelaMais barato: Dia · 2 mercadosR$ 39,90–45,90/kg');
   });
 
+  it('embalagens de tamanhos diferentes: pelo preço por kg, e o mais barato diz o pacote (com a descrição da nota)', async () => {
+    const described = (product: string, store: string, price: number, raw_description: string): LatestPrice => ({
+      ...latest(product, store, 'un', price),
+      raw_description,
+    });
+    mockQueries.products = loaded([ARROZ]);
+    mockQueries.prices = loaded([described('arroz', 'assai', 24.9, 'ARROZ CAMIL T1 5KG'), described('arroz', 'dia', 5.49, 'ARROZ CAMIL T1 1KG')]);
+    expect(await mount(<PricesScreen />)).toBe('ArrozMais barato: Assaí (5 kg por R$ 24,90) · 2 mercadosR$ 4,98–5,49/kg');
+    await act(async () => renderer?.unmount());
+    // O mercado cuja nota não diz o tamanho aparece à parte.
+    mockQueries.prices = loaded([
+      described('arroz', 'assai', 24.9, 'ARROZ 5KG'),
+      described('arroz', 'dia', 5.49, 'ARROZ 1KG'),
+      latest('arroz', 'atacadao', 'un', 6.2),
+    ]);
+    expect(await mount(<PricesScreen />)).toBe('ArrozMais barato: Assaí (5 kg por R$ 24,90) · 2 mercados · mais 1 mercado sem o tamanho na notaR$ 4,98–5,49/kg');
+  });
+
+  it('ovos de cartelas diferentes: "o ovo" e "30 ovos"; a cerveja, por litro', async () => {
+    const OVOS: Product = { id: 'ovos', name: 'Ovos', category: 'ovos', shelf_life_days: null };
+    const CERVEJA: Product = { id: 'cerveja', name: 'Cerveja', category: 'alcoolicas', shelf_life_days: null };
+    const described = (product: string, store: string, price: number, raw_description: string): LatestPrice => ({
+      ...latest(product, store, 'un', price),
+      raw_description,
+    });
+    mockQueries.products = loaded([CERVEJA, OVOS]);
+    mockQueries.prices = loaded([
+      described('ovos', 'assai', 11.9, 'OVOS BRANCOS C/12'),
+      described('ovos', 'dia', 24.9, 'OVOS 30UN'),
+      described('cerveja', 'assai', 39.9, 'CERV SKOL LT 350ML C/12'),
+      described('cerveja', 'dia', 3.49, 'CERV SKOL LT 350ML'),
+      described('cerveja', 'atacadao', 36.9, 'CERV SKOL 12X350ML'),
+    ]);
+    expect(await mount(<PricesScreen />)).toBe(
+      'CervejaMais barato: Atacadão (12 x 350 ml por R$ 36,90) · 3 mercadosR$ 8,79–9,97/l' +
+        'OvosMais barato: Dia (30 ovos por R$ 24,90) · 2 mercadosR$ 0,83–0,99 o ovo',
+    );
+  });
+
   it('a lista rola sozinha: o conteúdo da tela fica na altura dela (no navegador, sem isso, nada rola)', async () => {
     mockQueries.prices = loaded([latest('arroz', 'assai', 'un', 24.9)]);
     await mount(<PricesScreen />);

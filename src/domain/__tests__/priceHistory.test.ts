@@ -171,6 +171,32 @@ describe('as compras do produto', () => {
   });
 });
 
+describe('o tamanho já lido (PurchaseLine.pack)', () => {
+  it('vale no lugar da descrição e de quantos vinham, mesmo null', () => {
+    const [plain] = toPurchases([line('2026-10-01', 24.9, { description: 'ARROZ 5KG', pack: null })]);
+    expect(plain.pack).toBeNull();
+    const [counted] = toPurchases([line('2026-10-01', 24.9, { packCount: 30, pack: null })]);
+    expect(counted.pack).toBeNull();
+  });
+
+  it('sem descrição, o tamanho dado se compara com o de outra linha: 5 kg e 1 kg por kg', () => {
+    const purchases = toPurchases([
+      line('2026-10-01', 24.9, { pack: { unit: 'kg', amount: 5, label: '5 kg' } }),
+      line('2026-10-02', 5.49, { description: 'ARROZ 1KG', ...atacadao }),
+    ]);
+    expect(purchases.map((p) => [p.baseUnit, p.price, p.pack?.label, p.packagePrice])).toEqual([
+      ['kg', 5.49, '1 kg', 5.49],
+      ['kg', 4.98, '5 kg', 24.9],
+    ]);
+  });
+
+  it('a linha por kg não leva tamanho', () => {
+    const [kilo] = toPurchases([line('2026-10-01', 4.9, { unit: 'kg', pack: { unit: 'kg', amount: 5, label: '5 kg' } })]);
+    expect(kilo.pack).toBeNull();
+    expect(kilo.baseUnit).toBe('kg');
+  });
+});
+
 describe('desconto do item', () => {
   it(`a tolerância é de ${DISCOUNT_TOLERANCE_CENTS} centavos`, () => {
     expect(DISCOUNT_TOLERANCE_CENTS).toBe(2);

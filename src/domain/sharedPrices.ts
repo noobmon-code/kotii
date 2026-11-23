@@ -7,10 +7,24 @@
 // cobrem onde a casa não tem preço próprio (sharedQuotes aqui, e a regra em
 // listEstimate): o preço da casa sempre vence, e eles não entram no nível de
 // preço dos mercados.
+// Embalagens: a linha por unidade traz o tamanho que o servidor leu na nota do
+// QR code (pack_*, só quando a leitura não tinha dúvida). Na tela do produto e
+// em Preços, o preço de fora se compara com o da casa na unidade em que a casa
+// vê os seus (compareSharedPrices): por kg, litro ou item do pacote quando a
+// casa compara por tamanho; por unidade, só com o preço da casa do mesmo
+// tamanho, ou com qualquer um quando um dos lados não diz o tamanho; e nunca a
+// mais de 2,5 vezes de distância (SHARED_PRICE_BAND), que quase sempre é outra
+// embalagem (o fardo ou a lata avulsa sob a mesma descrição). A lista e o
+// "Onde comprar" usam a mesma regra para o preço por unidade
+// (fitsHouseholdPack).
 
 import { formatShortDate } from './dates';
 import { formatBRL } from './money';
+import { eachPriceLabel, packSizeText } from './packCount';
+import { packageLabel, samePackageSize, sharedPackageSize, type PackageSize } from './packageSize';
 import { summarizePrices } from './prices';
+import { answeredPack, PACK_ITEM, roundPrice, toPurchases } from './priceHistory';
+import { savedLine, storePriceGroups, storePricesFromPurchases } from './storePrices';
 import { pricePerBase } from './units';
 
 /**
@@ -57,6 +71,14 @@ export interface SharedPrice {
   seen_on: string;
   /** O mercado é um dos mercados da própria casa (pelo CNPJ). */
   mine: boolean;
+  /**
+   * O tamanho da embalagem que o servidor leu na nota do QR code (só em "un"): kg, l ou un, quanto vem na embalagem
+   * toda (pack_amount, nessa unidade) e, em kg e l, quantas embalagens iguais (pack_of, "12 x 350 ml"). Ausentes no
+   * banco de antes da coluna, ou null: não se sabe.
+   */
+  pack_unit?: string | null;
+  pack_amount?: number | null;
+  pack_of?: number | null;
 }
 
 /** Um preço da própria casa (latest_prices). */
@@ -66,6 +88,9 @@ export interface OwnPrice {
   unit: string;
   unit_price: number;
   purchased_at: string;
+  /** Quantos vinham (a resposta da revisão) e a descrição da nota: o tamanho da embalagem. Ausentes no banco de antes. */
+  pack_count?: number | null;
+  raw_description?: string | null;
 }
 
 /** Um mercado da casa: o CNPJ, e o nome pelo qual a casa o conhece. */
@@ -110,7 +135,7 @@ export const SHARED_PRICES_MORE_LABEL = {
 export const SHARING_TITLE = 'Preços compartilhados';
 export const SHARING_SUMMARY = 'Os preços das notas vão para uma base comum, sem dizer de qual casa';
 export const SHARING_ABOUT =
-  'Os preços das notas lidas pelo app (mercado, item, código de barras, preço e dia) entram numa base comum, sem dizer de qual casa são, para que outras casas vejam quanto cada coisa custa nos mercados. Ficam de fora as notas digitadas à mão, remédios e compras em farmácia, suplementos, primeiros socorros, itens de higiene pessoal e o que o app não reconheceu; o que você corrige na revisão também fica na casa. Cada preço aparece para as outras casas a partir do dia seguinte.';
+  'Os preços das notas lidas pelo app (mercado, item, código de barras, tamanho da embalagem, preço e dia) entram numa base comum, sem dizer de qual casa são, para que outras casas vejam quanto cada coisa custa nos mercados. Ficam de fora as notas digitadas à mão, remédios e compras em farmácia, suplementos, primeiros socorros, itens de higiene pessoal e o que o app não reconheceu; o que você corrige na revisão também fica na casa. Cada preço aparece para as outras casas a partir do dia seguinte.';
 
 /** Código do IBGE de cada estado (os dois primeiros dígitos da chave de acesso da nota) -> sigla. */
 const STATE_BY_CODE: Record<string, string> = {
@@ -274,35 +299,242 @@ export function sharedRowsByProduct(
   return rows;
 }
 
+// ---------------------------------------------------------------------------
+// O tamanho da embalagem: o preço de fora comparado com o da casa
+
 /**
- * O preço de outra casa que é menor que o menor da própria casa, na mesma
- * unidade de comparação (a de `unit`: kg para g e kg, litro para ml e l);
- * null quando não há. "Menor" é o que a tela escreve: se os dois saem com os
- * mesmos centavos, não é mais barato. Havendo um mais barato num mercado da
- * própria casa, é ele (é onde a casa já compra); senão, o mais barato dos
- * outros. `own` são os preços da casa para o produto; `rows`, os de outras.
+ * A distância máxima entre o preço de fora e o da casa para os dois se compararem (inclusive): a mesma de
+ * PRICE_JUMP_LIMIT (domain/marketChange). Além dela, a diferença quase sempre é outra embalagem (o fardo de 12 ou a
+ * lata avulsa sob a mesma descrição, um tamanho mal lido), e nunca se diz "mais barato".
  */
-export function cheaperSharedPrice(
-  own: readonly { unit: string; unit_price: number }[],
-  rows: readonly SharedPriceRow[],
-  unit: string,
-): SharedPriceRow | null {
-  const base = pricePerBase(1, unit).unit;
-  const mine = own.map(toBase).filter((price) => price.unit === base);
-  if (!mine.length) return null;
-  const lowest = Math.min(...mine.map((price) => price.unit_price));
-  const printed = formatBRL(lowest);
-  const cheaper = rows.filter((row) => row.unit === base && row.unitPrice < lowest && formatBRL(row.unitPrice) !== printed);
+export const SHARED_PRICE_BAND = 2.5;
+/** A linha por unidade sem tamanho, ao lado de preços que dizem um. */
+export const SIZE_UNKNOWN = 'tamanho não informado';
+
+/** O tamanho como a linha de outra casa o mostra. */
+export interface ShownSize {
+  /** O tamanho que o servidor leu na nota (sharedPack); null quando não se sabe. */
+  pack: PackageSize | null;
+  /** Na linha convertida para o preço por kg, litro ou item, o preço da embalagem; senão, null. */
+  packagePrice: number | null;
+  /** A linha por unidade não diz o tamanho, e outro preço na tela diz: "tamanho não informado". */
+  sizeUnknown: boolean;
+}
+
+/** Um preço de outra casa comparado com os da casa, pronto para a tela do produto e para Preços. */
+export interface ShownSharedPrice extends SharedPriceRow, ShownSize {
+  /** un, kg, l ou PACK_ITEM; `unitPrice` em reais com centavos (roundPrice, como StorePrice). */
+  unit: string;
+  /** O preço da casa com que este se compara (o menor dos que combinam); null quando não se compara. */
+  comparedTo: number | null;
+}
+
+export interface ComparedSharedPrices {
+  /** A unidade principal da casa (a da primeira lista do "Último preço por mercado"); null sem preço da casa. */
+  unit: string | null;
+  rows: ShownSharedPrice[];
+}
+
+/** O tamanho que a linha de outra casa traz: só em "un", e só na forma do check do banco. null quando não se sabe. */
+export function sharedPack(row: Pick<SharedPrice, 'unit' | 'pack_unit' | 'pack_amount' | 'pack_of'>): PackageSize | null {
+  const unit = row.pack_unit;
+  const amount = row.pack_amount == null ? NaN : Number(row.pack_amount);
+  if (row.unit !== 'un' || (unit !== 'kg' && unit !== 'l' && unit !== 'un') || !(amount > 0)) return null;
+  if (unit === 'un') {
+    if (!(Number.isInteger(amount) && amount >= 2) || row.pack_of != null) return null;
+    return { unit, amount, label: packageLabel({ unit, amount }) };
+  }
+  const of = row.pack_of == null ? undefined : Number(row.pack_of);
+  if (of !== undefined && !(Number.isInteger(of) && of >= 2)) return null;
+  const size: Omit<PackageSize, 'label'> = { unit, amount, ...(of !== undefined ? { of } : {}) };
+  return { ...size, label: packageLabel(size) };
+}
+
+/** O tamanho de um preço da casa como se compara com a base comum: a leitura estrita da descrição, ou quantos vinham (a resposta da revisão). */
+export const ownSharedPack = (row: Pick<OwnPrice, 'raw_description' | 'pack_count'>): PackageSize | null =>
+  (row.raw_description ? sharedPackageSize(row.raw_description) : null) ?? answeredPack(row.pack_count);
+
+/** Os dois preços a no máximo 2,5 vezes um do outro (inclusive). */
+export const withinBand = (a: number, b: number) => a > 0 && b > 0 && a <= b * SHARED_PRICE_BAND && b <= a * SHARED_PRICE_BAND;
+
+/**
+ * Os preços por unidade da casa com que um preço por unidade de fora se compara: os de mesmo tamanho, quando ele diz
+ * um e a casa tem; senão os que não dizem tamanho, ou todos quando ele não diz. Dois tamanhos conhecidos e
+ * diferentes nunca se comparam (a caixa de 6 e a garrafa de 170 g, os dois "un").
+ */
+export function unitPricePool(ownUn: readonly { price: number; pack: PackageSize | null }[], pack: PackageSize | null): number[] {
+  const same = pack ? ownUn.filter((own) => own.pack && samePackageSize(own.pack, pack)) : [];
+  const pool = same.length ? same : ownUn.filter((own) => !own.pack || !pack);
+  return pool.map((own) => own.price);
+}
+
+/** A unidade em que um tamanho se mede: kg, l, ou item do pacote para a contagem. */
+const measureUnit = (pack: PackageSize) => (pack.unit === 'un' ? PACK_ITEM : pack.unit);
+const SHOWN_ORDER = ['un', PACK_ITEM, 'kg', 'l'];
+
+/** Os preços da casa que ficam por unidade na comparação dela (toPurchases), cada um com o tamanho estrito. */
+function ownUnitPrices(own: readonly OwnPrice[]): { price: number; pack: PackageSize | null }[] {
+  const purchases = new Map(toPurchases(own.map(savedLine)).map((purchase) => [purchase.receiptId, purchase]));
+  const prices: { price: number; pack: PackageSize | null }[] = [];
+  own.forEach((row, index) => {
+    const purchase = purchases.get(`saved${index}`);
+    if (purchase?.baseUnit === 'un' && purchase.price > 0) prices.push({ price: purchase.price, pack: ownSharedPack(row) });
+  });
+  return prices;
+}
+
+/**
+ * Os preços de outras casas de UM produto (já sem o que a casa sabe: visibleSharedPrices), comparados com os da casa
+ * (`own`, os últimos preços dela do produto). A âncora é a unidade principal da casa (`mainUnit`, a da primeira lista
+ * do "Último preço por mercado" da tela do produto; sem ela, a dos preços guardados): a linha de fora com tamanho
+ * cuja grandeza é essa vira preço por kg, litro ou item; as outras ficam por kg, litro ou unidade, como vieram. Só se
+ * compara (`comparedTo`) a linha na unidade da casa, contra os preços da casa que combinam (por unidade:
+ * unitPricePool) e dentro da faixa (withinBand). Uma linha por mercado, unidade e tamanho, a vista por último (no
+ * mesmo dia, a mais barata). Na frente, as que se comparam; depois a unidade da casa, un, item, kg e l; depois a
+ * mais barata e a vista por último.
+ */
+export function compareSharedPrices(
+  shared: readonly SharedPrice[],
+  own: readonly OwnPrice[],
+  stores: readonly Pick<StoreCnpj, 'cnpj' | 'name'>[] = [],
+  mainUnit?: string | null,
+): ComparedSharedPrices {
+  const ownName = new Map(stores.map((store) => [store.cnpj, store.name]));
+  const ownPrices = storePricesFromPurchases(own.map(savedLine));
+  const unit = mainUnit ?? storePriceGroups(ownPrices)[0]?.unit ?? null;
+  const inUnit = ownPrices.filter((price) => price.unit === unit).map((price) => price.unitPrice);
+  const ownUn = unit === 'un' ? ownUnitPrices(own) : [];
+  const anySize = ownPrices.some((price) => price.packLabel != null) || shared.some((row) => sharedPack(row) != null);
+  const latest = new Map<string, ShownSharedPrice>();
+  for (const price of shared) {
+    if (!(price.unit_price > 0)) continue;
+    const base = pricePerBase(price.unit_price, price.unit);
+    const pack = base.unit === 'un' ? sharedPack(price) : null;
+    const converted = pack != null && measureUnit(pack) === unit;
+    const shownUnit = pack != null && converted ? measureUnit(pack) : base.unit;
+    const unitPrice = roundPrice(pack != null && converted ? price.unit_price / pack.amount : base.unitPrice);
+    if (!(unitPrice > 0)) continue;
+    const pool = shownUnit !== unit ? [] : unit === 'un' ? unitPricePool(ownUn, pack) : inUnit;
+    const near = pool.filter((ownPrice) => withinBand(unitPrice, ownPrice));
+    const mine = price.mine === true;
+    const row: ShownSharedPrice = {
+      storeCnpj: price.store_cnpj,
+      storeName: (mine && ownName.get(price.store_cnpj)) || price.store_name,
+      state: mine ? null : stateAbbreviation(price.store_uf),
+      mine,
+      unit: shownUnit,
+      unitPrice,
+      seenOn: price.seen_on,
+      pack,
+      packagePrice: converted ? roundPrice(price.unit_price) : null,
+      comparedTo: near.length ? Math.min(...near) : null,
+      sizeUnknown: shownUnit === 'un' && pack == null && anySize,
+    };
+    const key = [row.storeCnpj, row.unit, pack?.label ?? ''].join(SEPARATOR);
+    const seen = latest.get(key);
+    if (!seen || row.seenOn > seen.seenOn || (row.seenOn === seen.seenOn && row.unitPrice < seen.unitPrice)) latest.set(key, row);
+  }
+  const rank = (shown: string) => (shown === unit ? -1 : SHOWN_ORDER.includes(shown) ? SHOWN_ORDER.indexOf(shown) : SHOWN_ORDER.length);
+  const rows = [...latest.values()].sort(
+    (a, b) =>
+      Number(b.comparedTo != null) - Number(a.comparedTo != null) ||
+      rank(a.unit) - rank(b.unit) ||
+      a.unit.localeCompare(b.unit) ||
+      a.unitPrice - b.unitPrice ||
+      b.seenOn.localeCompare(a.seenOn) ||
+      a.storeName.localeCompare(b.storeName, 'pt-BR') ||
+      a.storeCnpj.localeCompare(b.storeCnpj) ||
+      (a.pack?.label ?? '').localeCompare(b.pack?.label ?? ''),
+  );
+  return { unit, rows };
+}
+
+function byProduct<T extends { product_id: string }>(prices: readonly T[]): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const price of prices) {
+    const list = grouped.get(price.product_id);
+    if (list) list.push(price);
+    else grouped.set(price.product_id, [price]);
+  }
+  return grouped;
+}
+
+/** Preços: por produto, os preços de outras casas que valem mostrar (visibleSharedPrices), comparados. Produto sem linha nenhuma não entra. */
+export function comparedSharedByProduct(
+  shared: readonly SharedPrice[],
+  own: readonly OwnPrice[],
+  stores: readonly StoreCnpj[],
+): Map<string, ComparedSharedPrices> {
+  const ownByProduct = byProduct(own);
+  const compared = new Map<string, ComparedSharedPrices>();
+  for (const [productId, prices] of byProduct(visibleSharedPrices(shared, own, stores))) {
+    compared.set(productId, compareSharedPrices(prices, ownByProduct.get(productId) ?? [], stores));
+  }
+  return compared;
+}
+
+/** A seção da tela do produto: o mesmo de comparedSharedByProduct para um produto, ancorado em `mainUnit` quando a tela o dá. */
+export function comparedSharedForProduct(
+  shared: readonly SharedPrice[],
+  own: readonly OwnPrice[],
+  stores: readonly StoreCnpj[],
+  productId: string,
+  mainUnit?: string | null,
+): ComparedSharedPrices | null {
+  const mine = own.filter((price) => price.product_id === productId);
+  const visible = visibleSharedPrices(
+    shared.filter((price) => price.product_id === productId),
+    mine,
+    stores,
+  );
+  return visible.length ? compareSharedPrices(visible, mine, stores, mainUnit) : null;
+}
+
+/**
+ * O preço de outra casa que é menor que o da casa com que se compara (comparedTo): sempre na unidade da casa, nunca
+ * entre dois tamanhos conhecidos diferentes nem a mais de 2,5 vezes. "Menor" é o que a tela escreve: se os dois saem
+ * com os mesmos centavos, não é mais barato. Havendo um mais barato num mercado da própria casa, é ele (é onde a
+ * casa já compra); senão, o mais barato dos outros; no empate, o visto por último. null quando não há.
+ */
+export function cheaperSharedPrice(compared: ComparedSharedPrices): ShownSharedPrice | null {
+  const cheaper = compared.rows.filter(
+    (row) => row.comparedTo != null && row.unitPrice < row.comparedTo && formatBRL(row.unitPrice) !== formatBRL(row.comparedTo),
+  );
   const inMyStores = cheaper.filter((row) => row.mine);
   const candidates = inMyStores.length ? inMyStores : cheaper;
   if (!candidates.length) return null;
-  // Empate de preço: o visto por último.
   return candidates.reduce((a, b) => (b.unitPrice < a.unitPrice || (b.unitPrice === a.unitPrice && b.seenOn > a.seenOn) ? b : a));
 }
 
-/** "R$ 22,90/un": o preço sempre com a unidade, também por unidade. */
-export function sharedPriceLabel(row: Pick<SharedPriceRow, 'unit' | 'unitPrice'>): string {
-  return `${formatBRL(row.unitPrice)}/${row.unit}`;
+/**
+ * Se a linha de outra casa entra na conta da lista e no "Onde comprar". Por kg ou litro, sempre (como hoje). Por
+ * unidade, só quando a casa não tem preço por unidade do produto (como hoje) ou tem um que combina com ela: o mesmo
+ * tamanho, ou um dos dois sem tamanho (unitPricePool), e a no máximo 2,5 vezes (withinBand). Assim o "1 un" da lista
+ * não leva o preço da lata avulsa quando a casa compra a caixa, nem o do fardo quando ela compra a lata.
+ */
+export function fitsHouseholdPack(own: readonly OwnPrice[]): (row: SharedPrice) => boolean {
+  const ownByProduct = byProduct(own);
+  const units = new Map<string, { price: number; pack: PackageSize | null }[]>();
+  return (row) => {
+    if (pricePerBase(1, row.unit).unit !== 'un') return true;
+    let ownUn = units.get(row.product_id);
+    if (!ownUn) {
+      ownUn = (ownByProduct.get(row.product_id) ?? [])
+        .filter((price) => price.unit === 'un' && price.unit_price > 0)
+        .map((price) => ({ price: price.unit_price, pack: ownSharedPack(price) }));
+      units.set(row.product_id, ownUn);
+    }
+    if (!ownUn.length) return true;
+    return unitPricePool(ownUn, sharedPack(row)).some((price) => withinBand(row.unit_price, price));
+  };
+}
+
+/**
+ * "R$ 22,90/un", "R$ 4,58/kg": o preço sempre com a unidade, também por unidade. Por item do pacote, "R$ 0,83 cada"
+ * ("R$ 0,83 o ovo" com a categoria dos ovos).
+ */
+export function sharedPriceLabel(row: Pick<SharedPriceRow, 'unit' | 'unitPrice'>, category?: string | null): string {
+  return row.unit === PACK_ITEM ? eachPriceLabel(row.unitPrice, category) : `${formatBRL(row.unitPrice)}/${row.unit}`;
 }
 
 /** O mercado como a linha o mostra: "SENDAS DISTRIBUIDORA S/A (RJ)"; sem estado conhecido (ou no mercado da casa), só o nome. */
@@ -316,16 +548,41 @@ export function seenLabel(row: Pick<SharedPriceRow, 'seenOn'>, referenceYear?: n
 }
 
 /**
- * A linha de um preço de outra casa: "R$ 22,90/un · Atacadão Mooca · visto em
- * 10 out". O nome do mercado vai como veio, sem artigo na frente.
+ * O tamanho na linha de outra casa: "5 kg por R$ 22,90" (convertida para o preço por kg da casa), "12 x 350 ml" (o
+ * preço da embalagem, tamanho conhecido), "tamanho não informado" (sem tamanho, ao lado de preços que dizem um); null
+ * quando nada na tela diz tamanho (como antes). Nos ovos, com a categoria, "30 ovos".
  */
-export function describeSharedPrice(row: SharedPriceRow, referenceYear?: number): string {
-  return `${sharedPriceLabel(row)} · ${sharedStoreLabel(row)} · ${seenLabel(row, referenceYear)}`;
+export function sharedPackDetail(row: SharedPriceRow & Partial<ShownSize>, category?: string | null): string | null {
+  if (row.sizeUnknown) return SIZE_UNKNOWN;
+  if (!row.pack) return null;
+  const words = packSizeText(row.pack.label, category);
+  return row.packagePrice != null ? `${words} por ${formatBRL(row.packagePrice)}` : words;
 }
 
-/** A linha em Preços, embaixo do produto: "Visto por R$ 21,90/un · Atacadão Mooca · 10 out, em outra casa". */
-export function cheaperSharedHint(row: SharedPriceRow, referenceYear?: number): string {
-  return `Visto por ${sharedPriceLabel(row)} · ${sharedStoreLabel(row)} · ${formatShortDate(row.seenOn, referenceYear)}, em outra casa`;
+/** O subtítulo da linha na tela do produto: "5 kg por R$ 22,90 · visto em 15 nov", ou só "visto em 15 nov". */
+export function sharedRowDetail(row: SharedPriceRow & Partial<ShownSize>, referenceYear?: number, category?: string | null): string {
+  const detail = sharedPackDetail(row, category);
+  return detail ? `${detail} · ${seenLabel(row, referenceYear)}` : seenLabel(row, referenceYear);
+}
+
+/**
+ * A linha de um preço de outra casa: "R$ 22,90/un · Atacadão Mooca · visto em 10 out", com o tamanho quando se sabe
+ * ("R$ 4,58/kg · 5 kg por R$ 22,90 · SUPER OUTRO (SP) · visto em 15 nov"). O nome do mercado vai como veio, sem
+ * artigo na frente.
+ */
+export function describeSharedPrice(row: SharedPriceRow & Partial<ShownSize>, referenceYear?: number, category?: string | null): string {
+  return [sharedPriceLabel(row, category), sharedPackDetail(row, category), sharedStoreLabel(row), seenLabel(row, referenceYear)]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/**
+ * A linha em Preços, embaixo do produto: "Visto por R$ 21,90/un · Atacadão Mooca · 10 out, em outra casa", com o
+ * tamanho entre parênteses quando se sabe ("Visto por R$ 4,58/kg (5 kg por R$ 22,90) · …").
+ */
+export function cheaperSharedHint(row: SharedPriceRow & Partial<ShownSize>, referenceYear?: number, category?: string | null): string {
+  const detail = sharedPackDetail(row, category);
+  return `Visto por ${sharedPriceLabel(row, category)}${detail ? ` (${detail})` : ''} · ${sharedStoreLabel(row)} · ${formatShortDate(row.seenOn, referenceYear)}, em outra casa`;
 }
 
 /**
@@ -344,13 +601,14 @@ export interface SharedQuote extends SharedPriceRow {
  * CNPJ: dois mercados da casa com o mesmo CNPJ recebem o preço os dois. A
  * linha que o banco diz ser de um mercado da casa, mas cujo CNPJ não está nos
  * mercados que a casa tem agora (a lista de mercados é de antes), fica de
- * fora: não é para aparecer como mercado de fora.
+ * fora: não é para aparecer como mercado de fora. A linha por unidade que não
+ * combina com as embalagens da casa (fitsHouseholdPack) também fica de fora.
  */
 export function sharedQuotes(shared: readonly SharedPrice[], own: readonly OwnPrice[], stores: readonly StoreCnpj[]): SharedQuote[] {
   const idsByCnpj = new Map<string, string[]>();
   for (const store of stores) if (store.cnpj) idsByCnpj.set(store.cnpj, [...(idsByCnpj.get(store.cnpj) ?? []), store.id]);
   const quotes: SharedQuote[] = [];
-  for (const [productId, rows] of sharedRowsByProduct(shared, own, stores)) {
+  for (const [productId, rows] of sharedRowsByProduct(shared.filter(fitsHouseholdPack(own)), own, stores)) {
     for (const row of rows) {
       const ids = idsByCnpj.get(row.storeCnpj) ?? [];
       if (ids.length) quotes.push(...ids.map((storeId) => ({ ...row, productId, storeId })));
