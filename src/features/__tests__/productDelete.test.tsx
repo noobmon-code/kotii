@@ -453,6 +453,75 @@ describe('o cartão "Parecem o mesmo produto" de Preços, montado embaixo da tel
     expect(client.getQueryState(['products'])?.fetchStatus).toBe('fetching');
     expect(shown.slice(from).flat()).not.toContain(refused);
   });
+
+  describe('com um gêmeo de nome do excluído ("Limão", o mesmo nome escrito de outro jeito)', () => {
+    // A casa recusou "Limao / Limão siciliano"; pela regra do nome, isso também esconde "Limão / Limão siciliano".
+    // Excluído "Limao", o par passa para o gêmeo (carriedDistinctPairs): sem ele, essa sugestão voltaria.
+    const hidden = ['Limão', 'Limão siciliano'].sort().join(' / ');
+    const twin = ['Limao', 'Limão'].sort().join(' / ');
+    /** O banco depois de outro aparelho excluir "Limao": o produto saiu, e o par que passou foi gravado. */
+    const excludedElsewhere = () => {
+      mockDb.tables.products = mockDb.tables.products.filter((row) => row.id !== 'limao');
+      mockDb.tables.product_distinct_pairs = [{ ...orderedPair('gemeo', 'siciliano') }];
+    };
+
+    beforeEach(() => {
+      mockDb.tables.products = [...mockDb.tables.products, product('gemeo', 'Limão', 'hortifruti')];
+    });
+
+    /**
+     * Abre a tela com o cartão; as buscas novas do catálogo e dos pares ficam sem resposta depois do toque (o
+     * catálogo de várias páginas, sinal fraco), e as compras de cada produto chegam: com elas, o cartão mostra o
+     * que os pares guardados na memória deixam.
+     */
+    async function openHeld() {
+      await open(<PricesCard />);
+      expect(shown.at(-1)?.sort()).toEqual(['Arroz 5kg / Arroz Tio João 5 kg', twin].sort());
+      mockDb.holdCatalog = true;
+      mockDb.hold.add('product_distinct_pairs');
+    }
+    const after = async (from: number) => {
+      for (let round = 0; round < 6; round++) await settle();
+      expect(client.getQueryState(['products'])?.fetchStatus).toBe('fetching');
+      expect(client.getQueryState(['productDistinctPairs'])?.fetchStatus).toBe('fetching');
+      expect(client.getQueryData(['productDistinctPairs'])).toEqual([orderedPair('gemeo', 'siciliano')]);
+      expect(shown.slice(from).flat()).not.toContain(hidden);
+      expect(shown.slice(from).flat()).not.toContain(refused);
+      expect(shown.at(-1)).toEqual(['Arroz 5kg / Arroz Tio João 5 kg']);
+    };
+
+    it('excluiu aqui', async () => {
+      await openHeld();
+      await tap();
+      const from = shown.length;
+      await confirmLast();
+      expect(rpcCalls('delete_product')).toHaveLength(1);
+      await after(from);
+    });
+
+    it('a leitura do toque acha o produto já excluído em outro aparelho', async () => {
+      await openHeld();
+      excludedElsewhere();
+      const from = shown.length;
+      await tap();
+      expect(notifyMock).toHaveBeenCalledWith(DELETE_GONE_TITLE, PRODUCT_NOT_IN_HOUSE);
+      expect(rpcCalls('delete_product')).toHaveLength(0);
+      await after(from);
+    });
+
+    it('o pedido de excluir acha o produto já excluído em outro aparelho (P0002)', async () => {
+      await openHeld();
+      await tap();
+      mockDb.deleteAnswer = async () => {
+        excludedElsewhere();
+        return { data: null, error: { code: 'P0002', message: 'product not found' } };
+      };
+      const from = shown.length;
+      await confirmLast();
+      expect(notifyMock).toHaveBeenCalledWith(DELETE_GONE_TITLE, PRODUCT_NOT_IN_HOUSE);
+      await after(from);
+    });
+  });
 });
 
 describe('o que a leitura acha antes de perguntar', () => {

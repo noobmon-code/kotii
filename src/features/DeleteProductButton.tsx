@@ -6,6 +6,7 @@ import {
   deleteErrorNotice,
   fetchDeleteFacts,
   forgetDeletedProduct,
+  pairsToCarry,
   refreshDeletedProduct,
   useDeleteProduct,
   useDeleteProductAvailable,
@@ -48,6 +49,9 @@ export function DeleteProductButton({ productId, onDeleted }: { productId: strin
     if (reading.current) return;
     reading.current = true;
     setChecking(true);
+    // Os pares que passam para o gêmeo de nome, se a leitura achar o produto já excluído: do que a memória tem
+    // antes dela, como o pedido de excluir (uma busca nova que chegue no meio pode já ter tirado o produto).
+    const carry = pairsToCarry(queryClient, productId);
     let facts: DeleteFacts;
     try {
       facts = await fetchDeleteFacts(productId);
@@ -66,8 +70,9 @@ export function DeleteProductButton({ productId, onDeleted }: { productId: strin
     if (facts.product && cached && facts.product.name !== cached.name) queryClient.invalidateQueries({ queryKey: ['products'] });
     const step = deleteStep(facts);
     if (step.kind === 'gone') {
-      // Outro aparelho excluiu ou juntou: sai da memória na hora, como depois de excluir aqui.
-      forgetDeletedProduct(queryClient, productId);
+      // Outro aparelho excluiu ou juntou: sai da memória na hora, como depois de excluir aqui, com os pares que
+      // passam (só na memória: quem excluiu gravou os dele; a busca nova dos pares confirma).
+      forgetDeletedProduct(queryClient, productId, carry);
       refreshDeletedProduct(queryClient);
       notify(step.title, step.message);
       onDeleted();

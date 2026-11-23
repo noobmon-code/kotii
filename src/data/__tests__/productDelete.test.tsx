@@ -72,6 +72,8 @@ const mockDb = {
   rpcReply: { data: { deleted: 'p1', pantry: 1, list: 2, barcodes: 3 }, error: null } as Reply,
   rpcReplies: [] as Reply[],
   holdRpc: false,
+  /** Roda enquanto o pedido de excluir está no banco (uma busca nova que chega no meio dele, por exemplo). */
+  duringRpc: null as null | (() => void),
   upserts: [] as { table: string; rows: unknown; options: unknown }[],
   upsertReply: { data: null, error: null } as Reply,
   holdUpsert: false,
@@ -178,6 +180,7 @@ jest.mock('@/lib/supabase', () => {
       }),
       rpc: (name: string, args: unknown) => {
         mockDb.rpcs.push({ name, args });
+        mockDb.duringRpc?.();
         let signal: AbortSignal | undefined;
         const request = {
           abortSignal: (given: AbortSignal) => {
@@ -245,6 +248,7 @@ afterEach(async () => {
     rpcReply: { data: { deleted: 'p1', pantry: 1, list: 2, barcodes: 3 }, error: null },
     rpcReplies: [],
     holdRpc: false,
+    duringRpc: null,
     upserts: [],
     upsertReply: { data: null, error: null },
     holdUpsert: false,
@@ -386,7 +390,7 @@ describe('excluir', () => {
       result = await hook.value().mutateAsync({ id: 'p1', name: 'Biscoito errado' });
     });
     expect(mockDb.rpcs).toEqual([{ name: 'delete_product', args: { p_id: 'p1', p_name: 'Biscoito errado' } }]);
-    expect(result).toEqual({ pantry: 1, list: 2, barcodes: 3, carry: [] });
+    expect(result).toEqual({ pantry: 1, list: 2, barcodes: 3 });
     expect([...hook.invalidated].sort()).toEqual([...DELETE_REFRESHES].sort());
     expect(mockDb.upserts).toEqual([]);
   });
@@ -404,11 +408,9 @@ describe('excluir', () => {
     hook.client.setQueryData<DistinctPair[]>(['productDistinctPairs'], [orderedPair('p00', 'p01'), orderedPair('p03', 'p04')]);
     mockDb.holdUpsert = true;
     jest.useFakeTimers();
-    let result: { carry: DistinctPair[] } | undefined;
     await act(async () => {
-      result = await hook.value().mutateAsync({ id: 'p01', name: 'Limao' });
+      await hook.value().mutateAsync({ id: 'p01', name: 'Limao' });
     });
-    expect(result?.carry).toEqual([orderedPair('p00', 'p02')]);
     expect(hook.client.getQueryData(['productDistinctPairs'])).toEqual([orderedPair('p03', 'p04'), orderedPair('p00', 'p02')]);
     // O excluído sai do catálogo guardado no mesmo passo: com ele ainda lá e o par dele já fora, o par recusado
     // (Limão siciliano / Limao) voltaria como sugestão até a busca nova dos produtos chegar.
@@ -435,10 +437,10 @@ describe('excluir', () => {
     hook.client.setQueryData<DistinctPair[]>(['productDistinctPairs'], [orderedPair('p00', 'p01')]);
     mockDb.upsertReply = { data: null, error: { code: '23503', message: 'insert or update on table "product_distinct_pairs" violates foreign key constraint' } };
     await act(async () => {
-      await expect(hook.value().mutateAsync({ id: 'p01', name: 'Limao' })).resolves.toMatchObject({ carry: [orderedPair('p00', 'p02')] });
+      await expect(hook.value().mutateAsync({ id: 'p01', name: 'Limao' })).resolves.toEqual({ pantry: 1, list: 2, barcodes: 3 });
     });
     await flush();
-    expect(mockDb.upserts).toHaveLength(1);
+    expect(mockDb.upserts).toEqual([{ table: 'product_distinct_pairs', rows: [orderedPair('p00', 'p02')], options: { ignoreDuplicates: true } }]);
     expect(hook.invalidated).toContain('productDistinctPairs');
   });
 
@@ -494,6 +496,56 @@ describe('excluir', () => {
       const gone = (error as { code: string }).code === 'P0002';
       expect(hook.client.getQueryData(['products'])).toEqual(gone ? [catalog[0]] : catalog);
       expect(hook.client.getQueryData(['productDistinctPairs'])).toEqual(gone ? [] : [orderedPair('p0', 'p1')]);
+      await act(async () => renderer?.unmount());
+    }
+  });
+
+  it('já não existia (P0002), com um gêmeo de nome: os pares que passam entram na memória, sem gravar, e a sugestão escondida pelo nome não volta', async () => {
+    const products = [
+      { id: 'p00', name: 'Limão siciliano', category: 'hortifruti' },
+      { id: 'p01', name: 'Limao', category: 'hortifruti' },
+      { id: 'p02', name: 'Limão', category: 'hortifruti' },
+    ];
+    mockDb.rpcReply = { data: null, error: { code: 'P0002', message: 'product not found' } };
+    const hook = await withHook(() => useDeleteProduct());
+    hook.client.setQueryData(['products'], products);
+    hook.client.setQueryData<DistinctPair[]>(['productDistinctPairs'], [orderedPair('p00', 'p01')]);
+    // A casa recusou "Limao / Limão siciliano", o que pela regra do nome também esconde "Limão / Limão siciliano".
+    expect(mergeCandidates(products, [orderedPair('p00', 'p01')]).flat().map((p) => p.id)).not.toContain('p00');
+    await act(async () => {
+      await expect(hook.value().mutateAsync({ id: 'p01', name: 'Limao' })).rejects.toMatchObject({ code: 'P0002' });
+    });
+    expect(hook.client.getQueryData(['products'])).toEqual([products[0], products[2]]);
+    expect(hook.client.getQueryData(['productDistinctPairs'])).toEqual([orderedPair('p00', 'p02')]);
+    expect(mergeCandidates(hook.client.getQueryData(['products'])!, hook.client.getQueryData(['productDistinctPairs'])!)).toEqual([]);
+    // Só na memória: quem excluiu gravou os dele, e a busca nova dos pares confirma.
+    expect(mockDb.upserts).toEqual([]);
+    expect(hook.invalidated).toContain('productDistinctPairs');
+  });
+
+  it('os pares que passam saem do que a memória tinha antes do pedido, mesmo que uma busca nova tire o produto no meio dele', async () => {
+    const products = [
+      { id: 'p00', name: 'Limão siciliano', category: 'hortifruti' },
+      { id: 'p01', name: 'Limao', category: 'hortifruti' },
+      { id: 'p02', name: 'Limão', category: 'hortifruti' },
+    ];
+    for (const rpcReply of [
+      { data: { deleted: 'p01', pantry: 0, list: 0, barcodes: 0 }, error: null },
+      { data: null, error: { code: 'P0002', message: 'product not found' } },
+    ]) {
+      mockDb.rpcReply = rpcReply;
+      mockDb.upserts = [];
+      const hook = await withHook(() => useDeleteProduct());
+      hook.client.setQueryData(['products'], products);
+      hook.client.setQueryData<DistinctPair[]>(['productDistinctPairs'], [orderedPair('p00', 'p01')]);
+      // A busca nova do catálogo chega enquanto o pedido está no banco, já sem o produto.
+      mockDb.duringRpc = () => hook.client.setQueryData(['products'], [products[0], products[2]]);
+      await act(async () => {
+        await hook.value().mutateAsync({ id: 'p01', name: 'Limao' }).catch(() => undefined);
+      });
+      expect(hook.client.getQueryData(['productDistinctPairs'])).toEqual([orderedPair('p00', 'p02')]);
+      expect(mergeCandidates(hook.client.getQueryData(['products'])!, hook.client.getQueryData(['productDistinctPairs'])!)).toEqual([]);
+      expect(mockDb.upserts.map((upsert) => upsert.rows)).toEqual(rpcReply.error ? [] : [[orderedPair('p00', 'p02')]]);
       await act(async () => renderer?.unmount());
     }
   });

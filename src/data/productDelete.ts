@@ -142,14 +142,30 @@ export function refreshDeletedProduct(queryClient: QueryClient, { except = [] }:
 }
 
 /**
+ * Os pares "São diferentes" que passam para o gêmeo de nome do produto (carriedDistinctPairs), do que a memória
+ * tem agora. Calculados antes do pedido de excluir e antes da leitura do toque: depois deles, o produto e os pares
+ * dele podem já ter saído da memória (uma busca nova que chegou no meio), e não haveria mais de onde tirar.
+ */
+export function pairsToCarry(queryClient: QueryClient, id: string): DistinctPair[] {
+  return carriedDistinctPairs(
+    id,
+    queryClient.getQueryData<ProductName[]>(['products']),
+    queryClient.getQueryData<DistinctPair[] | null>(['productDistinctPairs']),
+  );
+}
+
+/**
  * Tira da memória, na hora, o produto que já não existe no banco (excluído agora, ou por outro aparelho antes do
  * toque): ele sai do catálogo guardado e os pares "São diferentes" dele saem com ele, e entram os que passam para o
- * gêmeo de nome (`carry`). As duas coisas no mesmo passo, antes de qualquer busca nova: com o produto ainda no
- * catálogo e o par dele já fora dos pares (escritos aqui, ou buscados de novo antes dos produtos, que podem vir em
- * várias páginas), a sugestão que a casa recusou voltaria por um instante no cartão "Parecem o mesmo produto". É o
- * que useCreateProduct faz com o produto novo, ao contrário; a busca nova de DELETE_REFRESHES confirma depois.
+ * gêmeo de nome (`carry`, de pairsToCarry). As três coisas no mesmo passo, antes de qualquer busca nova: com o
+ * produto ainda no catálogo e o par dele já fora dos pares (escritos aqui, ou buscados de novo antes dos produtos,
+ * que podem vir em várias páginas), a sugestão que a casa recusou voltaria por um instante no cartão "Parecem o
+ * mesmo produto"; e sem o par que passa, voltaria a que a regra do nome escondia por ele (o gêmeo com o mesmo
+ * parceiro). `carry` não tem valor padrão de propósito: as respostas de "já não existe" também passam os pares, só
+ * na memória (o aparelho que excluiu gravou os dele). É o que useCreateProduct faz com o produto novo, ao
+ * contrário; a busca nova de DELETE_REFRESHES confirma depois.
  */
-export function forgetDeletedProduct(queryClient: QueryClient, id: string, carry: readonly DistinctPair[] = []): void {
+export function forgetDeletedProduct(queryClient: QueryClient, id: string, carry: readonly DistinctPair[]): void {
   queryClient.setQueryData<ProductName[]>(['products'], (products) =>
     products?.some((product) => product.id === id) ? products.filter((product) => product.id !== id) : products,
   );
@@ -164,12 +180,11 @@ export function forgetDeletedProduct(queryClient: QueryClient, id: string, carry
 /** O pedido de excluir foi cortado sem resposta (PRODUCT_DELETE_TIMEOUT_MS): pode ter excluído, ou não. */
 export const isDeleteUnanswered = (error: unknown) => error instanceof Error && error.message === DELETE_NO_ANSWER;
 
-/** O que delete_product devolveu: o que perdeu a ligação (para os testes; a tela só sai), e os pares que passaram. */
+/** O que delete_product devolveu: o que perdeu a ligação (para os testes; a tela só sai). */
 export interface DeleteResult {
   pantry: number;
   list: number;
   barcodes: number;
-  carry: DistinctPair[];
 }
 
 /**
@@ -197,13 +212,10 @@ export function useDeleteProduct() {
   const queryClient = useQueryClient();
   const refresh = () => refreshDeletedProduct(queryClient);
   return useMutation({
+    // Os pares a passar saem do que a tela tinha antes do pedido (uma vez, também quando ele se repete): depois
+    // dele, os do produto já não existem. Servem à resposta de excluiu e à de "já não existe" (P0002).
+    onMutate: ({ id }: { id: string; name: string | null }) => ({ carry: pairsToCarry(queryClient, id) }),
     mutationFn: async ({ id, name }: { id: string; name: string | null }): Promise<DeleteResult> => {
-      // Os pares a passar saem do que a tela tinha antes do pedido: depois dele, os do produto já não existem.
-      const carry = carriedDistinctPairs(
-        id,
-        queryClient.getQueryData<ProductName[]>(['products']),
-        queryClient.getQueryData<DistinctPair[] | null>(['productDistinctPairs']),
-      );
       // Pedido pendurado (sinal fraco no mercado; no Android o pedido não tem prazo): sem cortar, o botão
       // ficaria girando sem saída.
       const controller = new AbortController();
@@ -214,7 +226,7 @@ export function useDeleteProduct() {
           list?: unknown;
           barcodes?: unknown;
         };
-        return { pantry: Number(gone.pantry ?? 0), list: Number(gone.list ?? 0), barcodes: Number(gone.barcodes ?? 0), carry };
+        return { pantry: Number(gone.pantry ?? 0), list: Number(gone.list ?? 0), barcodes: Number(gone.barcodes ?? 0) };
       } catch (error) {
         // Só este prazo corta o pedido. O banco pode ter excluído antes do corte: o erro diz isso à pessoa.
         throw controller.signal.aborted ? new Error(DELETE_NO_ANSWER) : error;
@@ -226,7 +238,7 @@ export function useDeleteProduct() {
     // função é uma transação só. Outro erro não se repete.
     retry: (failures, error) => failures < 1 && isDeadlock(error),
     retryDelay: 0,
-    onSuccess: ({ carry }, { id }) => {
+    onSuccess: (_result, { id }, { carry }) => {
       // O produto e os pares primeiro, na hora: nem o par que a casa recusou com ele, nem a sugestão que a regra
       // do nome escondia por ele, piscam de volta enquanto as buscas novas não chegam.
       forgetDeletedProduct(queryClient, id, carry);
@@ -239,11 +251,12 @@ export function useDeleteProduct() {
     },
     // O produto sumiu, mudou de nome, ganhou uma compra ou entrou numa nota em revisão por outro aparelho, ou a
     // resposta não chegou e o banco pode ter excluído: o que está na tela ficou velho.
-    onError: (error, { id }) => {
+    onError: (error, { id }, context) => {
       if (isMissingFunction(error, 'delete_product')) return;
       const stale = [isProductGone, isProductRenamed, isDeleteUnanswered, isProductPurchased, isProductInReview].some((is) => is(error));
-      // Já não existe: sai da memória na hora, como depois de excluir (sem resposta, não se sabe: só a busca nova).
-      if (isProductGone(error)) forgetDeletedProduct(queryClient, id);
+      // Já não existe: sai da memória na hora, como depois de excluir, com os pares que passam para o gêmeo de nome
+      // (só na memória: quem excluiu gravou os dele). Sem resposta, não se sabe: só a busca nova.
+      if (isProductGone(error)) forgetDeletedProduct(queryClient, id, context?.carry ?? []);
       if (stale) refresh();
       if (isProductInReview(error)) queryClient.invalidateQueries({ queryKey: ['receipts'] });
     },
