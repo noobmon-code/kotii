@@ -1,7 +1,7 @@
 // Congelador da despensa: a compra que vai para o congelador ganha a validade do congelador (o dia em que foi
 // congelada + o tempo do tipo dela), e "Descongelei" volta a contar a validade de antes de onde ela parou. As regras e
 // todas as frases ficam aqui; os dados, em data/freezer.ts. O banco tem a palavra final sobre a data
-// (pantry_freeze_days e o gatilho pantry_items_freezer_expiry, em 20261122110000_pantry_freezer.sql): o que o app
+// (pantry_freeze_days e o gatilho pantry_items_freezer_expiry, em 20261124173722_pantry_freezer.sql): o que o app
 // calcula aqui é a prévia, que bate com a de lá porque os tempos são os mesmos (um teste lê a migração).
 
 import { joinNames } from './cartPantry';
