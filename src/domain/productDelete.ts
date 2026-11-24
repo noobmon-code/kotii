@@ -127,6 +127,15 @@ export function deleteStep(facts: DeleteFacts, referenceYear?: number): DeleteSt
 }
 
 /**
+ * O produto que dá para excluir agora, pela leitura (fetchDeleteFacts): a leitura o achou, e nenhuma linha de nota
+ * aponta para ele, nem confirmada, nem em revisão. É quando o toque de excluir perguntaria (deleteStep 'ask'); null em
+ * todos os outros casos. Serve à oferta de "Trocar produto" na nota confirmada, que só aparece com isto.
+ */
+export function deletableProduct(facts: DeleteFacts): { id: string; name: string } | null {
+  return deleteStep(facts).kind === 'ask' ? facts.product : null;
+}
+
+/**
  * A tela do produto quando o id não está no catálogo que ela tem: buscando, espera; com uma busca desta visita que
  * deu certo sem ele, o produto não está na casa; sem ela (sem internet, ou a busca falhou), não deu para conferir.
  */

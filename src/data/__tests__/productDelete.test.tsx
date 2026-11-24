@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import {
@@ -24,9 +24,11 @@ import { BUSY_TRY_AGAIN } from '@/lib/databaseErrors';
 
 import {
   DELETE_REFRESHES,
+  DELETE_PRODUCT_AVAILABLE_KEY,
   deleteErrorNotice,
   fetchDeleteFacts,
   fetchDeleteProductAvailable,
+  fetchLeftProduct,
   PAIRS_CARRY_MS,
   PRODUCT_DELETE_CHECK_MS,
   PRODUCT_DELETE_TIMEOUT_MS,
@@ -670,5 +672,101 @@ describe('a pergunta de que o banco sabe excluir', () => {
     expect(await fetchDeleteProductAvailable()).toBe(false);
     mockDb.rpcReply = { data: null, error: { message: 'TypeError: Network request failed' } };
     await expect(fetchDeleteProductAvailable()).rejects.toEqual({ message: 'TypeError: Network request failed' });
+  });
+});
+
+describe('depois de "Trocar produto": o produto de antes dá para excluir agora? (fetchLeftProduct)', () => {
+  // Sem o prazo de limpeza da memória (gcTime): um relógio de 5 minutos seguraria o Jest no fim.
+  const clients: QueryClient[] = [];
+  const client = () => {
+    const made = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+    clients.push(made);
+    return made;
+  };
+  const AVAILABLE: Reply = { data: true, error: null };
+  const asks = (name: string) => mockDb.rpcs.filter((call) => call.name === name).length;
+
+  afterEach(() => {
+    onlineManager.setOnline(true);
+    clients.splice(0).forEach((made) => made.clear());
+  });
+
+  it('com o banco que sabe excluir e nenhuma linha de nota: o produto, pelo que a leitura de agora diz (o nome lido)', async () => {
+    mockDb.rpcReply = AVAILABLE;
+    mockDb.products = [{ id: 'p1', name: 'Feijão (de agora)' }];
+    // A despensa, a lista e os códigos não seguram: a pergunta de excluir diz o que acontece com eles.
+    mockDb.pantry = [{ product_id: 'p1', consumed_at: null }];
+    mockDb.listItems = [{ product_id: 'p1', archived_at: null }];
+    expect(await fetchLeftProduct(client(), 'p1')).toEqual({ id: 'p1', name: 'Feijão (de agora)' });
+    // A mesma leitura do toque de excluir, só deste produto.
+    expect(mockDb.asked.map((asked) => asked.table).sort()).toEqual([
+      'pantry_items',
+      'product_barcodes',
+      'products',
+      'receipt_items',
+      'receipt_items',
+      'shopping_list_items',
+    ]);
+  });
+
+  it('uma linha de nota confirmada ou em revisão, ou o produto que já não existe: nada', async () => {
+    mockDb.rpcReply = AVAILABLE;
+    mockDb.products = [{ id: 'p1', name: 'Feijão' }];
+    mockDb.lines = [{ receipt_id: 'r2', product_id: 'p1', status: 'confirmed', purchased_at: '2026-11-01T13:00:00Z', store: 'Assaí' }];
+    expect(await fetchLeftProduct(client(), 'p1')).toBeNull();
+    mockDb.lines = [{ receipt_id: 'r3', product_id: 'p1', status: 'draft', purchased_at: '2026-11-01T13:00:00Z', store: null }];
+    expect(await fetchLeftProduct(client(), 'p1')).toBeNull();
+    mockDb.lines = [];
+    mockDb.products = [];
+    expect(await fetchLeftProduct(client(), 'p1')).toBeNull();
+  });
+
+  it('o banco que ainda não sabe excluir (responde que não, sem a função, ou a pergunta falha): nada, e o produto nem é lido', async () => {
+    mockDb.products = [{ id: 'p1', name: 'Feijão' }];
+    for (const reply of [
+      { data: false, error: null },
+      { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.delete_product_available without parameters in the schema cache' } },
+      { data: null, error: { message: 'TypeError: Network request failed' } },
+    ] as Reply[]) {
+      mockDb.rpcReply = reply;
+      expect(await fetchLeftProduct(client(), 'p1')).toBeNull();
+    }
+    expect(mockDb.asked).toEqual([]);
+  });
+
+  it('a pergunta é a da tela do produto, na mesma chave da memória: feita uma vez por abertura do app', async () => {
+    const queryClient = client();
+    queryClient.setQueryData(DELETE_PRODUCT_AVAILABLE_KEY, true);
+    mockDb.products = [{ id: 'p1', name: 'Feijão' }];
+    expect(await fetchLeftProduct(queryClient, 'p1')).toEqual({ id: 'p1', name: 'Feijão' });
+    expect(asks('delete_product_available')).toBe(0);
+    const fresh = client();
+    mockDb.rpcReply = AVAILABLE;
+    await fetchLeftProduct(fresh, 'p1');
+    await fetchLeftProduct(fresh, 'p1');
+    expect(asks('delete_product_available')).toBe(1);
+    expect(fresh.getQueryData(DELETE_PRODUCT_AVAILABLE_KEY)).toBe(true);
+  });
+
+  it('sem internet: nada, sem perguntar nem ler', async () => {
+    onlineManager.setOnline(false);
+    mockDb.rpcReply = AVAILABLE;
+    mockDb.products = [{ id: 'p1', name: 'Feijão' }];
+    expect(await fetchLeftProduct(client(), 'p1')).toBeNull();
+    expect(mockDb.rpcs).toEqual([]);
+    expect(mockDb.asked).toEqual([]);
+  });
+
+  it('a leitura que falha, ou que não responde no prazo: nada (nunca a oferta de um pedaço)', async () => {
+    mockDb.rpcReply = AVAILABLE;
+    mockDb.products = [{ id: 'p1', name: 'Feijão' }];
+    mockDb.tableErrors = { receipt_items: { message: 'TypeError: Network request failed' } };
+    expect(await fetchLeftProduct(client(), 'p1')).toBeNull();
+    mockDb.tableErrors = {};
+    jest.useFakeTimers();
+    mockDb.holdTables = ['receipt_items'];
+    const answer = fetchLeftProduct(client(), 'p1');
+    await jest.advanceTimersByTimeAsync(PRODUCT_DELETE_CHECK_MS);
+    expect(await answer).toBeNull();
   });
 });

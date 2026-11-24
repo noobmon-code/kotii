@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { Profiler } from 'react';
-import { Dimensions, Platform, StyleSheet } from 'react-native';
+import { AccessibilityInfo, Dimensions, Platform, StyleSheet, View } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import ReceiptScreen from '@/app/nota/[id]';
@@ -12,6 +12,7 @@ import { PayerChips } from '@/features/finance/PayerChips';
 import { FEATURES } from '@/lib/features';
 import { stopWaitingForReceipt, takeConfirmedReceipt, waitForReceipt } from '@/lib/finishPurchase';
 import { formatBRL } from '@/domain/money';
+import { DELETE_CONFIRM, DELETE_PURCHASED, DELETE_PURCHASED_TITLE, DELETE_TITLE, deleteQuestion } from '@/domain/productDelete';
 import { PRODUCT_MERGED_AWAY } from '@/domain/productMerge';
 import { CATEGORY_SHELF_LIFE_DAYS, CORRECTION_STALE } from '@/domain/receiptCorrection';
 import { ITEM_SAVED_NOT_SHOWN, OTHER_ITEM_SAVING, RECEIPT_BEING_UPDATED } from '@/domain/receiptGap';
@@ -57,6 +58,14 @@ const mockDb: {
   changeError: Row | null;
   addError: Row | null;
   probes: number;
+  /**
+   * Excluir produto (data/productDelete): o que delete_product_available() responde (`missing`: sem a função; `fails`:
+   * a pergunta falha), quantas vezes foi perguntada (fora de `rpcs`, como a das correções), e o erro que delete_product
+   * devolve (o teste escolhe; sem ele, o banco confere o produto, o nome e as linhas de nota, e exclui).
+   */
+  deleteAvailable: boolean | 'missing' | 'fails';
+  deleteProbes: number;
+  deleteError: Row | null;
   /** Quantos pedidos saíram e quantos já voltaram (um seguro por `hold` fica no meio): é por eles que `quiet` vê a tela andar. */
   sent: number;
   answered: number;
@@ -75,6 +84,9 @@ const mockDb: {
   changeError: null,
   addError: null,
   probes: 0,
+  deleteAvailable: false,
+  deleteProbes: 0,
+  deleteError: null,
   sent: 0,
   answered: 0,
 };
@@ -170,8 +182,19 @@ jest.mock('@/lib/supabase', () => {
     let write: { verb: 'update' | 'insert' | 'delete'; values?: Row } | null = null;
     // Como no servidor: a gravação só devolve as linhas que achou quando o pedido traz .select().
     let returning = false;
-    const rows = () => (name === 'receipts' ? mockDb.receipts : name === 'stores' ? mockDb.stores : mockDb.items);
-    const matches = (row: Row) => filters.every(([column, value]) => row[column] === value);
+    // A leitura de excluir produto (fetchDeleteFacts) lê também os produtos, e a despensa, as listas e os códigos, que
+    // aqui não têm nada deste produto.
+    const rows = (): Row[] => {
+      if (name === 'receipts') return mockDb.receipts;
+      if (name === 'stores') return mockDb.stores;
+      if (name === 'products') return mockMarket.products;
+      if (name === 'pantry_items' || name === 'shopping_list_items' || name === 'product_barcodes') return [];
+      return mockDb.items;
+    };
+    // O filtro pela nota da linha (`receipt:receipts!inner(status)` com `.eq('receipt.status', …)`): o status dela.
+    const valueOf = (row: Row, column: string) =>
+      column === 'receipt.status' ? mockDb.receipts.find((entry) => entry.id === row.receipt_id)?.status : row[column];
+    const matches = (row: Row) => filters.every(([column, value]) => valueOf(row, column) === value);
     // A nota sai com o mercado de agora, pelo store_id.
     const out = (row: Row): Row => {
       if (name !== 'receipts') return { ...row };
@@ -206,6 +229,9 @@ jest.mock('@/lib/supabase', () => {
         return builder;
       },
       order: () => builder,
+      // A leitura de excluir pede uma linha só, com prazo: aqui, todas as que acharem (só importa se há alguma).
+      limit: () => builder,
+      abortSignal: () => builder,
       eq: (column: string, value: unknown) => {
         filters.push([column, value]);
         return builder;
@@ -237,6 +263,101 @@ jest.mock('@/lib/supabase', () => {
     };
     return builder;
   };
+  /** O que cada função do banco responde (a pergunta das correções e a de excluir ficam fora de `rpcs`). */
+  async function rpcAnswer(fn: string, args: Row) {
+    if (fn === 'delete_product_available') {
+      mockDb.deleteProbes += 1;
+      return answer({ table: fn, verb: 'rpc', values: args }, () =>
+        mockDb.deleteAvailable === 'missing'
+          ? { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.delete_product_available' } }
+          : mockDb.deleteAvailable === 'fails'
+            ? { data: null, error: { message: 'caiu a rede' } }
+            : { data: mockDb.deleteAvailable, error: null },
+      );
+    }
+    if (fn === 'delete_product') {
+      mockDb.rpcs.push({ fn, args });
+      return answer({ table: fn, verb: 'rpc', values: args }, () => {
+        if (mockDb.deleteError) return { data: null, error: mockDb.deleteError };
+        // Como no servidor, só o essencial: o produto travado, o nome lido, e nenhuma linha de nota apontando para ele.
+        const found = mockMarket.products.find((product) => product.id === args.p_id);
+        if (!found) return { data: null, error: { code: 'P0002', message: 'product not found', details: null, hint: null } };
+        if (args.p_name != null && args.p_name !== found.name) return { data: null, error: { code: 'NK008', message: 'product renamed', details: null, hint: null } };
+        if (mockDb.items.some((row) => row.product_id === args.p_id)) return { data: null, error: { code: 'NK016', message: 'product has purchases', details: null, hint: null } };
+        mockMarket.products = mockMarket.products.filter((product) => product.id !== args.p_id);
+        return { data: { deleted: args.p_id, pantry: 0, list: 0, barcodes: 0 }, error: null };
+      });
+    }
+    if (fn === 'receipt_corrections_available') {
+      mockDb.probes += 1;
+      const missing = mockDb.corrections === 'missing';
+      return answer({ table: fn, verb: 'rpc', values: args }, () =>
+        missing
+          ? { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.receipt_corrections_available' } }
+          : { data: mockDb.corrections === true, error: null },
+      );
+    }
+    mockDb.rpcs.push({ fn, args });
+    if (fn === 'change_receipt_item_product') {
+      return answer({ table: fn, verb: 'rpc', values: args }, () => {
+        if (mockDb.changeError) return { data: null, error: mockDb.changeError };
+        // Como no servidor, só o essencial: a linha passa para o produto escolhido (o novo entra no catálogo).
+        const line = mockDb.items.find((row) => row.id === args.p_item_id)!;
+        let productId = args.p_product_id as string | null;
+        if (!productId) {
+          const created = args.p_new_product as { name: string; category: string };
+          productId = `criado-${mockMarket.products.length}`;
+          const product = { id: productId, name: created.name, category: created.category, shelf_life_days: null };
+          if (mockMarket.late) mockMarket.late.push(product);
+          else mockMarket.products = [...mockMarket.products, product];
+        }
+        const changed = line.product_id !== productId;
+        line.product_id = productId;
+        return { data: { product_id: productId, changed, pantry: 0 }, error: null };
+      });
+    }
+    if (fn === 'add_confirmed_receipt_item') {
+      return answer({ table: fn, verb: 'rpc', values: args }, () => {
+        if (mockDb.addError) return { data: null, error: mockDb.addError };
+        const request = args.p_item as Row;
+        const existing = mockDb.items.find((row) => row.id === request.id);
+        if (existing) {
+          const same = (['raw_description', 'quantity', 'unit', 'unit_price', 'total_price'] as const).every((key) => existing[key] === request[key]);
+          return { data: { item_id: request.id, added: false, same, product_id: existing.product_id }, error: null };
+        }
+        const productId = (request.product_id as string | undefined) ?? `criado-${mockMarket.products.length}`;
+        if (!request.product_id) {
+          const created = request.new_product as { name: string; category: string };
+          mockMarket.products = [...mockMarket.products, { id: productId, name: created.name, category: created.category, shelf_life_days: null }];
+        }
+        mockDb.items.push({
+          id: request.id,
+          receipt_id: args.p_receipt_id,
+          position: mockDb.items.length,
+          raw_description: request.raw_description,
+          suggested_name: null,
+          suggested_category: null,
+          product_id: productId,
+          quantity: request.quantity,
+          unit: request.unit,
+          unit_price: request.unit_price,
+          total_price: request.total_price,
+          // Só a inclusão marca a linha; a troca do produto dela não ensina apelido (e a frase do seletor não promete).
+          added_after_confirmation: true,
+        });
+        return { data: { item_id: request.id, added: true, same: true, product_id: productId }, error: null };
+      });
+    }
+    // Como no servidor: confirmar uma nota que já não existe responde P0002 ("receipt not found").
+    const gone = fn === 'confirm_receipt' && !mockDb.receipts.some((row) => row.id === args.p_receipt_id);
+    const error = gone ? { code: 'P0002', message: 'receipt not found', details: null, hint: null } : fn === 'confirm_receipt' ? mockDb.confirmError : null;
+    // Congelar devolve as compras que mudaram (aqui, todas as pedidas).
+    const data =
+      fn === 'freeze_pantry_items'
+        ? (args.p_ids as string[]).map((id) => ({ item_id: id, item_expires_on: null, item_expiry_source: 'congelado', item_frozen_on: args.p_frozen_on }))
+        : null;
+    return answer({ table: fn, verb: 'rpc', values: args }, () => ({ data, error }));
+  }
   return {
     errorMessage: (error: { message?: string }) => error?.message ?? 'Algo deu errado. Tente novamente.',
     unwrap: (result: { data: unknown; error: unknown }) => {
@@ -245,76 +366,10 @@ jest.mock('@/lib/supabase', () => {
     },
     supabase: {
       from: (name: string) => table(name),
-      rpc: async (fn: string, args: Row) => {
-        if (fn === 'receipt_corrections_available') {
-          mockDb.probes += 1;
-          const missing = mockDb.corrections === 'missing';
-          return answer({ table: fn, verb: 'rpc', values: args }, () =>
-            missing
-              ? { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.receipt_corrections_available' } }
-              : { data: mockDb.corrections === true, error: null },
-          );
-        }
-        mockDb.rpcs.push({ fn, args });
-        if (fn === 'change_receipt_item_product') {
-          return answer({ table: fn, verb: 'rpc', values: args }, () => {
-            if (mockDb.changeError) return { data: null, error: mockDb.changeError };
-            // Como no servidor, só o essencial: a linha passa para o produto escolhido (o novo entra no catálogo).
-            const line = mockDb.items.find((row) => row.id === args.p_item_id)!;
-            let productId = args.p_product_id as string | null;
-            if (!productId) {
-              const created = args.p_new_product as { name: string; category: string };
-              productId = `criado-${mockMarket.products.length}`;
-              const product = { id: productId, name: created.name, category: created.category, shelf_life_days: null };
-              if (mockMarket.late) mockMarket.late.push(product);
-              else mockMarket.products = [...mockMarket.products, product];
-            }
-            const changed = line.product_id !== productId;
-            line.product_id = productId;
-            return { data: { product_id: productId, changed, pantry: 0 }, error: null };
-          });
-        }
-        if (fn === 'add_confirmed_receipt_item') {
-          return answer({ table: fn, verb: 'rpc', values: args }, () => {
-            if (mockDb.addError) return { data: null, error: mockDb.addError };
-            const request = args.p_item as Row;
-            const existing = mockDb.items.find((row) => row.id === request.id);
-            if (existing) {
-              const same = (['raw_description', 'quantity', 'unit', 'unit_price', 'total_price'] as const).every((key) => existing[key] === request[key]);
-              return { data: { item_id: request.id, added: false, same, product_id: existing.product_id }, error: null };
-            }
-            const productId = (request.product_id as string | undefined) ?? `criado-${mockMarket.products.length}`;
-            if (!request.product_id) {
-              const created = request.new_product as { name: string; category: string };
-              mockMarket.products = [...mockMarket.products, { id: productId, name: created.name, category: created.category, shelf_life_days: null }];
-            }
-            mockDb.items.push({
-              id: request.id,
-              receipt_id: args.p_receipt_id,
-              position: mockDb.items.length,
-              raw_description: request.raw_description,
-              suggested_name: null,
-              suggested_category: null,
-              product_id: productId,
-              quantity: request.quantity,
-              unit: request.unit,
-              unit_price: request.unit_price,
-              total_price: request.total_price,
-              // Só a inclusão marca a linha; a troca do produto dela não ensina apelido (e a frase do seletor não promete).
-              added_after_confirmation: true,
-            });
-            return { data: { item_id: request.id, added: true, same: true, product_id: productId }, error: null };
-          });
-        }
-        // Como no servidor: confirmar uma nota que já não existe responde P0002 ("receipt not found").
-        const gone = fn === 'confirm_receipt' && !mockDb.receipts.some((row) => row.id === args.p_receipt_id);
-        const error = gone ? { code: 'P0002', message: 'receipt not found', details: null, hint: null } : fn === 'confirm_receipt' ? mockDb.confirmError : null;
-        // Congelar devolve as compras que mudaram (aqui, todas as pedidas).
-        const data =
-          fn === 'freeze_pantry_items'
-            ? (args.p_ids as string[]).map((id) => ({ item_id: id, item_expires_on: null, item_expiry_source: 'congelado', item_frozen_on: args.p_frozen_on }))
-            : null;
-        return answer({ table: fn, verb: 'rpc', values: args }, () => ({ data, error }));
+      // O pedido de excluir vai com prazo (.abortSignal): a promessa de sempre, com ele.
+      rpc: (fn: string, args: Row) => {
+        const request = rpcAnswer(fn, args);
+        return Object.assign(request, { abortSignal: () => request });
       },
     },
   };
@@ -496,6 +551,9 @@ beforeEach(() => {
   mockDb.changeError = null;
   mockDb.addError = null;
   mockDb.probes = 0;
+  mockDb.deleteAvailable = false;
+  mockDb.deleteProbes = 0;
+  mockDb.deleteError = null;
   mockMarket.products = [];
   mockPriceHistory.points = [];
   mockMarket.pantryNear = [];
@@ -2090,6 +2148,211 @@ describe('nota já confirmada: "Trocar produto" num item', () => {
     expect(lastNotice()![0]).toBe('Nota atualizada');
     await press(chip('Trocar produto'));
     expect(productPicker()).toBeDefined();
+  });
+});
+
+describe('nota já confirmada: "Excluir o produto de antes", depois de "Trocar produto"', () => {
+  const confirmedNote = (patch: Row = {}) => receipt({ status: 'confirmed', source: 'qrcode', total: 37.9, ...patch });
+  const FEIJAO = { id: 'p1', name: 'Feijão', category: 'graos', shelf_life_days: null };
+  const ARROZ = { id: 'p2', name: 'Arroz', category: 'graos', shelf_life_days: null };
+  const OFFER = '"Feijão", o produto de antes, ficou sem nenhuma compra.';
+  const DELETED = '"Feijão" foi excluído dos produtos da casa.';
+  const offerButton = (title: string) => renderer!.root.findAllByType(Button).find((entry) => entry.props.title === title);
+  const announced = () => jest.mocked(AccessibilityInfo.announceForAccessibility).mock.calls.map(([text]) => text);
+  const focused = () => jest.mocked(AccessibilityInfo.sendAccessibilityEvent).mock.calls;
+  /** O foco foi uma vez, e para esta View (por identidade: comparar o objeto em si leva a árvore toda para a mensagem). */
+  const focusedOn = (view: unknown) => focused().length === 1 && focused()[0][0] === view && focused()[0][1] === 'focus';
+  const nextFrame = () => act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  // A View de mentira do "Trocar produto" do item (é para ela que o foco do leitor de tela vai), comparada por
+  // identidade: o objeto tem laços com a árvore e não se compara por conteúdo.
+  const chipView = (description: string) => chip('Trocar produto', card(description))!.findAllByType(View)[0].instance;
+  /** A linha do feijão passa para o arroz. */
+  async function changeToRice() {
+    await open();
+    await press(chip('Trocar produto'));
+    await run(() => productPicker()!.props.onSelect('p2'));
+  }
+  /** Uma linha de outra nota com o feijão (`status` da nota). */
+  const otherNoteLine = (status: 'confirmed' | 'draft') => {
+    mockDb.receipts.push(receipt({ id: `r-${status}`, status }));
+    mockDb.items.push(item(`x-${status}`, 'FEIJAO CARIOCA 1KG', 8, { receipt_id: `r-${status}`, product_id: 'p1' }));
+  };
+
+  beforeEach(() => {
+    mockDb.corrections = true;
+    mockDb.deleteAvailable = true;
+    mockMarket.products = [FEIJAO, ARROZ];
+    seed(
+      confirmedNote(),
+      item('a', 'ARROZ TJ 5KG', 25, { product_id: 'p1', suggested_category: 'graos' }),
+      item('d', 'DET YPE 500ML', 12.9),
+    );
+    // Os dois já são de mentira no Jest do React Native, e guardam as chamadas de um teste para o outro.
+    jest.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => undefined).mockClear();
+    jest.spyOn(AccessibilityInfo, 'sendAccessibilityEvent').mockImplementation(() => undefined).mockClear();
+  });
+  afterEach(() => onlineManager.setOnline(true));
+
+  it('a troca deixou o produto de antes sem nenhuma linha de nota: a oferta aparece na linha trocada, e o leitor de tela a ouve', async () => {
+    await changeToRice();
+    // Decidido por uma leitura feita agora, no banco (a mesma do toque de excluir), com o banco que sabe excluir.
+    expect(mockDb.deleteProbes).toBe(1);
+    expect(mockDb.reads.products).toBe(1);
+    expect(said(card('Arroz'))).toEqual(['Arroz', '1 un × R$ 25,00', 'R$ 25,00', 'Trocar produto', OFFER, 'Excluir o produto de antes', 'Manter']);
+    expect(offerButton('Excluir o produto de antes')!.props).toMatchObject({
+      variant: 'danger',
+      accessibilityLabel: 'Excluir o produto de antes, Feijão',
+    });
+    expect(offerButton('Manter')!.props.accessibilityLabel).toBe('Manter o produto Feijão');
+    expect(said(card('DET YPE 500ML'))).not.toContain(OFFER);
+    expect(announced()).toEqual([`${OFFER} Dá para excluir o produto de antes ou manter.`]);
+    // A oferta não leva o foco, e não pergunta nada sozinha.
+    expect(focused().length).toBe(0);
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['outra linha desta nota', () => mockDb.items.push(item('b', 'FEIJAO CARIOCA 1KG', 8, { product_id: 'p1', position: 2 }))],
+    ['uma linha de outra nota confirmada', () => otherNoteLine('confirmed')],
+    ['uma linha de uma nota em revisão', () => otherNoteLine('draft')],
+  ])('o produto de antes ainda tem %s: a leitura diz, e nada é oferecido', async (_where, addLine) => {
+    addLine();
+    await changeToRice();
+    expect(mockDb.reads.products).toBe(1);
+    expect(page()).not.toContain(OFFER);
+    expect(offerButton('Excluir o produto de antes')).toBeUndefined();
+    expect(announced()).toEqual([]);
+  });
+
+  it.each<[false | 'missing' | 'fails']>([[false], ['missing'], ['fails']])(
+    'o banco que ainda não sabe excluir (delete_product_available: %s): nada é oferecido, e o produto nem é lido',
+    async (probe) => {
+      mockDb.deleteAvailable = probe;
+      await changeToRice();
+      expect(mockDb.deleteProbes).toBe(1);
+      expect(mockDb.reads.products).toBeUndefined();
+      expect(page()).not.toContain(OFFER);
+      expect(notify).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a leitura do produto de antes falha: nada é oferecido, sem aviso (o caminho por Preços continua)', async () => {
+    mockDb.fails = [({ table }) => table === 'products'];
+    await changeToRice();
+    expect(mockDb.reads.products).toBe(1);
+    expect(page()).not.toContain(OFFER);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('sem internet quando a troca respondeu: nada é oferecido, sem perguntar nem ler', async () => {
+    await open();
+    await press(chip('Trocar produto'));
+    const release = hold(({ table }) => table === 'change_receipt_item_product');
+    await run(() => productPicker()!.props.onSelect('p2'));
+    onlineManager.setOnline(false);
+    await release();
+    // A nota relida espera a internet: a tela desiste dela no prazo, e só então confere o produto de antes.
+    await settle(4200);
+    expect(mockDb.deleteProbes).toBe(0);
+    expect(mockDb.reads.products).toBeUndefined();
+    expect(page()).not.toContain(OFFER);
+  }, 15_000);
+
+  it('a linha sem produto ("Escolher produto") e a troca que respondeu sem mudar a linha: não há produto de antes, e nada é perguntado', async () => {
+    await open();
+    await press(chip('Escolher produto'));
+    await run(() => productPicker()!.props.onSelect('p2'));
+    expect(correctionCalls('change_receipt_item_product')).toHaveLength(1);
+    // A linha do feijão já está no arroz no banco (a resposta de um toque anterior se perdeu): `changed` falso.
+    mockDb.items[0].product_id = 'p2';
+    await press(chip('Trocar produto', card('Feijão')));
+    await run(() => productPicker()!.props.onSelect('p2'));
+    expect(correctionCalls('change_receipt_item_product')).toHaveLength(2);
+    expect(mockDb.deleteProbes).toBe(0);
+    expect(page()).not.toContain(OFFER);
+  });
+
+  it('na revisão não há "Trocar produto": escolher outro produto não pergunta nada ao banco', async () => {
+    seed(receipt(), item('a', 'ARROZ TJ 5KG', 25, { product_id: 'p1', suggested_category: 'graos' }));
+    await open();
+    await press(chip('Feijão'));
+    await run(() => productPicker()!.props.onSelect('p2'));
+    expect(mockDb.deleteProbes).toBe(0);
+    expect(page()).not.toContain('Excluir o produto de antes');
+  });
+
+  it('"Excluir o produto de antes": a leitura de novo, a pergunta de sempre, delete_product com o nome lido; a tela fica, diz que excluiu, e o foco volta ao "Trocar produto"', async () => {
+    await changeToRice();
+    await press(offerButton('Excluir o produto de antes'));
+    // O mesmo caminho da tela do produto: lê de novo e pergunta com o nome lido, sem mandar nada antes do sim.
+    expect(mockDb.reads.products).toBe(2);
+    expect(jest.mocked(confirmAction).mock.calls).toHaveLength(1);
+    const [title, message, confirmLabel, onConfirm] = jest.mocked(confirmAction).mock.calls[0];
+    expect([title, message, confirmLabel]).toEqual([
+      DELETE_TITLE,
+      deleteQuestion('Feijão', { inPantry: false, onList: false, barcodes: { count: 0, first: null } }),
+      DELETE_CONFIRM,
+    ]);
+    expect(correctionCalls('delete_product')).toEqual([]);
+    await run(() => onConfirm());
+    expect(correctionCalls('delete_product').map((call) => call.args)).toEqual([{ p_id: 'p1', p_name: 'Feijão' }]);
+    expect(mockMarket.products).toEqual([ARROZ]);
+    // A tela da nota fica: é a nota que a pessoa estava corrigindo. O aviso fica no lugar da oferta.
+    expect(router.back).not.toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalled();
+    expect(said(card('Arroz'))).toEqual(['Arroz', '1 un × R$ 25,00', 'R$ 25,00', 'Trocar produto', DELETED]);
+    expect(offerButton('Manter')).toBeUndefined();
+    expect(announced().at(-1)).toBe(DELETED);
+    expect(notify).not.toHaveBeenCalled();
+    await nextFrame();
+    expect(focusedOn(chipView('Arroz'))).toBe(true);
+  });
+
+  it('"Manter": a oferta sai, nada é excluído, e o foco volta ao "Trocar produto" da linha', async () => {
+    await changeToRice();
+    await press(offerButton('Manter'));
+    await nextFrame();
+    expect(page()).not.toContain(OFFER);
+    expect(offerButton('Excluir o produto de antes')).toBeUndefined();
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(correctionCalls('delete_product')).toEqual([]);
+    expect(mockMarket.products).toEqual([FEIJAO, ARROZ]);
+    expect(focusedOn(chipView('Arroz'))).toBe(true);
+  });
+
+  it('o produto de antes ganhou uma compra antes do toque: a recusa de sempre, nada é perguntado nem excluído, e a oferta sai', async () => {
+    await changeToRice();
+    otherNoteLine('confirmed');
+    await press(offerButton('Excluir o produto de antes'));
+    expect(lastNotice()).toEqual([DELETE_PURCHASED_TITLE, DELETE_PURCHASED]);
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(correctionCalls('delete_product')).toEqual([]);
+    expect(page()).not.toContain(OFFER);
+    await nextFrame();
+    expect(focusedOn(chipView('Arroz'))).toBe(true);
+  });
+
+  it('a tela saiu: a conferência que volta depois não oferece nem anuncia nada', async () => {
+    await open();
+    await press(chip('Trocar produto'));
+    const release = hold(({ table }) => table === 'products');
+    await run(() => productPicker()!.props.onSelect('p2'));
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    await release();
+    expect(announced()).toEqual([]);
+  });
+
+  it('a tela saiu durante a leitura do toque: nada é perguntado nem avisado', async () => {
+    await changeToRice();
+    const release = hold(({ table }) => table === 'products');
+    await press(offerButton('Excluir o produto de antes'));
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    await release();
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
   });
 });
 

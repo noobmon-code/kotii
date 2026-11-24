@@ -7,7 +7,7 @@
 // função, excluir avisa que ainda não está disponível. Não há plano B de apagar direto na tabela: isso soltaria
 // das linhas de nota o produto, que é justamente o que a função recusa.
 
-import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { onlineManager, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 
 import { toISODate } from '@/domain/dates';
 import {
@@ -25,6 +25,7 @@ import {
   DELETE_RENAMED_TITLE,
   DELETE_UNAVAILABLE,
   DELETE_UNAVAILABLE_TITLE,
+  deletableProduct,
   isProductInReview,
   isProductPurchased,
   PRODUCT_NOT_IN_HOUSE,
@@ -320,7 +321,38 @@ export async function fetchDeleteProductAvailable(): Promise<boolean> {
   return unwrap(result) === true;
 }
 
+/** A chave da pergunta acima, na memória (nunca em PERSISTED): a tela do produto e a nota confirmada usam a mesma. */
+export const DELETE_PRODUCT_AVAILABLE_KEY = ['deleteProductAvailable'] as const;
+
 /** A resposta só muda quando a migração é aplicada: perguntada uma vez por abertura do app (só na memória). */
 export function useDeleteProductAvailable() {
-  return useQuery({ queryKey: ['deleteProductAvailable'], queryFn: fetchDeleteProductAvailable, staleTime: Infinity });
+  return useQuery({ queryKey: DELETE_PRODUCT_AVAILABLE_KEY, queryFn: fetchDeleteProductAvailable, staleTime: Infinity });
+}
+
+/**
+ * Depois de "Trocar produto" na nota confirmada: o produto de antes dá para excluir agora? Só com
+ * delete_product_available() respondendo true (a mesma chave da tela do produto, na memória, perguntada uma vez por
+ * abertura do app) e por uma leitura feita para isto, a mesma do toque de excluir (fetchDeleteFacts), nunca pela
+ * memória da tela: o produto achado, e nenhuma linha de nota, confirmada ou em revisão, apontando para ele
+ * (deletableProduct). Sem internet, ou com a pergunta ou a leitura que falha ou passa de PRODUCT_DELETE_CHECK_MS: null,
+ * e nada é oferecido (o caminho por Preços continua). Nada é excluído aqui: o toque na oferta passa pela leitura, pela
+ * pergunta e pelo pedido de sempre.
+ */
+export async function fetchLeftProduct(queryClient: QueryClient, productId: string): Promise<{ id: string; name: string } | null> {
+  if (!onlineManager.isOnline()) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // A pergunta parada (sem internet no meio, o React Query a segura) não segura a oferta para sempre.
+    const available = await Promise.race([
+      queryClient.fetchQuery({ queryKey: DELETE_PRODUCT_AVAILABLE_KEY, queryFn: fetchDeleteProductAvailable, staleTime: Infinity }),
+      new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), PRODUCT_DELETE_CHECK_MS))),
+    ]);
+    if (available !== true) return null;
+    return deletableProduct(await fetchDeleteFacts(productId));
+  } catch {
+    // Calado: é só uma oferta, e o caminho por Preços continua.
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }

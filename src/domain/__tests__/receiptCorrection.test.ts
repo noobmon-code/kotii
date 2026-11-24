@@ -42,11 +42,20 @@ import {
   correctionNameChoice,
   correctionNotice,
   correctionOffline,
+  LEFT_PRODUCT_DELETE,
+  LEFT_PRODUCT_KEEP,
+  leftProductAnnouncement,
+  leftProductDeleted,
+  leftProductDeleteLabel,
+  leftProductKeepLabel,
+  leftProductMessage,
+  leftProductShown,
   newProductActionTitle,
   newProductCategory,
   NO_NOTE_NAMES,
   PRODUCT_SAVED_NOT_SHOWN,
   productCorrection,
+  productLeftBehind,
   suggestionSubtitle,
   type AddedProduct,
   type CorrectionRefusal,
@@ -342,6 +351,37 @@ describe('a pergunta antes de incluir', () => {
       'Feijão carioca: 2 un, R$ 15,80. Depois de incluído, a quantidade e o valor não mudam mais, e o item só sai da nota excluindo a nota inteira.',
     );
     expect(addItemSummary(request(true, true), 'Carne moída').message).toMatch(/^Carne moída: 2 un, R\$ 15,80, e vai para o congelador\./);
+  });
+});
+
+describe('"Excluir o produto de antes", depois de "Trocar produto"', () => {
+  it('o produto deixado para trás: o de antes, só quando a troca mudou mesmo a linha', () => {
+    expect(productLeftBehind('p1', { productId: 'p2', changed: true })).toBe('p1');
+    // A linha que já estava no escolhido (a resposta de um toque anterior que se perdeu): não se sabe de onde ela saiu.
+    expect(productLeftBehind('p1', { productId: 'p2', changed: false })).toBeNull();
+    // "Escolher produto": a linha não tinha produto.
+    expect(productLeftBehind(null, { productId: 'p2', changed: true })).toBeNull();
+    expect(productLeftBehind('p1', { productId: 'p1', changed: true })).toBeNull();
+  });
+
+  it('a oferta some enquanto uma linha em tela aponta para o produto de antes; o aviso de excluído fica', () => {
+    const offer = { itemId: 'a', productId: 'p1', name: 'Feijão', deleted: false };
+    expect(leftProductShown(null, [])).toBeNull();
+    expect(leftProductShown(offer, [{ product_id: 'p2' }, { product_id: null }])).toBe(offer);
+    // A nota relida que ainda não voltou (a linha ainda no feijão), ou outra linha que passou para ele.
+    expect(leftProductShown(offer, [{ product_id: 'p1' }])).toBeNull();
+    const deleted = { ...offer, deleted: true };
+    expect(leftProductShown(deleted, [{ product_id: 'p1' }])).toBe(deleted);
+  });
+
+  it('as frases e os nomes no leitor de tela', () => {
+    expect(LEFT_PRODUCT_DELETE).toBe('Excluir o produto de antes');
+    expect(LEFT_PRODUCT_KEEP).toBe('Manter');
+    expect(leftProductMessage('Feijão')).toBe('"Feijão", o produto de antes, ficou sem nenhuma compra.');
+    expect(leftProductAnnouncement('Feijão')).toBe('"Feijão", o produto de antes, ficou sem nenhuma compra. Dá para excluir o produto de antes ou manter.');
+    expect(leftProductDeleteLabel('Feijão')).toBe('Excluir o produto de antes, Feijão');
+    expect(leftProductKeepLabel('Feijão')).toBe('Manter o produto Feijão');
+    expect(leftProductDeleted('Feijão')).toBe('"Feijão" foi excluído dos produtos da casa.');
   });
 });
 

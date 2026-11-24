@@ -731,6 +731,7 @@ export function Chip({
   accessibilityLabel,
   toggle = false,
   disabled = false,
+  ref,
 }: {
   label: string;
   selected?: boolean;
@@ -746,10 +747,13 @@ export function Chip({
   toggle?: boolean;
   /** Parado por um momento (enquanto algo é enviado): esmaecido, e o leitor de tela diz que não responde. */
   disabled?: boolean;
+  /** Para levar o foco ao selo (`moveFocus` de `src/ui/focus.ts`) quando o que tinha o foco sai da tela. */
+  ref?: Ref<View>;
 }) {
   const c = useColors();
   return (
     <Pressable
+      ref={ref}
       accessibilityRole="button"
       accessibilityState={{ selected, disabled: disabled || undefined }}
       accessibilityLabel={accessibilityLabel}
