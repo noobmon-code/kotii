@@ -3,11 +3,13 @@ import { readFileSync } from 'fs';
 import path from 'path';
 
 import {
+  ABBREVIATED_MARKS,
   basePackSize,
   brandFreeItemKey,
-  CAN_IS_ANOTHER_PRODUCT,
+  CAN_IS_THE_PACKAGE,
   keyFit,
   keyPackageSize,
+  LT_IS_THE_CAN,
   MAX_PACK_AMOUNT,
   MAX_PACK_OF,
   OPEN_KEYS_PER_ENTRY,
@@ -25,6 +27,7 @@ import {
   openSearchPlan,
   openSizeFact,
   openSizeNote,
+  OTHER_PRODUCT_WORDS,
   otherProductMarks,
   ownSameItemKeys,
   parseSharedItemKeys,
@@ -269,29 +272,131 @@ describe('o mesmo item: as descrições que ficam', () => {
     expect(keyFit({ name: 'Queijo', category: 'laticinios' }, 'QUEIJO MIN FRESCAL KG')).toBe(true);
   });
 
-  it('a lata é outro produto só onde a forma de sempre é seca ou fresca, com "LATA" ou o "LT" da nota; nos outros, é a embalagem', () => {
-    expect([...CAN_IS_ANOTHER_PRODUCT].sort()).toEqual(['abacaxi', 'feijao', 'milho', 'tomate']);
+  it('as marcas como a nota abrevia: "OLEO COMP", "QUEIJO RAL", "ARROZ QUEBR", "TP2" marcam como a palavra inteira', () => {
+    const abbreviated: [string, string][] = [
+      ['OLEO COMP MARIA 500ML', 'composto'],
+      ['OLEO COMPOS 500ML', 'composto'],
+      ['QUEIJO RAL 50G', 'ralado'],
+      ['QJO RAL PARM 50G', 'ralado'],
+      ['COCO RAL 100G', 'ralado'],
+      ['CHOC GRAN 150G', 'granulado'],
+      ['CHOC COB 1KG', 'cobertura'],
+      ['ARROZ QUEBR 5KG', 'quebrado'],
+      ['ARROZ QBR 5KG', 'quebrado'],
+      ['LEITE CABR 1L', 'cabra'],
+      ['LEITE CAB 1L', 'cabra'],
+      ['FEIJAO VERM 1KG', 'vermelho'],
+      ['MILHO COZ 200G', 'cozido'],
+      ['FRANGO DESF 170G', 'desfiado'],
+      ['TOMATE SEC 200G', 'seco'],
+      ['BANANA DESID 100G', 'desidratado'],
+      ['LEITE AMEND 1L', 'amendoa'],
+      ['OLEO MINER 100ML', 'mineral'],
+      ['ARROZ ARBOR 1KG', 'arborio'],
+      ['MILHO VERDE CONSERV 200G', 'lata'],
+    ];
+    for (const [description, mark] of abbreviated) expect([description, [...otherProductMarks(description)]]).toEqual([description, [mark]]);
+    // A segunda classificação colada ou com o ponto da nota ("T.2" vira "T 2").
+    for (const description of ['ARROZ TIPO2 5KG', 'ARROZ TP2 5KG', 'ARROZ TP 2 5KG', 'ARROZ T 2 5KG', 'ARROZ TIPOII 5KG']) {
+      expect([description, [...otherProductMarks(description)]]).toEqual([description, ['grau']]);
+    }
+    for (const description of ['ARROZ TIPO1 5KG', 'ARROZ TP1 5KG', 'ARROZ T 1 5KG']) expect([description, [...otherProductMarks(description)]]).toEqual([description, []]);
+    // As que têm outra leitura só marcam depois da palavra certa: a cabeça de alho, os ovos grandes, a pasta de amendoim.
+    for (const description of ['ALHO CAB', 'OVOS BRANCOS GRAN 12UN', 'ACUCAR GRAN 1KG', 'PASTA AMEND 500G', 'QUEIJO MIN FRESCAL KG']) {
+      expect([description, [...otherProductMarks(description)]]).toEqual([description, []]);
+    }
+    // O feminino e o masculino são uma marca; a conserva e a calda são a lata.
+    expect([...otherProductMarks('CARNE SECA')]).toEqual(['seco']);
+    expect([...otherProductMarks('GOIABA EM CALDA 400G')]).toEqual(['lata']);
+    expect([...otherProductMarks('PEPINO CONSERVA 300G')]).toEqual(['lata']);
+    // Toda abreviação é de uma palavra da lista.
+    for (const mark of new Set(ABBREVIATED_MARKS.values())) expect([mark, OTHER_PRODUCT_WORDS.has(mark)]).toEqual([mark, true]);
+  });
+
+  it('com a abreviação da nota, o outro produto fica de fora como por extenso; a lista que diz a palavra leva as duas', () => {
+    const plain: [string, string | null, string[]][] = [
+      ['Óleo', 'oleos', ['OLEO COMPOSTO GALLO 500ML', 'OLEO COMP MARIA 500ML', 'OLEO COMPOS 500ML']],
+      ['Queijo', 'laticinios', ['QUEIJO RALADO 50G', 'QUEIJO RAL 50G', 'QJO RAL PARM 50G']],
+      ['Chocolate', 'doces', ['CHOCOLATE GRANULADO 150G', 'CHOC GRAN 150G', 'CHOCOLATE COBERTURA 1KG', 'CHOC COB 1KG']],
+      ['Arroz', 'graos', ['ARROZ QUEBRADO 5KG', 'ARROZ QUEBR 5KG', 'ARROZ QBR 5KG', 'ARROZ TIPO2 5KG', 'ARROZ TP2 5KG', 'ARROZ T 2 5KG']],
+      ['Leite', 'laticinios', ['LEITE CABRA 1L', 'LEITE CABR 1L', 'LEITE CAB 1L']],
+      ['Feijão', 'graos', ['FEIJAO VERMELHO 1KG', 'FEIJAO VERM 1KG', 'FEIJAO PRETO COZ 400G']],
+      ['Milho', null, ['MILHO COZIDO 200G', 'MILHO COZ 200G']],
+      ['Coco', null, ['COCO RALADO 100G', 'COCO RAL 100G']],
+    ];
+    for (const [name, category, descriptions] of plain) {
+      for (const description of descriptions) expect([name, description, keyFit({ name, category }, description)]).toEqual([name, description, false]);
+    }
+    for (const [name, category, description] of [
+      ['Óleo composto', 'oleos', 'OLEO COMP MARIA 500ML'],
+      ['Chocolate granulado', 'doces', 'CHOC GRAN 150G'],
+      ['Leite de cabra', 'laticinios', 'LEITE CAB 1L'],
+      ['Arroz tipo 2', 'graos', 'ARROZ TP2 5KG'],
+      ['Coco ralado', null, 'COCO RAL 100G'],
+      ['Carne seca', 'carnes', 'CARNE SECA 500G'],
+    ] as const) {
+      expect([name, description, keyFit({ name, category }, description)]).toEqual([name, description, true]);
+    }
+    // O que não é abreviação de marca continua: o alho em cabeça, os ovos grandes.
+    expect(keyFit({ name: 'Alho', category: 'hortifruti' }, 'ALHO CAB')).toBe(true);
+    expect(keyFit({ name: 'Ovos', category: 'ovos' }, 'OVOS BRANCOS GRAN 12UN')).toBe(true);
+  });
+
+  it('a lata é só a embalagem onde o item quase sempre vem nela; em todo outro item, a lata, a conserva e a calda são outro produto', () => {
+    expect([...CAN_IS_THE_PACKAGE].sort()).toEqual([
+      'achocolatado', 'agua+tonica', 'atum', 'azeite', 'cerveja', 'creme_leite', 'doce_leite', 'extrato_tomate', 'fermento',
+      'leite+po', 'leite_condensado', 'molho_tomate', 'oleo', 'polpa_tomate', 'refrigerante', 'sardinha', 'suco',
+    ]);
+    expect([...LT_IS_THE_CAN].sort()).toEqual(['abacaxi', 'carne', 'feijao', 'frango', 'goiaba', 'milho', 'salsicha', 'tomate']);
     for (const description of ['FEIJAO CARIOCA LATA 400G', 'FEIJAO CARIOCA LT 400G', 'FEIJAO EM LATA 400G']) {
       expect(keyFit({ name: 'Feijão', category: 'graos' }, description)).toBe(false);
     }
-    for (const description of ['MILHO VERDE LATA QUERO 170G', 'MILHO VERDE LT QUERO 170G']) {
+    for (const description of ['MILHO VERDE LATA QUERO 170G', 'MILHO VERDE LT QUERO 170G', 'MILHO VERDE CONSERVA 200G']) {
       expect(keyFit({ name: 'Milho', category: null }, description)).toBe(false);
-      // A lista que diz a lata leva as duas.
+      // A lista que diz a lata (ou a conserva) leva as três.
       expect(keyFit({ name: 'Milho verde lata', category: null }, description)).toBe(true);
+      expect(keyFit({ name: 'Milho em conserva', category: null }, description)).toBe(true);
     }
     expect(keyFit({ name: 'Feijão', category: 'graos' }, 'FEIJAO CARIOCA CAMIL 1KG')).toBe(true);
-    // A cerveja, o refrigerante, o atum e o leite condensado vêm em lata: "LATA" e "LT" dão o mesmo veredito.
-    const asPackage: [string, string, string[]][] = [
+    // A carne, o frango, a salsicha e a fruta frescos: a forma em lata, em conserva ou em calda é outro produto, como o
+    // chá mate em lata para "Chá" e o café em lata para "Café" (na dúvida, fica de fora).
+    const fresh: [string, string | null, string[]][] = [
+      ['Frango', 'carnes', ['FRANGO DESFIADO LATA', 'FRANGO DESFIADO LATA 170G', 'FRANGO DESF LT 170G']],
+      ['Carne', 'carnes', ['CARNE BOVINA LATA', 'CARNE BOVINA LATA 320G', 'CARNE BOVINA CONSERVA 320G']],
+      ['Carne moída', 'carnes', ['CARNE MOIDA LATA 320G']],
+      ['Salsicha', null, ['SALSICHA VIENA LATA 180G', 'SALSICHA VIENA LT 180G']],
+      ['Goiaba', null, ['GOIABA EM CALDA LATA', 'GOIABA EM CALDA 400G']],
+      ['Abacaxi', null, ['ABACAXI EM CALDA 400G']],
+      ['Pepino', null, ['PEPINO CONSERVA 300G']],
+      ['Presunto', 'frios', ['PRESUNTO LATA']],
+      ['Chá', 'cafe_cha', ['CHA MATE LEAO LATA 340ML']],
+      ['Café', 'cafe_cha', ['CAFE PILAO LATA 400G']],
+    ];
+    for (const [name, category, descriptions] of fresh) {
+      for (const description of descriptions) expect([name, description, keyFit({ name, category }, description)]).toEqual([name, description, false]);
+    }
+    expect(keyFit({ name: 'Frango', category: 'carnes' }, 'FRANGO INTEIRO')).toBe(true);
+    expect(keyFit({ name: 'Goiaba em calda', category: null }, 'GOIABA LATA 400G')).toBe(true);
+    // Onde a lata é a embalagem, "LATA", "LT", a conserva e a calda dão o mesmo veredito.
+    const asPackage: [string, string | null, string[]][] = [
       ['Cerveja', 'alcoolicas', ['CERVEJA SKOL LATA 350ML', 'CERV SKOL LT 350ML']],
       ['Refrigerante', 'bebidas', ['REFRI COCA COLA LATA 350ML', 'REFRI COCA COLA LT 350ML']],
-      ['Atum', 'peixes', ['ATUM GOMES DA COSTA LATA 170G', 'ATUM GOMES DA COSTA LT 170G']],
+      ['Atum', 'peixes', ['ATUM GOMES DA COSTA LATA 170G', 'ATUM GOMES DA COSTA LT 170G', 'ATUM CONSERVA 170G']],
+      ['Sardinha', 'peixes', ['SARDINHA COQUEIRO LATA 125G', 'SARDINHA CONSERVA 125G']],
       ['Leite condensado', 'laticinios', ['LEITE COND MOCA LATA 395G', 'LEITE COND MOCA LT 395G']],
+      ['Creme de leite', 'laticinios', ['CREME LEITE NESTLE LATA 300G']],
+      ['Leite em pó', 'laticinios', ['LEITE PO NINHO LATA 400G']],
+      ['Achocolatado', null, ['ACHOC NESCAU LATA 400G']],
+      ['Óleo', 'oleos', ['OLEO SOJA LIZA LATA 900ML']],
+      ['Azeite', 'oleos', ['AZEITE GALLO LATA 500ML']],
+      ['Extrato de tomate', null, ['EXTRATO TOMATE ELEFANTE LATA 340G']],
     ];
     for (const [name, category, descriptions] of asPackage) {
       for (const description of descriptions) expect([name, description, keyFit({ name, category }, description)]).toEqual([name, description, true]);
     }
-    // O "LT" do leite não é lata.
+    // O "LT" do leite e do chocolate ao leite não é lata.
     expect(keyFit({ name: 'Leite', category: 'laticinios' }, 'LEITE INTEGRAL LT 1L')).toBe(true);
+    expect(keyFit({ name: 'Chocolate', category: 'doces' }, 'CHOC AO LT NESTLE 90G')).toBe(true);
   });
 });
 
@@ -299,6 +404,26 @@ describe('os grupos: as descrições e o tamanho de cada item', () => {
   it('só o mesmo item entra no grupo', () => {
     const { groups } = answered([item('l', 'Leite', 'laticinios')], () => [key('LEITE INT ITALAC 1L'), key('LEITE ZERO LACTOSE ITALAC 1L')]);
     expect(groupOf(groups, 'l')?.keys).toEqual(['LEITE INT ITALAC 1L']);
+  });
+
+  it('o outro produto abreviado não vira o pacote do grupo: o óleo composto, o arroz quebrado, o queijo ralado, o frango em lata', () => {
+    // "Óleo" 1 l: o composto (por extenso ou abreviado) fica de fora, e o pacote é o de soja.
+    const oil = answered([item('o', 'Óleo', 'oleos', 1, 'l')], () => [
+      key('OLEO SOJA LIZA 900ML', 'un', 10),
+      key('OLEO COMP MARIA 500ML', 'un', 3),
+      key('OLEO COMPOSTO GALLO 500ML', 'un', 1),
+    ]).groups;
+    expect(groupOf(oil, 'o')).toMatchObject({ keys: ['OLEO SOJA LIZA 900ML'], expected: { unit: 'l', amount: 0.9 } });
+    // "Arroz": o 5 kg quebrado ou de tipo 2 não entra no grupo do 5 kg.
+    const rice = answered([item('a', 'Arroz', 'graos')], () => [key('ARROZ TIO JOAO 5KG', 'un', 2), key('ARROZ QUEBR 5KG', 'un', 2), key('ARROZ TP2 5KG', 'un', 2)]).groups;
+    expect(groupOf(rice, 'a')?.keys).toEqual(['ARROZ TIO JOAO 5KG']);
+    // "Queijo" 500 g: o parmesão ralado em sachê não é o preço do quilo de queijo.
+    const cheese = answered([item('q', 'Queijo', 'laticinios', 500, 'g')], () => [key('QUEIJO RAL PARM 50G', 'un', 4), key('QJO RAL PARM 50G', 'un', 2)]).groups;
+    expect(groupOf(cheese, 'q')).toBeUndefined();
+    // "Frango" 1 kg: a lata de 170 g não é o pacote do preço por kg; fica o frango vendido a peso.
+    const chicken = answered([item('f', 'Frango', 'carnes', 1, 'kg')], () => [key('FRANGO DESFIADO LATA 170G', 'un', 5), key('FRANGO INTEIRO', 'kg', 1)]).groups;
+    expect(groupOf(chicken, 'f')).toMatchObject({ keys: [], weightOnly: ['FRANGO INTEIRO'], expected: null });
+    expect(entryOf(chicken, 'f')?.perBase).toBeNull();
   });
 
   it('a lata e a caixa de 12: "Cerveja lata 350ml" não leva a caixa; "Cerveja" leva os dois tamanhos e fica com o mais visto', () => {
@@ -550,7 +675,7 @@ describe('os preços (passo 2)', () => {
     expect(quotes.get('a')?.map((quote) => quote.unitPrice)).toEqual([22]);
   });
 
-  it('a linha por unidade sem o tamanho lido só fica quando o preço combina com o dos outros mercados (o fardo com a descrição da lata)', () => {
+  it('a linha por unidade sem o tamanho lido sai só quando está muito acima das outras (o fardo com a descrição da lata)', () => {
     const can = answered([item('c', 'Cerveja', 'alcoolicas')], () => [key('CERV SKOL LT 350ML', 'un', 3)]).groups;
     const at = (rows: SharedItemPrice[]) => openQuotes([answerFor(can, rows)], can, STORES).get('c')?.map((quote) => `${quote.storeCnpj} ${quote.unitPrice}`);
     const sized = { pack_unit: 'l', pack_amount: 0.35, pack_of: null };
@@ -561,8 +686,8 @@ describe('os preços (passo 2)', () => {
     ]);
     // Ao lado de uma lata só: sai também.
     expect(at([row(0, '64000000000201', 3.49, sized), row(0, '64000000000202', 39.9)])).toEqual(['64000000000201 3.49']);
-    // Duas sem tamanho e sem acordo: saem as duas (não há como saber qual é a lata).
-    expect(at([row(0, '64000000000202', 39.9), row(0, '64000000000203', 3.49)])).toBeUndefined();
+    // Duas sem tamanho e sem acordo: fica a mais barata (o fardo é sempre o mais caro), e o item não fica sem preço.
+    expect(at([row(0, '64000000000202', 39.9), row(0, '64000000000203', 3.49)])).toEqual(['64000000000203 3.49']);
     // A linha com o tamanho lido sempre fica; e sozinha, a sem tamanho fica (não há com que comparar: o risco que resta).
     expect(at([row(0, '64000000000202', 3.49), row(0, '64000000000203', 3.59), row(0, '64000000000201', 39.9, sized)])).toEqual([
       '64000000000202 3.49',
@@ -570,8 +695,66 @@ describe('os preços (passo 2)', () => {
       '64000000000201 39.9',
     ]);
     expect(at([row(0, '64000000000202', 39.9)])).toEqual(['64000000000202 39.9']);
+    // Com os fardos em metade ou mais das outras linhas, ficam (o risco que resta).
+    expect(at([row(0, '64000000000201', 3.49, sized), row(0, '64000000000202', 39.9), row(0, '64000000000203', 39.9)])).toEqual([
+      '64000000000201 3.49',
+      '64000000000202 39.9',
+      '64000000000203 39.9',
+    ]);
     // A 2,5 vezes (inclusive) ainda combina.
     expect(at([row(0, '64000000000201', 4, sized), row(0, '64000000000202', 10)])).toEqual(['64000000000201 4', '64000000000202 10']);
+  });
+
+  it('a marca mais barata nunca sai: o café de R$ 12,90 ao lado dos de R$ 34,90 fica, também no mercado da casa', () => {
+    const coffee = answered([item('c', 'Café', 'cafe_cha')], () => [key('CAFE PILAO 500G'), key('CAFE ORFEU 500G'), key('CAFE MARATA 500G')]).groups;
+    expect(entryOf(coffee, 'c')).toMatchObject({ size: '500 g', sizeBy: 'only' });
+    const at = (rows: SharedItemPrice[]) => openQuotes([answerFor(coffee, rows)], coffee, STORES).get('c')?.map((quote) => `${quote.storeCnpj} ${quote.unitPrice}`);
+    // Três mercados, três marcas, nenhum tamanho lido: ficam as três.
+    expect(at([row(0, '64000000000201', 12.9), row(0, '64000000000202', 34.9), row(0, '64000000000203', 36.9)])).toEqual([
+      '64000000000201 12.9',
+      '64000000000202 34.9',
+      '64000000000203 36.9',
+    ]);
+    // Dois que não combinam: fica o mais barato, também quando é o da casa.
+    expect(at([row(0, '64000000000201', 12.9), row(0, '64000000000202', 34.9)])).toEqual(['64000000000201 12.9']);
+    expect(at([row(0, '11222333000181', 12.9, { mine: true }), row(0, '64000000000202', 34.9)])).toEqual([
+      '11222333000181 12.9',
+      '11222333000181 12.9',
+    ]);
+  });
+
+  it('no grupo sem tamanho a linha não leva tamanho nenhum, e a faixa não corta: "Alface" a R$ 2,49 e a R$ 6,99 ficam as duas', () => {
+    const lettuce = answered([item('a', 'Alface', 'hortifruti')], () => [key('ALFACE CRESPA')]).groups;
+    expect(groupOf(lettuce, 'a')?.expected).toBeNull();
+    const quotes = openQuotes([answerFor(lettuce, [row(0, '64000000000201', 2.49), row(0, '64000000000202', 6.99)])], lettuce, STORES).get('a');
+    expect(quotes?.map((quote) => `${quote.storeCnpj} ${quote.unitPrice}`)).toEqual(['64000000000201 2.49', '64000000000202 6.99']);
+    expect(quotes?.every((quote) => quote.pack == null)).toBe(true);
+  });
+
+  it('em qualquer mistura de linhas, a mais barata de cada unidade fica e o item nunca perde todos os preços', () => {
+    const coffee = answered([item('c', 'Café', 'cafe_cha')], () => [key('CAFE PILAO 500G'), key('CAFE ORFEU 500G')]).groups;
+    let seed = 7;
+    const random = () => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed / 2147483648;
+    };
+    const sized = { pack_unit: 'kg', pack_amount: 0.5, pack_of: null };
+    for (let round = 0; round < 300; round++) {
+      const count = 1 + Math.floor(random() * 6);
+      const rows = Array.from({ length: count }, (_, n) =>
+        row(0, `640000000002${String(n).padStart(2, '0')}`, Math.round((1 + random() * 60) * 100) / 100, random() < 0.3 ? sized : {}),
+      );
+      const kept = openQuotes([answerFor(coffee, rows)], coffee, STORES).get('c') ?? [];
+      const cheapest = Math.min(...rows.map((one) => one.unit_price));
+      expect([rows.map((one) => one.unit_price), kept.some((quote) => quote.unitPrice === cheapest)]).toEqual([rows.map((one) => one.unit_price), true]);
+      // Uma linha só sai estando a mais de 2,5 vezes de mais da metade das outras.
+      for (const one of rows) {
+        if (kept.some((quote) => quote.storeCnpj === one.store_cnpj)) continue;
+        const others = rows.filter((other) => other !== one);
+        const far = others.filter((other) => one.unit_price > other.unit_price * 2.5).length;
+        expect(one.pack_unit == null && far * 2 > others.length).toBe(true);
+      }
+    }
   });
 
   it('no preço por kg, a bandeja sem tamanho lido se compara com o que é vendido a peso', () => {

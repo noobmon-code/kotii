@@ -30,10 +30,10 @@ import { guessCategory } from './search';
 import {
   newerSharedRow,
   SHARED_CATEGORIES,
+  SHARED_PRICE_BAND,
   sharedPack,
   sharedRowOf,
   sharedWeekStart,
-  withinBand,
   type OpenPrice,
   type SharedPrice,
   type SharedPriceRow,
@@ -318,27 +318,125 @@ export function keyPackageSize(key: string): PackageSize | null {
 
 /**
  * Palavras que dizem outro produto do mesmo item e que o leitor ainda lê como o item puro ("ARROZ QUEBRADO", "LEITE
- * CABRA", "OLEO COMPOSTO", "FEIJAO EM LATA"), no singular. Só a base aberta (e a troca de marca) as usa: não mudam o
- * "mesmo item" da revisão da nota.
+ * CABRA", "OLEO COMPOSTO", "FEIJAO EM LATA", "GOIABA EM CALDA"), no singular. Só a base aberta (e a troca de marca)
+ * as usa: não mudam o "mesmo item" da revisão da nota.
  */
 export const OTHER_PRODUCT_WORDS: ReadonlySet<string> = new Set([
   'quebrado', 'quebrada', 'quirera', 'pronto', 'pronta', 'gelado', 'gelada', 'piso', 'maquina', 'automotivo', 'automotiva',
   'motor', 'peroba', 'movel', 'cabra', 'ovelha', 'bufala', 'amendoa', 'castanha', 'aveia', 'seco', 'seca', 'desidratado',
-  'desidratada', 'industrial', 'roupa', 'mineral', 'composto', 'lata', 'cozido', 'cozida', 'granulado', 'granulada',
-  'cobertura', 'ralado', 'ralada', 'vermelho', 'negro', 'selvagem', 'cateto', 'arborio', 'arboreo', 'basmati', 'jasmim',
-  'grao',
+  'desidratada', 'industrial', 'roupa', 'mineral', 'composto', 'lata', 'conserva', 'calda', 'cozido', 'cozida', 'granulado',
+  'granulada', 'cobertura', 'ralado', 'ralada', 'desfiado', 'desfiada', 'vermelho', 'negro', 'selvagem', 'cateto', 'arborio',
+  'arboreo', 'basmati', 'jasmim', 'grao',
 ]);
 
-// Depois destas, o "MIN" da nota é o mineral ("OLEO MIN", "SAL MIN"); em outro lugar ele pode ser outra coisa
-// ("QUEIJO MIN FRESCAL" é o minas).
-const MINERAL_BEFORE = new Set(['oleo', 'sal']);
+/**
+ * A marca de cada palavra é a forma de base: o feminino é o masculino ("QUEBRADA" e "QUEBRADO" são uma marca, e a
+ * "Carne seca" da lista leva o "CARNE SEC" da nota), e a conserva e a calda são a lata (a forma em conserva do item:
+ * "Milho em conserva" na lista leva "MILHO VERDE LATA").
+ */
+const MARK_OF: ReadonlyMap<string, string> = new Map([
+  ['quebrada', 'quebrado'],
+  ['pronta', 'pronto'],
+  ['gelada', 'gelado'],
+  ['automotiva', 'automotivo'],
+  ['seca', 'seco'],
+  ['desidratada', 'desidratado'],
+  ['cozida', 'cozido'],
+  ['granulada', 'granulado'],
+  ['ralada', 'ralado'],
+  ['desfiada', 'desfiado'],
+  ['arboreo', 'arborio'],
+  ['conserva', 'lata'],
+  ['calda', 'lata'],
+]);
+
+/**
+ * As abreviações de nota das palavras de OTHER_PRODUCT_WORDS (a chave guarda a descrição como a nota imprime, e o
+ * SPELLED_OUT da revisão da nota não as expande): cada uma é a marca da palavra inteira, em qualquer lugar do nome.
+ * Só as que não têm outra leitura comum numa descrição de mercado; as que têm valem só depois de certas palavras
+ * (ABBREVIATED_AFTER). Uma abreviação lida a mais só deixa a descrição de fora (na dúvida, fica sem preço).
+ */
+export const ABBREVIATED_MARKS: ReadonlyMap<string, string> = new Map([
+  ['qbr', 'quebrado'],
+  ['queb', 'quebrado'],
+  ['quebr', 'quebrado'],
+  ['quebrad', 'quebrado'],
+  ['comp', 'composto'],
+  ['compo', 'composto'],
+  ['compos', 'composto'],
+  ['compost', 'composto'],
+  ['ral', 'ralado'],
+  ['rald', 'ralado'],
+  ['ralad', 'ralado'],
+  ['cob', 'cobertura'],
+  ['cobert', 'cobertura'],
+  ['cobertur', 'cobertura'],
+  ['granul', 'granulado'],
+  ['granulad', 'granulado'],
+  ['coz', 'cozido'],
+  ['cozid', 'cozido'],
+  ['desf', 'desfiado'],
+  ['desfiad', 'desfiado'],
+  ['verm', 'vermelho'],
+  ['vermel', 'vermelho'],
+  ['vermelh', 'vermelho'],
+  ['cabr', 'cabra'],
+  ['ovel', 'ovelha'],
+  ['buf', 'bufala'],
+  ['bufal', 'bufala'],
+  ['desid', 'desidratado'],
+  ['desidr', 'desidratado'],
+  ['desidrat', 'desidratado'],
+  ['sec', 'seco'],
+  ['miner', 'mineral'],
+  ['maq', 'maquina'],
+  ['autom', 'automotivo'],
+  ['automot', 'automotivo'],
+  ['indust', 'industrial'],
+  ['industr', 'industrial'],
+  ['selv', 'selvagem'],
+  ['arb', 'arborio'],
+  ['arbor', 'arborio'],
+  ['basm', 'basmati'],
+  ['jasm', 'jasmim'],
+  ['conserv', 'lata'],
+]);
+
+/**
+ * As abreviações que só são a palavra depois de certas palavras: "OLEO MIN" e "SAL MIN" são o mineral ("QUEIJO MIN
+ * FRESCAL" é o minas); "LEITE CAB" e "QUEIJO CAB" são a cabra ("ALHO CAB" é a cabeça); "CHOC GRAN" é o granulado
+ * ("OVOS GRAN" são os grandes, e o "GRAN" de outro lugar pode ser o granel ou a marca); "LEITE AMEND" é a amêndoa
+ * ("PASTA AMEND" é o amendoim).
+ */
+const ABBREVIATED_AFTER: ReadonlyMap<string, { mark: string; after: ReadonlySet<string> }> = new Map([
+  ['min', { mark: 'mineral', after: new Set(['oleo', 'sal']) }],
+  ['cab', { mark: 'cabra', after: new Set(['leite', 'lt', 'queijo']) }],
+  ['gran', { mark: 'granulado', after: new Set(['chocolate']) }],
+  ['amend', { mark: 'amendoa', after: new Set(['leite', 'lt']) }],
+]);
+
+/** A marca de uma palavra do nome (lida por extenso, com a do singular e a palavra de antes, no singular), ou null. */
+function wordMark(word: string, one: string, prev: string | null): string | null {
+  const whole = OTHER_PRODUCT_WORDS.has(word) ? word : OTHER_PRODUCT_WORDS.has(one) ? one : null;
+  if (whole) return MARK_OF.get(whole) ?? whole;
+  const short = ABBREVIATED_MARKS.get(word);
+  if (short) return short;
+  const after = ABBREVIATED_AFTER.get(word);
+  return after && prev != null && after.after.has(prev) ? after.mark : null;
+}
+
+// A classificação de segunda: o número do tipo (2 a 9, II, III), sozinho depois de "TIPO", "TP" ou "T", ou colado neles.
+const GRADE = /^(?:[2-9]|ii|iii)$/;
+const GLUED_GRADE = /^(?:t|tp|tipo)(?:[2-9]|ii|iii)$/;
 
 /**
  * As marcas de "outro produto do mesmo item" num nome (lido por extenso, spelledOut, e no singular): cada palavra de
- * OTHER_PRODUCT_WORDS; "grau" para a classificação de segunda (T2 a T9, 2A a 9A, "segunda", "tipo 2", "tipo II"); e
- * "tipo" para "tipo" antes de uma palavra ("QUEIJO TIPO MUSSARELA", "LEITE TIPO A"). "ARROZ TIPO 1" e "T1" não marcam.
- * O mineral como a nota abrevia: "OLEO MIN" e "SAL MIN" marcam como "OLEO MINERAL"; e a água mineral é a água de
- * sempre, não outro produto: "AGUA MINERAL" não marca, como "AGUA MIN" e "AGUA CRYSTAL".
+ * OTHER_PRODUCT_WORDS, na forma de base (MARK_OF), também como a nota abrevia (ABBREVIATED_MARKS: "OLEO COMP",
+ * "QUEIJO RAL", "ARROZ QUEBR", "ARROZ QBR", "FEIJAO VERM", "MILHO COZ"; e ABBREVIATED_AFTER: "OLEO MIN", "LEITE CAB",
+ * "CHOC GRAN"); "grau" para a classificação de segunda (T2 a T9, 2A a 9A, "segunda", "tipo 2", "tipo II", e como a
+ * nota escreve: "TIPO2", "TP2", "TP 2", "T 2"); e "tipo" para "tipo" antes de uma palavra ("QUEIJO TIPO MUSSARELA",
+ * "LEITE TIPO A"). "ARROZ TIPO 1", "T1" e "TP1" não marcam. A água mineral é a água de sempre, não outro produto:
+ * "AGUA MINERAL" não marca, como "AGUA MIN", "AGUA MINER" e "AGUA CRYSTAL".
  */
 export function otherProductMarks(name: string): ReadonlySet<string> {
   const words = spelledOut(name).split(' ').filter(Boolean);
@@ -346,15 +444,12 @@ export function otherProductMarks(name: string): ReadonlySet<string> {
   words.forEach((word, at) => {
     const one = singular(word);
     const prev = at > 0 ? singular(words[at - 1]) : null;
-    if (one === 'mineral' && prev === 'agua') return;
-    if (word === 'min' && prev && MINERAL_BEFORE.has(prev)) marks.add('mineral');
-    if (OTHER_PRODUCT_WORDS.has(word) || OTHER_PRODUCT_WORDS.has(one)) marks.add(OTHER_PRODUCT_WORDS.has(word) ? word : one);
-    if (/^t[2-9]$/.test(word) || /^[2-9]a$/.test(word) || word === 'segunda') marks.add('grau');
-    if (word === 'tipo' || word === 'tp') {
-      const next = words[at + 1];
-      if (next && /^(?:[2-9]|ii|iii)$/.test(next)) marks.add('grau');
-      else if (next && !/^\d/.test(next) && next !== 'i') marks.add('tipo');
-    }
+    const next = words[at + 1];
+    const mark = wordMark(word, one, prev);
+    if (mark && !(mark === 'mineral' && prev === 'agua')) marks.add(mark);
+    if (GLUED_GRADE.test(word) || /^[2-9]a$/.test(word) || word === 'segunda') marks.add('grau');
+    if ((word === 'tipo' || word === 'tp' || word === 't') && next && GRADE.test(next)) marks.add('grau');
+    else if ((word === 'tipo' || word === 'tp') && next && !/^\d/.test(next) && next !== 'i') marks.add('tipo');
   });
   return marks;
 }
@@ -363,20 +458,31 @@ const VERDICTS = new Map<string, boolean>();
 const VERDICTS_LIMIT = 20000;
 
 /**
- * Os itens cuja forma de sempre é seca ou fresca, e a lata é outro produto: "FEIJAO EM LATA" é o feijão cozido,
- * "MILHO VERDE LATA" o milho em conserva, "TOMATE PELADO LATA", "ABACAXI CALDA LATA". Para eles o "LT" da nota
- * também é a lata ("MILHO VERDE LT QUERO 170G"; depois de um número é o litro). Para os outros itens a lata é só a
- * embalagem (a cerveja, o refrigerante, o atum, a sardinha, o leite condensado, o creme de leite, o óleo) e não marca
- * nada, com "LATA" ou "LT": o "LT" da nota não se lê como lata fora daqui, porque ele também é o litro, o leite e o
- * light.
+ * Os itens que quase sempre vêm em lata ou em conserva, onde ela é só a embalagem: a cerveja, o refrigerante, o suco,
+ * a água tônica, o atum, a sardinha, o leite condensado, o creme de leite, o doce de leite, o leite em pó, o
+ * achocolatado, o fermento, o óleo, o azeite e o extrato, o molho e a polpa de tomate. Para eles a lata, a conserva e
+ * a calda não marcam nada. Para todo outro item são outro produto ("FRANGO DESFIADO LATA", "SALSICHA VIENA LATA",
+ * "CARNE BOVINA CONSERVA", "GOIABA EM CALDA", "CHA MATE LEAO LATA" para "Chá"), e a descrição só fica quando a lista
+ * também diz a lata ou a conserva: na dúvida, fica de fora.
  */
-export const CAN_IS_ANOTHER_PRODUCT: ReadonlySet<string> = new Set(['feijao', 'milho', 'tomate', 'abacaxi']);
+export const CAN_IS_THE_PACKAGE: ReadonlySet<string> = new Set([
+  'cerveja', 'refrigerante', 'suco', 'agua+tonica', 'atum', 'sardinha', 'leite_condensado', 'creme_leite', 'doce_leite',
+  'leite+po', 'achocolatado', 'fermento', 'oleo', 'azeite', 'extrato_tomate', 'molho_tomate', 'polpa_tomate',
+]);
 
-/** As marcas de um nome para o item da lista: as de otherProductMarks, com a lata só para CAN_IS_ANOTHER_PRODUCT. */
-function itemMarks(name: string, canned: boolean): ReadonlySet<string> {
+/**
+ * Os itens frescos ou secos onde o "LT" da nota que não vem depois de um número também é a lata ("MILHO VERDE LT
+ * QUERO 170G", "FRANGO DESF LT 170G", "SALSICHA VIENA LT 180G"; depois de um número é o litro). Em outro item o "LT"
+ * não se lê como lata, porque ele também é o leite ("CHOC AO LT", "PAO DE LT") e o light; a palavra "LATA" marca em
+ * todo item fora de CAN_IS_THE_PACKAGE.
+ */
+export const LT_IS_THE_CAN: ReadonlySet<string> = new Set(['feijao', 'milho', 'tomate', 'abacaxi', 'frango', 'carne', 'salsicha', 'goiaba']);
+
+/** As marcas de um nome para o item da lista (pela chave dele): as de otherProductMarks, sem a lata onde ela é a embalagem. */
+function itemMarks(name: string, itemKey: string | null): ReadonlySet<string> {
   const marks = new Set(otherProductMarks(name));
-  if (!canned) marks.delete('lata');
-  else {
+  if (itemKey != null && CAN_IS_THE_PACKAGE.has(itemKey)) marks.delete('lata');
+  else if (itemKey != null && LT_IS_THE_CAN.has(itemKey)) {
     const words = spelledOut(name).split(' ').filter(Boolean);
     if (words.some((word, at) => word === 'lt' && at > 0 && !/\d$/.test(words[at - 1]))) marks.add('lata');
   }
@@ -385,8 +491,8 @@ function itemMarks(name: string, canned: boolean): ReadonlySet<string> {
 
 /**
  * A descrição da base é o mesmo item da lista: `mesmo` de sameItemFit (talvez, outro e "não sei" ficam de fora), sem
- * marca de outro produto que o nome da lista não tenha (otherProductMarks, com a lata só onde ela é outro produto:
- * CAN_IS_ANOTHER_PRODUCT) e sem forma que a lista não diz (addsForm: o café solúvel para "Café"). A descrição é lida
+ * marca de outro produto que o nome da lista não tenha (otherProductMarks, sem a lata onde ela é só a embalagem:
+ * CAN_IS_THE_PACKAGE) e sem forma que a lista não diz (addsForm: o café solúvel para "Café"). A descrição é lida
  * com a caixa de volta (restorePackMark) e a categoria que o app adivinha dela. O resultado fica guardado (até
  * 20 000), fora do guardado de readItem: refazer a conta quando alguém marca um item no carrinho não chama
  * sameItemFit de novo.
@@ -400,9 +506,9 @@ export function keyFit(item: { name: string; category?: string | null }, key: st
   let fit = sameItemFit({ name: item.name, category: item.category }, { names: [restored], category }) === 'mesmo';
   const want = fit ? itemIdentity(item.name, item.category) : null;
   if (fit) {
-    const canned = want != null && CAN_IS_ANOTHER_PRODUCT.has(want.key);
-    const mine = itemMarks(item.name, canned);
-    fit = [...itemMarks(restored, canned)].every((mark) => mine.has(mark));
+    const itemKey = want?.key ?? null;
+    const mine = itemMarks(item.name, itemKey);
+    fit = [...itemMarks(restored, itemKey)].every((mark) => mine.has(mark));
   }
   if (fit) {
     const have = itemIdentity(restored, category);
@@ -609,19 +715,23 @@ export function parseSharedItemPrices(raw: unknown, groups: readonly OpenGroup[]
 const round4 = (n: number) => Math.round(n * 10000) / 10000;
 
 /**
- * As linhas de um item que ficam, uma por mercado e unidade: a linha por unidade sem o tamanho lido pelo servidor
- * (`unsized`: pack_* vazio, porque veio da foto, é de antes do tamanho ou é o fardo vendido com a descrição da lata,
- * que a leitura do QR code nunca mede) leva o tamanho do grupo, e só fica quando mais da metade das linhas do item na
- * mesma unidade, ela incluída, está a no máximo 2,5 vezes dela (withinBand, a faixa do caminho do produto): o fardo a
- * R$ 39,90 ao lado de latas a R$ 3,49 sai, e duas sem acordo saem as duas. A linha com o tamanho lido, e a vendida a
- * peso, sempre ficam (e contam). Sozinha, a linha sem tamanho fica: não há com que comparar.
+ * As linhas de um item que ficam, uma por mercado e unidade. A linha por unidade sem o tamanho lido pelo servidor
+ * (pack_* vazio, porque veio da foto, é de antes do tamanho ou é o fardo vendido com a descrição da lata, que a
+ * leitura do QR code nunca mede) leva o tamanho do grupo (`takesGroupSize`, só quando o grupo tem um), e o único erro
+ * que isso traz é para cima: as chaves do grupo dizem o tamanho dele, e o que vem com essa descrição sem ser desse
+ * tamanho é o fardo ou a caixa, mais caros que a lata. Por isso ela só sai quando mais da metade das outras linhas do
+ * item na mesma unidade custa menos de 1/2,5 dela (SHARED_PRICE_BAND, a faixa do caminho do produto): o fardo a
+ * R$ 39,90 ao lado de latas a R$ 3,49 sai, e ao lado de uma lata só também. Nunca sai por ser mais barata: a marca ou a
+ * variedade pode ser outra (o café de R$ 12,90 ao lado dos de R$ 34,90 fica), então a mais barata do item sempre fica
+ * e o item nunca perde todos os preços. A linha com o tamanho lido, a vendida a peso e a do grupo sem tamanho (que não
+ * leva tamanho nenhum) sempre ficam, e contam. Sozinha, a linha sem tamanho fica: não há com que comparar.
  */
-function agreeingRows<T extends { row: SharedPriceRow; unsized: boolean }>(entries: readonly T[]): T[] {
+function agreeingRows<T extends { row: SharedPriceRow; takesGroupSize: boolean }>(entries: readonly T[]): T[] {
   return entries.filter((entry) => {
-    if (!entry.unsized) return true;
-    const same = entries.filter((other) => other.row.unit === entry.row.unit);
-    const near = same.filter((other) => withinBand(other.row.unitPrice, entry.row.unitPrice)).length;
-    return near * 2 > same.length;
+    if (!entry.takesGroupSize) return true;
+    const others = entries.filter((other) => other !== entry && other.row.unit === entry.row.unit);
+    const far = others.filter((other) => entry.row.unitPrice > other.row.unitPrice * SHARED_PRICE_BAND).length;
+    return far * 2 <= others.length;
   });
 }
 
@@ -631,8 +741,8 @@ function agreeingRows<T extends { row: SharedPriceRow; unsized: boolean }>(entri
  * resposta de outra lista, ou de antes, nunca põe preço em outros itens, e duas listas com os mesmos itens dividem a
  * resposta. Por item: a linha por unidade do item pedido em peso ou volume vira preço por kg ou litro, pelo pacote;
  * a outra linha por unidade leva o tamanho escolhido. Uma por mercado e unidade (a semana mais nova, a mais barata), a
- * sem tamanho lido só quando combina com as outras (agreeingRows), e
- * os mercados da casa pelo CNPJ, como em sharedQuotes: a linha "da casa" cujo CNPJ não está nos mercados carregados
+ * sem tamanho lido que leva o do grupo só quando não está muito acima das outras (agreeingRows), e os mercados da casa
+ * pelo CNPJ, como em sharedQuotes: a linha "da casa" cujo CNPJ não está nos mercados carregados
  * fica de fora; a de fora fica com `storeId` null. Não há segunda camada da compra própria aqui (não há produto): a
  * regra do banco é a garantia.
  */
@@ -661,7 +771,7 @@ export function openQuotes(
     const rows = bySignature.get(group.signature) ?? [];
     if (!rows.length) continue;
     for (const item of group.items) {
-      const latest = new Map<string, { row: SharedPriceRow; open: OpenPrice; unsized: boolean }>();
+      const latest = new Map<string, { row: SharedPriceRow; open: OpenPrice; takesGroupSize: boolean }>();
       for (const row of rows) {
         let price: Omit<SharedPrice, 'product_id'> = row;
         let open: OpenPrice = { size: null, sizeBy: null, fromPackage: null, packages: null };
@@ -678,7 +788,8 @@ export function openQuotes(
         const shown = { ...sharedRowOf(price, nameByCnpj.get(row.store_cnpj)), pack };
         const key = `${shown.storeCnpj}\u0000${shown.unit}`;
         const seen = latest.get(key);
-        if (!seen || newerSharedRow(shown, seen.row)) latest.set(key, { row: shown, open, unsized: row.unit === 'un' && sharedPack(row) == null });
+        const takesGroupSize = row.unit === 'un' && sharedPack(row) == null && item.pack != null;
+        if (!seen || newerSharedRow(shown, seen.row)) latest.set(key, { row: shown, open, takesGroupSize });
       }
       const list: SharedQuote[] = [];
       for (const { row, open } of agreeingRows([...latest.values()])) {
