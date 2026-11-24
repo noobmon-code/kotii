@@ -53,7 +53,7 @@ export interface ReadLine {
  */
 export type ReadLineInput = Pick<ReadLine, 'description' | 'unit' | 'unit_price' | 'gtin'> & { single_unit?: boolean };
 
-/** Os limites de shared_prices_pack_check (supabase/migrations/20261122140000_package_sizes.sql). */
+/** Os limites de shared_prices_pack_check (supabase/migrations/20261124181159_package_sizes.sql). */
 export const MAX_PACK_AMOUNT = 100000;
 export const MAX_PACK_OF = 1000;
 

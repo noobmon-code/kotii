@@ -20,7 +20,7 @@
 // sempre é outra embalagem (o fardo ou a lata avulsa sob a mesma descrição). A
 // lista e o "Onde comprar" usam a mesma regra para o preço por unidade
 // (fitsHouseholdPack).
-// A semana: desde a lista aberta (20261122150000_shared_prices_open.sql),
+// A semana: desde a lista aberta (20261124181819_shared_prices_open.sql),
 // nenhuma leitura devolve o dia da compra, só a segunda-feira da semana dela
 // (seen_on), e dentro de uma semana nada é escolhido pelo dia. O app mostra
 // "visto na semana de 9 nov" e, para um banco de antes (que ainda devolve
