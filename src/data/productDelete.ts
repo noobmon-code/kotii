@@ -2,7 +2,7 @@
 // função do banco que exclui (delete_product) e o que precisa ser buscado de novo depois. As regras e as frases
 // estão em domain/productDelete.
 //
-// A função chega numa migração própria (20261122100000_delete_product.sql), e o app pode ser publicado antes
+// A função chega numa migração própria (20261123130646_delete_product.sql), e o app pode ser publicado antes
 // dela: o botão só aparece quando delete_product_available() responde true (useDeleteProductAvailable). Sem a
 // função, excluir avisa que ainda não está disponível. Não há plano B de apagar direto na tabela: isso soltaria
 // das linhas de nota o produto, que é justamente o que a função recusa.

@@ -164,7 +164,7 @@ export interface PantryItem {
   expiry_source: ExpirySource | null;
   consumed_at: string | null;
   /**
-   * O congelador (domain/freezer): undefined antes da migração 20261122110000_pantry_freezer.sql, nas leituras que
+   * O congelador (domain/freezer): undefined antes da migração 20261124173722_pantry_freezer.sql, nas leituras que
    * repetiram sem as colunas e nas cópias guardadas de antes desta versão.
    */
   frozen_on?: string | null;

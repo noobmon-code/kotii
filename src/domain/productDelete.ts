@@ -1,7 +1,7 @@
 // Excluir um produto: só o que não está em nenhuma nota (nem confirmada, nem em revisão), e só pela pessoa, depois
 // de uma pergunta que lê o produto de novo no banco. O produto que tem compra guarda o histórico de preços e os
 // gastos dos meses: para ele o caminho é juntar (domain/productMerge). Quem exclui é o banco (delete_product, em
-// supabase/migrations/20261122100000_delete_product.sql); aqui ficam as regras do que perguntar e todas as frases.
+// supabase/migrations/20261123130646_delete_product.sql); aqui ficam as regras do que perguntar e todas as frases.
 
 import { gtinLabel } from './barcode';
 import { formatShortDate } from './dates';

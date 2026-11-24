@@ -215,7 +215,7 @@ describe('frozenExpiryFor e thawedExpiry', () => {
   });
 
   it('desfazer a descongelada guarda que ela esteve no congelador: o banco devolve frozen_on (a migração)', () => {
-    const sql = readFileSync(join(__dirname, '../../../supabase/migrations/20261122110000_pantry_freezer.sql'), 'utf8');
+    const sql = readFileSync(join(__dirname, '../../../supabase/migrations/20261124173722_pantry_freezer.sql'), 'utf8');
     const thaw = sql.slice(sql.indexOf('create function public.thaw_pantry_items'));
     expect(thaw).toContain('frozen_on = case when p_thawed_on <= p.frozen_on then p.prev_frozen_on else p.frozen_on end');
     expect(thaw).toContain('thawed_on = case when p_thawed_on <= p.frozen_on then p.prev_thawed_on else p_thawed_on end');
@@ -577,7 +577,7 @@ describe('frases', () => {
 });
 
 describe('a migração tem a mesma tabela', () => {
-  const sql = readFileSync(join(__dirname, '../../../supabase/migrations/20261122110000_pantry_freezer.sql'), 'utf8');
+  const sql = readFileSync(join(__dirname, '../../../supabase/migrations/20261124173722_pantry_freezer.sql'), 'utf8');
   const kinds = FREEZE_KINDS.map((k) => `'${k.key}'`).join(', ');
 
   it('os tipos nos checks e nas funções', () => {

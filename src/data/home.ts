@@ -28,7 +28,7 @@ import { FREEZER_COLUMNS, isMissingFreezerColumn } from './freezer';
 
 const PANTRY_BASE_COLUMNS =
   'id, product_id, name, category, quantity, unit, purchased_on, expires_on, expiry_source, consumed_at';
-// Com o congelador (20261122110000_pantry_freezer.sql). Sem as colunas no banco, ou no cache de esquema da API, a
+// Com o congelador (20261124173722_pantry_freezer.sql). Sem as colunas no banco, ou no cache de esquema da API, a
 // leitura repete sem elas: as compras vêm sem os campos do congelador (undefined), e congelar fica de fora.
 const PANTRY_COLUMNS = `${PANTRY_BASE_COLUMNS}, ${FREEZER_COLUMNS.join(', ')}`;
 
