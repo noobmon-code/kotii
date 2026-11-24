@@ -10,7 +10,9 @@ import { Chip, DateField, Row, Text } from '@/ui/primitives';
 /**
  * O que a linha da nota faz na despensa: o chip "Vai para a despensa", a validade e, em carnes e peixes, "Congelou?"
  * com o "Congelei" (domain/freezer, receiptFreezeKind), e embaixo de onde veio a validade. Serve à linha da revisão
- * e à linha incluída depois numa nota confirmada: as regras são as de pantryEntry (domain/receiptReview).
+ * e à linha incluída depois numa nota confirmada: as regras são as de pantryEntry (domain/receiptReview). Sem
+ * `onChangeExpiry` (o item que faltou numa nota confirmada), sem o campo da validade nem a frase de onde ela veio: a
+ * data se corrige depois, na despensa.
  */
 export function ReceiptPantryChoice({
   rawDescription,
@@ -26,14 +28,14 @@ export function ReceiptPantryChoice({
   /** Os dias do congelador (useFreezer): null sem ele no banco, e aí não pergunta. */
   freezer: FreezeDays | null;
   onTogglePantry: () => void;
-  onChangeExpiry: (iso: string | null) => void;
+  onChangeExpiry?: (iso: string | null) => void;
   onToggleFrozen: (on: boolean) => void;
 }) {
   const [expiryText, setExpiryText] = useState<string | null>(null);
 
   /** Grava a validade que ficou digitada no campo; false quando ela não dá para ler (e nada muda). */
   function commitExpiry(): boolean {
-    if (expiryText == null) return true;
+    if (expiryText == null || !onChangeExpiry) return true;
     if (!expiryText.trim()) {
       onChangeExpiry(null);
     } else {
@@ -54,12 +56,12 @@ export function ReceiptPantryChoice({
     if (commitExpiry()) onToggleFrozen(!resolved.frozen);
   }
 
-  const hint = receiptExpiryHint(resolved, freezer);
+  const hint = onChangeExpiry ? receiptExpiryHint(resolved, freezer) : null;
   return (
     <>
       <Row style={styles.wrap}>
         <Chip label={pantryChoiceLabel(resolved.pantry)} icon="fridge-outline" selected={resolved.pantry} onPress={onTogglePantry} />
-        {resolved.pantry ? (
+        {resolved.pantry && onChangeExpiry ? (
           <View style={styles.expiry}>
             <DateField
               value={expiryText ?? (resolved.expiresOn ? formatBRDate(resolved.expiresOn) : '')}

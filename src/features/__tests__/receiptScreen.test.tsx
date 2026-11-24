@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { Profiler } from 'react';
 import { Dimensions, Platform, StyleSheet } from 'react-native';
@@ -12,6 +12,8 @@ import { PayerChips } from '@/features/finance/PayerChips';
 import { FEATURES } from '@/lib/features';
 import { stopWaitingForReceipt, takeConfirmedReceipt, waitForReceipt } from '@/lib/finishPurchase';
 import { formatBRL } from '@/domain/money';
+import { PRODUCT_MERGED_AWAY } from '@/domain/productMerge';
+import { CATEGORY_SHELF_LIFE_DAYS } from '@/domain/receiptCorrection';
 import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
 import { DESKTOP_PANEL_SIDE_WIDTH } from '@/domain/desktop';
@@ -41,12 +43,40 @@ const mockDb: {
   holds: { match: (request: MockRequest) => boolean; gate: Promise<void>; open: () => void }[];
   /** Pedidos que falham (a rede caiu). */
   fails: ((request: MockRequest) => boolean)[];
+  /** Pedidos que o banco faz, mas cuja resposta se perde no caminho (a rede caiu na volta). */
+  loses: ((request: MockRequest) => boolean)[];
   /** O erro que o `confirm_receipt` devolve numa nota que existe (o teste escolhe), como o servidor responde. */
   confirmError: Row | null;
+  /**
+   * As correções da nota confirmada (data/receipts): se o banco as tem (`missing`: a função não existe, PGRST202), e o
+   * erro que a troca de produto e o item que faltou devolvem (o teste escolhe). A pergunta se o banco as tem é uma
+   * leitura e fica em `probes`, fora de `rpcs` (o que a tela manda o banco fazer).
+   */
+  corrections: boolean | 'missing';
+  changeError: Row | null;
+  addError: Row | null;
+  probes: number;
   /** Quantos pedidos saíram e quantos já voltaram (um seguro por `hold` fica no meio): é por eles que `quiet` vê a tela andar. */
   sent: number;
   answered: number;
-} = { receipts: [], items: [], stores: [], writes: [], rpcs: [], reads: {}, holds: [], fails: [], confirmError: null, sent: 0, answered: 0 };
+} = {
+  receipts: [],
+  items: [],
+  stores: [],
+  writes: [],
+  rpcs: [],
+  reads: {},
+  holds: [],
+  fails: [],
+  loses: [],
+  confirmError: null,
+  corrections: false,
+  changeError: null,
+  addError: null,
+  probes: 0,
+  sent: 0,
+  answered: 0,
+};
 const mockMarket: { products: Row[]; pantryNear: Row[]; listItems: Row[]; stores: Row[] } = { products: [], pantryNear: [], listItems: [], stores: [] };
 /** O histórico de preço que a tela recebe (`usePriceObservations`): as compras de antes, zeradas a cada teste. */
 const mockPriceHistory: { points: Row[] } = { points: [] };
@@ -97,7 +127,7 @@ jest.mock('@/data/market', () => {
 });
 // As abreviações aprendidas têm os testes delas (learnedAbbreviations.test): aqui, as que o teste der, e se a tela
 // pediu os apelidos (só na revisão).
-const mockLearning: { learned: unknown; enabled: (boolean | undefined)[] } = { learned: undefined, enabled: [] };
+const mockLearning: { learned: unknown; enabled: (boolean | undefined)[]; loads: number } = { learned: undefined, enabled: [], loads: 0 };
 jest.mock('@/data/learnedAbbreviations', () => {
   const { NO_LEARNED } = jest.requireActual<typeof import('@/domain/learnedAbbreviations')>('@/domain/learnedAbbreviations');
   return {
@@ -105,7 +135,12 @@ jest.mock('@/data/learnedAbbreviations', () => {
       mockLearning.enabled.push(options?.enabled);
       return options?.enabled === false ? NO_LEARNED : (mockLearning.learned ?? NO_LEARNED);
     },
-    loadLearnedAbbreviations: async () => NO_LEARNED,
+    // O item que faltou numa nota confirmada confere a despensa com as abreviações carregadas na hora (o hook fica
+    // desligado fora da revisão): as que o teste der.
+    loadLearnedAbbreviations: async () => {
+      mockLearning.loads += 1;
+      return mockLearning.learned ?? NO_LEARNED;
+    },
   };
 });
 jest.mock('@/lib/supabase', () => {
@@ -115,7 +150,7 @@ jest.mock('@/lib/supabase', () => {
     await Promise.all(mockDb.holds.filter((held) => held.match(request)).map((held) => held.gate));
     const result = mockDb.fails.some((fails) => fails(request)) ? { data: null, error: { message: 'caiu a rede' } } : run();
     mockDb.answered += 1;
-    return result;
+    return mockDb.loses.some((loses) => loses(request)) ? { data: null, error: { message: 'caiu a rede' } } : result;
   };
   const table = (name: string) => {
     const filters: [string, unknown][] = [];
@@ -193,7 +228,62 @@ jest.mock('@/lib/supabase', () => {
     supabase: {
       from: (name: string) => table(name),
       rpc: async (fn: string, args: Row) => {
+        if (fn === 'receipt_corrections_available') {
+          mockDb.probes += 1;
+          const missing = mockDb.corrections === 'missing';
+          return answer({ table: fn, verb: 'rpc', values: args }, () =>
+            missing
+              ? { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.receipt_corrections_available' } }
+              : { data: mockDb.corrections === true, error: null },
+          );
+        }
         mockDb.rpcs.push({ fn, args });
+        if (fn === 'change_receipt_item_product') {
+          return answer({ table: fn, verb: 'rpc', values: args }, () => {
+            if (mockDb.changeError) return { data: null, error: mockDb.changeError };
+            // Como no servidor, só o essencial: a linha passa para o produto escolhido (o novo entra no catálogo).
+            const line = mockDb.items.find((row) => row.id === args.p_item_id)!;
+            let productId = args.p_product_id as string | null;
+            if (!productId) {
+              const created = args.p_new_product as { name: string; category: string };
+              productId = `criado-${mockMarket.products.length}`;
+              mockMarket.products = [...mockMarket.products, { id: productId, name: created.name, category: created.category, shelf_life_days: null }];
+            }
+            const changed = line.product_id !== productId;
+            line.product_id = productId;
+            return { data: { product_id: productId, changed, pantry: 0 }, error: null };
+          });
+        }
+        if (fn === 'add_confirmed_receipt_item') {
+          return answer({ table: fn, verb: 'rpc', values: args }, () => {
+            if (mockDb.addError) return { data: null, error: mockDb.addError };
+            const request = args.p_item as Row;
+            const existing = mockDb.items.find((row) => row.id === request.id);
+            if (existing) {
+              const same = (['raw_description', 'quantity', 'unit', 'unit_price', 'total_price'] as const).every((key) => existing[key] === request[key]);
+              return { data: { item_id: request.id, added: false, same, product_id: existing.product_id }, error: null };
+            }
+            const productId = (request.product_id as string | undefined) ?? `criado-${mockMarket.products.length}`;
+            if (!request.product_id) {
+              const created = request.new_product as { name: string; category: string };
+              mockMarket.products = [...mockMarket.products, { id: productId, name: created.name, category: created.category, shelf_life_days: null }];
+            }
+            mockDb.items.push({
+              id: request.id,
+              receipt_id: args.p_receipt_id,
+              position: mockDb.items.length,
+              raw_description: request.raw_description,
+              suggested_name: null,
+              suggested_category: null,
+              product_id: productId,
+              quantity: request.quantity,
+              unit: request.unit,
+              unit_price: request.unit_price,
+              total_price: request.total_price,
+            });
+            return { data: { item_id: request.id, added: true, same: true, product_id: productId }, error: null };
+          });
+        }
         // Como no servidor: confirmar uma nota que já não existe responde P0002 ("receipt not found").
         const gone = fn === 'confirm_receipt' && !mockDb.receipts.some((row) => row.id === args.p_receipt_id);
         const error = gone ? { code: 'P0002', message: 'receipt not found', details: null, hint: null } : fn === 'confirm_receipt' ? mockDb.confirmError : null;
@@ -361,7 +451,7 @@ function expectNoQuestion() {
 
 /** A frase da nota confirmada (a mesma para toda nota): o que se corrige fica na casa. */
 const CORRECTION_NOTE =
-  'O que você corrigir aqui vale só para a casa (gastos, Mercado do mês e histórico de preço) e não vai para os preços compartilhados entre casas.';
+  'O que você corrigir aqui vale só para a casa (gastos, Mercado do mês, histórico de preço e despensa) e não vai para os preços compartilhados entre casas.';
 
 /** Quem lê preço de nota confirmada: comparativo, histórico de um produto, gastos do mês e compras recentes. */
 const PRICE_QUERIES = [['latestPrices'], ['priceHistory', 'p1'], ['spending', '2026-06', '2026-06'], ['purchaseRecords']];
@@ -378,7 +468,12 @@ beforeEach(() => {
   mockDb.reads = {};
   mockDb.holds = [];
   mockDb.fails = [];
+  mockDb.loses = [];
   mockDb.confirmError = null;
+  mockDb.corrections = false;
+  mockDb.changeError = null;
+  mockDb.addError = null;
+  mockDb.probes = 0;
   mockMarket.products = [];
   mockPriceHistory.points = [];
   mockMarket.pantryNear = [];
@@ -386,6 +481,7 @@ beforeEach(() => {
   mockMarket.stores = [{ id: 's1', name: 'Assaí', cnpj: null, address: null }];
   mockLearning.learned = undefined;
   mockLearning.enabled = [];
+  mockLearning.loads = 0;
   mockFreezer.available = false;
   answers = {};
   jest.mocked(confirmAction).mockReset();
@@ -1514,7 +1610,7 @@ describe('o total da nota dá para corrigir na revisão', () => {
   });
 });
 
-describe('nota já confirmada: dos itens, só o valor que faltou pode ser preenchido', () => {
+describe('nota já confirmada: dos itens, o valor que faltou, o produto e o item que faltou', () => {
   const confirmedNote = (patch: Row = {}) => receipt({ status: 'confirmed', source: 'qrcode', ...patch });
 
   beforeEach(() => {
@@ -1522,22 +1618,25 @@ describe('nota já confirmada: dos itens, só o valor que faltou pode ser preenc
     seed(confirmedNote(), item('a', 'DETERGENTE YPE', 50), item('x', 'QJO MUSS KG', 0, { product_id: 'p1', quantity: 0.345, unit: 'kg', unit_price: 37.9 }));
   });
 
-  it('só o item sem valor tem "Preencher"; os outros itens continuam só para ler', async () => {
+  it('só o item sem valor tem "Preencher"; os outros itens só trocam de produto', async () => {
+    mockDb.corrections = true;
     await open();
-    expect(said(card('DETERGENTE YPE'))).toEqual(['DETERGENTE YPE', '1 un × R$ 50,00', 'R$ 50,00']);
+    expect(said(card('DETERGENTE YPE'))).toEqual(['DETERGENTE YPE', '1 un × R$ 50,00', 'R$ 50,00', 'Escolher produto']);
     expect(said(card('Queijo muçarela'))).toEqual([
       'Queijo muçarela',
       '0,345 kg × R$ 37,90',
       'sem valor',
+      'Trocar produto',
       'Faltam R$ 12,90 para o total da nota. Pode ser o valor deste item.',
       'Usar R$ 12,90',
       'Preencher',
       'Se a nota teve desconto, o valor impresso do item é maior.',
     ]);
-    expect(chipLabels()).toEqual(['Usar R$ 12,90', 'Preencher']);
-    // Sem lápis nos itens, sem "Item" novo e sem botão de confirmar; o total (como a data e o mercado) dá para corrigir.
+    expect(chipLabels()).toEqual(['Escolher produto', 'Trocar produto', 'Usar R$ 12,90', 'Preencher']);
+    // Sem lápis nos itens e sem botão de confirmar; o total (como a data e o mercado) dá para corrigir, e o "Item" é o do
+    // item que a leitura perdeu.
     expect(renderer!.root.findAllByType(IconButton)).toHaveLength(0);
-    expect(button('Item')).toBeUndefined();
+    expect(button('Item')!.props.accessibilityLabel).toBe('Incluir um item que faltou na nota');
     expect(totalRow()).toBeDefined();
     expect(button('Confirmar nota')).toBeUndefined();
     expect(page()).toContain('Total da nota | R$ 62,90 | Faltam R$ 12,90: a soma dos itens é menor que o total da nota. | 1 item sem valor.');
@@ -1669,6 +1768,609 @@ describe('nota já confirmada: dos itens, só o valor que faltou pode ser preenc
     expect(said(card('SACOLA'))).toEqual(['SACOLA', '1 un', 'sem valor', 'Preencher']);
     expect(said(card('QJO MUSS KG'))).toEqual(['QJO MUSS KG', '1 un', 'sem valor', 'Preencher']);
     expect(chipLabels()).toEqual(['Preencher', 'Preencher']);
+  });
+});
+
+/** O seletor de produto aberto (o de mercado e o de categoria ficam de fora). */
+const productPicker = () =>
+  renderer!.root.findAllByType(PickerModal).find((entry) => entry.props.visible && entry.props.title !== 'Mercado' && entry.props.title !== 'Categoria');
+/** Os botões que o seletor oferece para o texto digitado (extraActions), sem desenhar. */
+const elementButtons = (node: unknown): { title: string; onPress: () => void }[] => {
+  if (!node || typeof node !== 'object') return [];
+  if (Array.isArray(node)) return node.flatMap(elementButtons);
+  const element = node as { type: unknown; props?: { children?: unknown; title?: string; onPress?: () => void } };
+  if (element.type === Button) return [{ title: element.props!.title!, onPress: element.props!.onPress! }];
+  return elementButtons(element.props?.children);
+};
+const pickerActions = (query: string) => elementButtons(productPicker()!.props.extraActions(query));
+/** O botão de criar o produto novo, entre os do seletor. */
+const createAction = (query: string) => pickerActions(query).find((entry) => /^(Novo produto|Criar)/.test(entry.title))!;
+const correctionCalls = (fn: string) => mockDb.rpcs.filter((call) => call.fn === fn);
+const lastNotice = () => jest.mocked(notify).mock.calls.at(-1);
+
+describe('nota já confirmada: "Trocar produto" num item', () => {
+  const confirmedNote = (patch: Row = {}) => receipt({ status: 'confirmed', source: 'qrcode', total: 37.9, ...patch });
+  const FEIJAO = { id: 'p1', name: 'Feijão', category: 'graos', shelf_life_days: null };
+  const ARROZ = { id: 'p2', name: 'Arroz', category: 'graos', shelf_life_days: null };
+  const change = (patch: Row) => ({
+    p_receipt_id: 'r1',
+    p_item_id: 'a',
+    p_expected_product_id: 'p1',
+    p_product_id: null,
+    p_new_product: null,
+    p_shelf_life_days: CATEGORY_SHELF_LIFE_DAYS,
+    p_freeze_kind: null,
+    ...patch,
+  });
+
+  beforeEach(() => {
+    mockDb.corrections = true;
+    mockMarket.products = [FEIJAO, ARROZ];
+    seed(
+      confirmedNote(),
+      item('a', 'ARROZ TJ 5KG', 25, { product_id: 'p1', suggested_category: 'graos' }),
+      item('d', 'DET YPE 500ML', 12.9),
+    );
+  });
+  afterEach(() => onlineManager.setOnline(true));
+
+  it('o chip de cada item: "Trocar produto" com produto, "Escolher produto" sem, com o nome no leitor de tela', async () => {
+    await open();
+    expect(chip('Trocar produto', card('Feijão'))!.props).toMatchObject({
+      icon: 'swap-horizontal',
+      accessibilityLabel: 'Trocar o produto de Feijão',
+      disabled: false,
+    });
+    expect(chip('Escolher produto', card('DET YPE 500ML'))!.props.accessibilityLabel).toBe('Escolher o produto de DET YPE 500ML');
+    // O toque na linha continua abrindo o produto.
+    expect(mockDb.probes).toBe(1);
+  });
+
+  it('sem as funções no banco (antes da migração): nem o chip nem "Item", a tela é a de antes', async () => {
+    mockDb.corrections = 'missing';
+    await open();
+    expect(chipLabels()).toEqual([]);
+    expect(button('Item')).toBeUndefined();
+    expect(page()).toContain(CORRECTION_NOTE);
+  });
+
+  it('na revisão, nada muda: o "Item" e o seletor de sempre, e ninguém pergunta ao banco pelas correções', async () => {
+    seed(receipt(), item('a', 'ARROZ TJ 5KG', 25, { product_id: 'p1', suggested_category: 'graos' }));
+    await open();
+    expect(mockDb.probes).toBe(0);
+    expect(chipLabels()).not.toContain('Trocar produto');
+    expect(button('Item')!.props.accessibilityLabel).toBeUndefined();
+    await press(chip('Feijão'));
+    expect(productPicker()!.props).toMatchObject({ title: 'Qual produto é este?', message: undefined, initialQuery: 'Feijão' });
+    expect(pickerActions('Arroz cateto do sítio').map((entry) => entry.title)).toEqual([
+      'Novo produto "Arroz cateto do sítio"',
+      'Não acompanhar preço deste item',
+    ]);
+  });
+
+  it('o seletor: o título, a frase do que muda, o nome de agora, e sem "Não acompanhar preço"', async () => {
+    await open();
+    await press(chip('Trocar produto'));
+    expect(productPicker()!.props).toMatchObject({
+      title: 'Qual produto é este?',
+      message:
+        'A compra passa para o produto escolhido no histórico de preço e nos gastos, e na despensa, se foi para lá. A casa aprende junto: as próximas notas com esta descrição costumam vir com ele.',
+      initialQuery: 'Feijão',
+    });
+    expect(pickerActions('Arroz cateto do sítio').map((entry) => entry.title)).toEqual(['Novo produto "Arroz cateto do sítio" (Grãos, massas e cereais)']);
+    // Sem produto, começa pelo nome que a leitura sugeriu.
+    await run(() => productPicker()!.props.onClose());
+    await press(chip('Escolher produto'));
+    expect(productPicker()!.props.initialQuery).toBe('DET YPE 500ML');
+  });
+
+  it('o mesmo produto não grava nada', async () => {
+    await open();
+    await press(chip('Trocar produto'));
+    await run(() => productPicker()!.props.onSelect('p1'));
+    expect(productPicker()).toBeUndefined();
+    expect(mockDb.rpcs).toEqual([]);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('outro produto: vai o produto que a tela mostrava e as validades do app; o chip fica desligado até a nota voltar', async () => {
+    await open();
+    await press(chip('Trocar produto'));
+    const release = hold(({ table }) => table === 'change_receipt_item_product');
+    await run(() => productPicker()!.props.onSelect('p2'));
+    expect(correctionCalls('change_receipt_item_product').map((call) => call.args)).toEqual([change({ p_product_id: 'p2' })]);
+    expect(chip('Trocar produto', card('Feijão'))!.props.disabled).toBe(true);
+    // O valor do item não deixa de perguntar: a troca não é de valor.
+    await release();
+    expect(said(card('Arroz'))).toEqual(['Arroz', '1 un × R$ 25,00', 'R$ 25,00', 'Trocar produto']);
+    expect(chip('Trocar produto', card('Arroz'))!.props.disabled).toBe(false);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('o produto novo leva a categoria que o botão mostra (a do nome), nunca a do produto de antes: digitado, nome da lista e "Usar"', async () => {
+    mockMarket.listItems = [{ id: 'l1', list_id: 'lista1', list_name: 'Mercado', name: 'Leite integral', category: 'outros', product_id: null, checked_at: null }];
+    await open();
+    // 1. O nome digitado.
+    await press(chip('Trocar produto'));
+    const create = createAction('Leite');
+    expect(create.title).toBe('Novo produto "Leite" (Laticínios)');
+    await run(() => create.onPress());
+    expect(correctionCalls('change_receipt_item_product').at(-1)!.args).toEqual(
+      change({ p_new_product: { name: 'Leite', category: 'laticinios' }, p_freeze_kind: null }),
+    );
+    // 2. O nome da lista de compras, sem produto: o subtítulo diz a categoria que vai.
+    mockDb.items[0].product_id = 'p1';
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    await press(chip('Trocar produto'));
+    const suggestion = productPicker()!
+      .props.suggestions('Leite')
+      .find((entry: { title: string; subtitle: string }) => entry.title === 'Leite integral' && entry.subtitle.startsWith('Está na lista'));
+    expect(suggestion.subtitle).toBe('Está na lista de compras · Laticínios');
+    await run(() => productPicker()!.props.onSelectSuggestion(suggestion.id));
+    expect(correctionCalls('change_receipt_item_product').at(-1)!.args).toEqual(
+      change({ p_new_product: { name: 'Leite integral', category: 'laticinios' } }),
+    );
+    // 3. "Usar" o nome que já existe com outra grafia (um da lista, em "Outros": vale a categoria do nome).
+    mockMarket.listItems = [{ id: 'l2', list_id: 'lista1', list_name: 'Mercado', name: 'Banana nanica', category: 'outros', product_id: null, checked_at: null }];
+    mockDb.items[0].product_id = 'p1';
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    await press(chip('Trocar produto'));
+    const [use, createAnyway] = pickerActions('Bananas nanicas');
+    expect(use.title).toBe('Usar "Banana nanica" (já existe)');
+    expect(createAnyway.title).toBe('Criar "Bananas nanicas" mesmo assim (Frutas e verduras)');
+    await run(() => use.onPress());
+    expect(correctionCalls('change_receipt_item_product').at(-1)!.args).toEqual(
+      change({ p_new_product: { name: 'Banana nanica', category: 'hortifruti' } }),
+    );
+  });
+
+  it('a carne que vira outra carne: vai o tipo do congelador do produto escolhido', async () => {
+    mockMarket.products = [
+      { id: 'pf', name: 'Frango', category: 'carnes', shelf_life_days: null },
+      { id: 'pm', name: 'Carne moída', category: 'carnes', shelf_life_days: null },
+    ];
+    seed(confirmedNote(), item('a', 'COXA KG', 20, { product_id: 'pf', unit: 'kg', suggested_category: 'carnes' }));
+    await open();
+    await press(chip('Trocar produto'));
+    await run(() => productPicker()!.props.onSelect('pm'));
+    expect(correctionCalls('change_receipt_item_product')[0].args).toMatchObject({ p_expected_product_id: 'pf', p_product_id: 'pm', p_freeze_kind: 'carne_moida' });
+  });
+
+  it('NK018 (o produto da linha já tinha mudado): o aviso não culpa ninguém, e a nota é buscada de novo', async () => {
+    await open();
+    mockDb.changeError = { code: 'NK018', message: 'receipt item changed', details: null, hint: null };
+    const readsBefore = mockDb.reads.receipts;
+    await press(chip('Trocar produto'));
+    await run(() => productPicker()!.props.onSelect('p2'));
+    expect(lastNotice()).toEqual([
+      'Produto não trocado',
+      'O produto deste item já tinha mudado, e nada foi trocado. Confira o produto na nota e troque de novo, se precisar.',
+    ]);
+    expect(mockDb.reads.receipts).toBeGreaterThan(readsBefore);
+    expect(notify).toHaveBeenCalledTimes(1);
+    // A recusa teve resposta: o toque seguinte abre o seletor, sem buscar a nota antes.
+    await press(chip('Trocar produto'));
+    expect(productPicker()).toBeDefined();
+  });
+
+  it('o produto escolhido sumiu no banco (juntado ou excluído): o aviso de sempre', async () => {
+    await open();
+    mockDb.changeError = { code: 'P0002', message: 'product not found', details: null, hint: null };
+    await press(chip('Trocar produto'));
+    await run(() => productPicker()!.props.onSelect('p2'));
+    expect(lastNotice()).toEqual(['Produto não trocado', PRODUCT_MERGED_AWAY]);
+  });
+
+  it('o produto saiu do catálogo entre o desenho e o toque: o aviso, e nada vai ao banco', async () => {
+    await open();
+    await press(chip('Trocar produto'));
+    await run(() => productPicker()!.props.onSelect('sumiu'));
+    expect(lastNotice()).toEqual(['Produto não trocado', PRODUCT_MERGED_AWAY]);
+    expect(mockDb.rpcs).toEqual([]);
+  });
+
+  it('o banco ainda sem a função (o cache de esquema de antes): avisa que falta atualizar, e nada muda', async () => {
+    await open();
+    mockDb.changeError = { code: 'PGRST202', message: 'Could not find the function public.change_receipt_item_product', details: null, hint: null };
+    await press(chip('Trocar produto'));
+    await run(() => productPicker()!.props.onSelect('p2'));
+    expect(lastNotice()).toEqual(['Produto não trocado', 'Ainda não dá para corrigir os itens de uma nota confirmada: falta atualizar o banco do app.']);
+    expect(mockDb.items[0].product_id).toBe('p1');
+  });
+
+  it('sem internet: o toque diz para trocar quando a conexão voltar, e o seletor não abre', async () => {
+    await open();
+    onlineManager.setOnline(false);
+    await press(chip('Trocar produto'));
+    expect(lastNotice()).toEqual(['Sem internet agora', 'Troque o produto quando a conexão voltar.']);
+    expect(productPicker()).toBeUndefined();
+  });
+
+  it('com outro item gravando, o toque avisa e não abre o seletor', async () => {
+    await open();
+    await press(chip('Trocar produto'));
+    const release = hold(({ table }) => table === 'change_receipt_item_product');
+    await run(() => productPicker()!.props.onSelect('p2'));
+    await press(chip('Escolher produto'));
+    expect(lastNotice()).toEqual(['Aguarde', 'Outro item ainda está sendo salvo. Toque de novo quando a nota voltar.']);
+    expect(productPicker()).toBeUndefined();
+    await release();
+  });
+
+  it('a nota relida falha: "Produto trocado", e a pergunta do valor do item continua', async () => {
+    seed(confirmedNote(), item('a', 'ARROZ TJ 5KG', 0, { product_id: 'p1', suggested_category: 'graos', unit_price: 0 }));
+    await open();
+    expect(chip('Preencher')).toBeDefined();
+    await press(chip('Trocar produto'));
+    mockDb.fails = [receiptRead];
+    await run(() => productPicker()!.props.onSelect('p2'));
+    expect(lastNotice()).toEqual([
+      'Produto trocado',
+      'Não deu para atualizar a nota na tela: o item pode aparecer com o produto de antes até ela ser buscada de novo.',
+    ]);
+    expect(chip('Preencher')).toBeDefined();
+  });
+
+  it('a nota relida demora: sem aviso; o toque seguinte no mesmo item busca a nota antes e não manda nada', async () => {
+    await open();
+    await press(chip('Trocar produto'));
+    const releaseRead = hold(receiptRead);
+    await run(() => productPicker()!.props.onSelect('p2'));
+    await settle(4200);
+    expect(notify).not.toHaveBeenCalled();
+    // A tela ainda mostra o feijão: o toque não manda o produto de antes da troca que já foi.
+    await run(() => chip('Trocar produto', card('Feijão'))!.props.onPress());
+    expect(productPicker()).toBeUndefined();
+    await releaseRead();
+    expect(lastNotice()).toEqual(['Nota atualizada', 'Confira o item e toque de novo, se ainda precisar trocar o produto.']);
+    expect(correctionCalls('change_receipt_item_product')).toHaveLength(1);
+    expect(said(card('Arroz'))[0]).toBe('Arroz');
+  }, 15_000);
+
+  it('a busca de fundo que falhou: o toque busca a nota antes', async () => {
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    await press(chip('Trocar produto'));
+    expect(lastNotice()).toEqual([
+      'Não deu para buscar a nota',
+      'Os itens na tela podem estar diferentes do que está salvo. Toque em "Tentar de novo" e corrija o item depois.',
+    ]);
+    expect(productPicker()).toBeUndefined();
+    mockDb.fails = [];
+    await press(chip('Trocar produto'));
+    expect(lastNotice()![0]).toBe('Nota atualizada');
+    await press(chip('Trocar produto'));
+    expect(productPicker()).toBeDefined();
+  });
+});
+
+describe('nota já confirmada: "Item", o item que a leitura perdeu', () => {
+  const confirmedNote = (patch: Row = {}) => receipt({ status: 'confirmed', source: 'qrcode', total: 66.7, ...patch });
+  const FEIJAO = { id: 'p1', name: 'Feijão carioca', category: 'graos', shelf_life_days: null };
+  const DETERGENTE = { id: 'p3', name: 'Detergente', category: 'limpeza', shelf_life_days: null };
+  const editorOpen = () => page().includes('Item que faltou');
+  const SUMMARY = 'Incluir este item?';
+  /** "Item", o produto e os campos: o formulário pronto para "Incluir item". */
+  async function fill(productId = 'p1', total = '15,80', quantity = '2') {
+    await press(button('Item'));
+    await run(() => productPicker()!.props.onSelect(productId));
+    act(() => field('Quantidade')!.props.onChangeText(quantity));
+    act(() => field('Total do item')!.props.onChangeText(total));
+  }
+
+  beforeEach(() => {
+    // No iOS o formulário espera o seletor sumir (ver o teste dele); nos outros, abre na hora.
+    jest.replaceProperty(Platform, 'OS', 'android');
+    mockDb.corrections = true;
+    mockMarket.products = [FEIJAO, DETERGENTE];
+    seed(confirmedNote(), item('a', 'DETERGENTE YPE', 50));
+  });
+  afterEach(() => onlineManager.setOnline(true));
+
+  it('o seletor do produto vem primeiro, com a frase da leitura; na nota digitada à mão, a frase dela', async () => {
+    await open();
+    await press(button('Item'));
+    expect(productPicker()!.props).toMatchObject({
+      title: 'Qual produto faltou?',
+      message: 'Escolha o produto do item que a leitura não pegou. Depois vêm a quantidade e o valor.',
+      initialQuery: '',
+    });
+    expect(createAction('Sabão de coco').title).toBe('Novo produto "Sabão de coco" (Limpeza)');
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    seed(confirmedNote({ source: 'manual' }), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    await press(button('Item'));
+    expect(productPicker()!.props.message).toBe('Escolha o produto do item que ficou fora da nota. Depois vêm a quantidade e o valor.');
+  });
+
+  it('o formulário: a linha do produto, o que acontece, a descrição com o nome dele, e a despensa no padrão da categoria', async () => {
+    await open();
+    await press(button('Item'));
+    await run(() => productPicker()!.props.onSelect('p1'));
+    expect(page()).toContain(
+      'Item que faltou | Produto: Feijão carioca (Grãos, massas e cereais) | O item entra nesta nota, e com ela nos gastos e no histórico de preço do produto. Ele não vai para os preços compartilhados entre casas.',
+    );
+    expect(field('Descrição')!.props).toMatchObject({ value: 'Feijão carioca', autoFocus: false });
+    expect(field('Quantidade')!.props.value).toBe('1');
+    expect(field('Preço unitário')!.props.value).toBe('');
+    expect(chip('Vai para a despensa')!.props.selected).toBe(true);
+    expect(button('Incluir item')).toBeDefined();
+    expect(button('Remover item')).toBeUndefined();
+    // Sem campo de validade: a data se corrige depois, na despensa.
+    expect(renderer!.root.findAllByProps({ placeholder: 'Validade' })).toHaveLength(0);
+    await run(() => renderer!.root.findAllByType(IconButton).find((entry) => entry.props.label === 'Fechar')!.props.onPress());
+    await press(button('Item'));
+    await run(() => productPicker()!.props.onSelect('p3'));
+    expect(chip('Não vai para a despensa')!.props.selected).toBe(false);
+    expect(page()).toContain('Produto: Detergente (Limpeza)');
+  });
+
+  it('o pedido: o id feito no aparelho, os campos, o produto e a despensa com a validade estimada; depois, a linha na nota', async () => {
+    answers = { [SUMMARY]: true };
+    await open();
+    await fill();
+    await press(button('Incluir item'));
+    expect(asked(SUMMARY)).toEqual([
+      [
+        SUMMARY,
+        'Feijão carioca: 2 un, R$ 15,80, e vai para a despensa. Depois de incluído, a quantidade e o valor não mudam mais, e o item só sai da nota excluindo a nota inteira.',
+        'Incluir',
+        'Voltar',
+      ],
+    ]);
+    const [call] = correctionCalls('add_confirmed_receipt_item');
+    expect(call.args).toEqual({
+      p_receipt_id: 'r1',
+      p_item: {
+        id: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+        raw_description: 'Feijão carioca',
+        quantity: 2,
+        unit: 'un',
+        unit_price: 7.9,
+        total_price: 15.8,
+        product_id: 'p1',
+        pantry: {
+          name: 'Feijão carioca',
+          category: 'graos',
+          purchased_on: `${YEAR}-06-10`,
+          expires_on: `${YEAR}-12-07`,
+          expiry_source: 'categoria',
+        },
+      },
+    });
+    expect(editorOpen()).toBe(false);
+    expect(said(card('Feijão carioca'))).toEqual(['Feijão carioca', '2 un × R$ 7,90', 'R$ 15,80', 'Trocar produto']);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('o produto novo pelo nome digitado leva a categoria do nome, e sem a despensa a chave não vai', async () => {
+    answers = { [SUMMARY]: true };
+    await open();
+    await press(button('Item'));
+    const create = createAction('Esponja');
+    expect(create.title).toBe('Novo produto "Esponja" (Limpeza)');
+    await run(() => create.onPress());
+    act(() => field('Total do item')!.props.onChangeText('4,50'));
+    await press(button('Incluir item'));
+    expect(correctionCalls('add_confirmed_receipt_item')[0].args.p_item).toEqual({
+      id: expect.any(String),
+      raw_description: 'Esponja',
+      quantity: 1,
+      unit: 'un',
+      unit_price: 4.5,
+      total_price: 4.5,
+      new_product: { name: 'Esponja', category: 'limpeza' },
+    });
+    expect(asked(SUMMARY)[0][1]).toBe(
+      'Esponja: 1 un, R$ 4,50. Depois de incluído, a quantidade e o valor não mudam mais, e o item só sai da nota excluindo a nota inteira.',
+    );
+  });
+
+  it('zero não entra: o item que faltou é pelo que foi pago, e o formulário fica', async () => {
+    await open();
+    await fill('p1', '0');
+    await press(button('Incluir item'));
+    expect(lastNotice()).toEqual([
+      'Informe o valor',
+      'O item que faltou entra com o que foi pago por ele. Para guardar na despensa algo que veio de graça, use "Adicionar à despensa", em Compras > Despensa.',
+    ]);
+    expect(mockDb.rpcs).toEqual([]);
+    expect(editorOpen()).toBe(true);
+  });
+
+  it('"Voltar" na pergunta deixa o formulário como estava, sem gravar', async () => {
+    await open();
+    await fill();
+    await press(button('Incluir item'));
+    expect(asked(SUMMARY)).toHaveLength(1);
+    expect(mockDb.rpcs).toEqual([]);
+    expect(editorOpen()).toBe(true);
+    expect(field('Total do item')!.props.value).toBe('15,80');
+  });
+
+  it('"Já está na despensa" com "Não colocar": vai sem a despensa, pela abreviação aprendida carregada na hora', async () => {
+    mockMarket.products = [{ id: 'p9', name: 'Az gallo 500ml', category: 'oleos', shelf_life_days: null }];
+    mockMarket.pantryNear = [{ product_id: null, name: 'Azeite', purchased_on: `${YEAR}-06-09` }];
+    const { learnAbbreviations } = jest.requireActual<typeof import('@/domain/learnedAbbreviations')>('@/domain/learnedAbbreviations');
+    mockLearning.learned = learnAbbreviations([{ description: 'AZ POR EU PARUS VD', productName: 'Azeite' }]);
+    answers = { [SUMMARY]: true };
+    await open();
+    await fill('p9', '39,90', '1');
+    await press(button('Incluir item'));
+    expect(mockLearning.loads).toBe(1);
+    expect(asked('Já está na despensa')).toHaveLength(1);
+    // Sem a despensa (o JSON do pedido não leva a chave sem valor).
+    expect((correctionCalls('add_confirmed_receipt_item')[0].args.p_item as Row).pantry).toBeUndefined();
+    expect(asked(SUMMARY)[0][1]).toMatch(/^Az gallo 500ml: 1 un, R\$ 39,90\. Depois/);
+  });
+
+  it('a conferência da despensa que falha: "Erro", e o formulário fica', async () => {
+    jest.mocked(fetchPantryNear).mockRejectedValueOnce({ message: 'caiu a rede' });
+    await open();
+    await fill();
+    await press(button('Incluir item'));
+    expect(lastNotice()).toEqual(['Erro', 'caiu a rede']);
+    expect(mockDb.rpcs).toEqual([]);
+    expect(editorOpen()).toBe(true);
+  });
+
+  it('dois toques com a pergunta aberta: uma pergunta, um pedido', async () => {
+    let answer!: (yes: boolean) => void;
+    jest.mocked(askYesNo).mockImplementation((title) => (title === SUMMARY ? new Promise<boolean>((resolve) => (answer = resolve)) : Promise.resolve(false)));
+    await open();
+    await fill();
+    await press(button('Incluir item'));
+    expect(button('Incluir item')!.props.loading).toBe(true);
+    await press(button('Incluir item'));
+    expect(asked(SUMMARY)).toHaveLength(1);
+    await run(() => answer(true));
+    expect(correctionCalls('add_confirmed_receipt_item')).toHaveLength(1);
+  });
+
+  it('o que falta para o total da nota, embaixo do total; com um item sem valor, o aviso de sempre', async () => {
+    await open();
+    await press(button('Item'));
+    await run(() => productPicker()!.props.onSelect('p1'));
+    expect(field('Total do item')!.props.hint).toBe('Faltam R$ 16,70 para o total da nota.');
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    seed(confirmedNote(), item('a', 'DETERGENTE YPE', 50), item('z', 'SACOLA', 0));
+    await open();
+    await press(button('Item'));
+    await run(() => productPicker()!.props.onSelect('p1'));
+    expect(field('Total do item')!.props.hint).toBe('Com desconto no item, use o valor pago.');
+  });
+
+  it('a falha de rede deixa o formulário, e "Incluir item" manda de novo com o mesmo id', async () => {
+    answers = { [SUMMARY]: true };
+    await open();
+    await fill();
+    mockDb.fails = [({ table }) => table === 'add_confirmed_receipt_item'];
+    await press(button('Incluir item'));
+    expect(lastNotice()).toEqual(['Erro', 'caiu a rede']);
+    expect(editorOpen()).toBe(true);
+    mockDb.fails = [];
+    await press(button('Incluir item'));
+    const calls = correctionCalls('add_confirmed_receipt_item');
+    expect(calls).toHaveLength(2);
+    expect((calls[1].args.p_item as Row).id).toBe((calls[0].args.p_item as Row).id);
+    expect(editorOpen()).toBe(false);
+    expect(mockDb.items.filter((row) => row.raw_description === 'Feijão carioca')).toHaveLength(1);
+  });
+
+  it('a resposta que se perdeu e o envio mudado: "Item já incluído", nada gravado de novo, e o formulário fecha', async () => {
+    answers = { [SUMMARY]: true };
+    await open();
+    await fill();
+    mockDb.loses = [({ table }) => table === 'add_confirmed_receipt_item'];
+    await press(button('Incluir item'));
+    expect(lastNotice()).toEqual(['Erro', 'caiu a rede']);
+    mockDb.loses = [];
+    act(() => field('Total do item')!.props.onChangeText('16,80'));
+    await press(button('Incluir item'));
+    expect(lastNotice()).toEqual([
+      'Item já incluído',
+      'O item já tinha entrado na nota com o que foi salvo da primeira vez, e esta mudança não foi gravada. Confira o item na nota.',
+    ]);
+    expect(editorOpen()).toBe(false);
+    expect(mockDb.items.find((row) => row.raw_description === 'Feijão carioca')!.total_price).toBe(15.8);
+  });
+
+  it('a resposta que se perdeu e o formulário fechado: "Item" busca a nota antes de abrir o seletor', async () => {
+    answers = { [SUMMARY]: true };
+    await open();
+    await fill();
+    mockDb.loses = [({ table }) => table === 'add_confirmed_receipt_item'];
+    await press(button('Incluir item'));
+    mockDb.loses = [];
+    await run(() => renderer!.root.findAllByType(IconButton).find((entry) => entry.props.label === 'Fechar')!.props.onPress());
+    await press(button('Item'));
+    expect(productPicker()).toBeUndefined();
+    expect(lastNotice()).toEqual(['Nota atualizada', 'Confira os itens e toque em "Item" de novo, se ainda faltar um.']);
+    expect(said(card('Feijão carioca'))[0]).toBe('Feijão carioca');
+  });
+
+  it('a busca de fundo que falhou: "Item" busca a nota antes', async () => {
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    await press(button('Item'));
+    expect(lastNotice()![0]).toBe('Não deu para buscar a nota');
+    expect(productPicker()).toBeUndefined();
+  });
+
+  it('sem internet: o toque diz para incluir quando a conexão voltar', async () => {
+    await open();
+    onlineManager.setOnline(false);
+    await press(button('Item'));
+    expect(lastNotice()).toEqual(['Sem internet agora', 'Inclua o item quando a conexão voltar.']);
+    expect(productPicker()).toBeUndefined();
+  });
+
+  it('a recusa (a nota voltou para a revisão em outro aparelho) deixa o formulário com o que foi digitado', async () => {
+    answers = { [SUMMARY]: true };
+    mockDb.addError = { code: 'NK019', message: 'receipt not confirmed', details: null, hint: null };
+    await open();
+    await fill();
+    await press(button('Incluir item'));
+    expect(lastNotice()).toEqual(['Item não incluído', 'Esta nota ainda está em revisão. Confira os itens e confirme a nota.']);
+    expect(editorOpen()).toBe(true);
+    expect(field('Total do item')!.props.value).toBe('15,80');
+  });
+
+  it('no iOS, o formulário abre só depois que o seletor sumiu; fechar o seletor sem escolher não abre nada', async () => {
+    jest.replaceProperty(Platform, 'OS', 'ios');
+    await open();
+    await press(button('Item'));
+    await run(() => productPicker()!.props.onClose());
+    await run(() => renderer!.root.findAllByType(PickerModal)[1].props.onDismiss());
+    expect(editorOpen()).toBe(false);
+    await press(button('Item'));
+    await run(() => productPicker()!.props.onSelect('p1'));
+    expect(productPicker()).toBeUndefined();
+    expect(editorOpen()).toBe(false);
+    await run(() => renderer!.root.findAllByType(PickerModal)[1].props.onDismiss());
+    expect(editorOpen()).toBe(true);
+  });
+
+  it('a carne que faltou pergunta "Congelou?" com o congelador no banco, e "Congelei" leva o congelador no pedido', async () => {
+    mockFreezer.available = true;
+    mockMarket.products = [{ id: 'pc', name: 'Picanha', category: 'carnes', shelf_life_days: null }];
+    answers = { [SUMMARY]: true };
+    await open();
+    await press(button('Item'));
+    await run(() => productPicker()!.props.onSelect('pc'));
+    act(() => field('Total do item')!.props.onChangeText('60'));
+    await press(chip('Congelei'));
+    await press(button('Incluir item'));
+    expect(correctionCalls('add_confirmed_receipt_item')[0].args.p_item).toMatchObject({
+      product_id: 'pc',
+      pantry: {
+        name: 'Picanha',
+        category: 'carnes',
+        purchased_on: `${YEAR}-06-10`,
+        expiry_source: 'congelado',
+        frozen_on: `${YEAR}-06-10`,
+        freeze_kind: 'carne',
+        fresh_expires_on: `${YEAR}-06-13`,
+        fresh_expiry_source: 'categoria',
+      },
+    });
+    expect(asked(SUMMARY)[0][1]).toContain('Picanha: 1 un, R$ 60,00, e vai para o congelador.');
   });
 });
 
@@ -2776,6 +3478,17 @@ describe('no computador (ui/desktop): a revisão em duas colunas', () => {
     expect(button('Confirmar nota')).toBeUndefined();
     expect(footerButtons()).toEqual(['Excluir nota']);
     expect(lines()).toEqual(phone);
+  });
+
+  it('a nota confirmada, no computador: "Trocar produto" fica no cartão do item, na coluna principal, e "Item" no título dos itens', async () => {
+    mockDb.corrections = true;
+    mockMarket.products = [{ id: 'p1', name: 'Detergente', category: 'limpeza', shelf_life_days: null }];
+    seed(receipt({ status: 'confirmed', source: 'qrcode' }), item('a', 'DETERGENTE YPE', 50, { product_id: 'p1' }));
+    await browser(1440);
+    await open();
+    expect(said(main()!)).toEqual(expect.arrayContaining(['Itens (1)', 'Item', 'Detergente', 'Trocar produto']));
+    expect(said(side()!)).not.toContain('Trocar produto');
+    expect(chip('Trocar produto', card('Detergente'))).toBeDefined();
   });
 
   it('a janela que cruza a largura do computador não perde o que foi digitado num item (o peso do balcão)', async () => {
