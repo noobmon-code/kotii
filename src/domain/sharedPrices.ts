@@ -11,11 +11,14 @@
 // QR code (pack_*, só quando a leitura não tinha dúvida). Na tela do produto e
 // em Preços, o preço de fora se compara com o da casa na unidade em que a casa
 // vê os seus (compareSharedPrices): por kg, litro ou item do pacote quando a
-// casa compara por tamanho; por unidade, só com o preço da casa do mesmo
-// tamanho, ou com qualquer um quando um dos lados não diz o tamanho; e nunca a
-// mais de 2,5 vezes de distância (SHARED_PRICE_BAND), que quase sempre é outra
-// embalagem (o fardo ou a lata avulsa sob a mesma descrição). A lista e o
-// "Onde comprar" usam a mesma regra para o preço por unidade
+// casa compara por tamanho; por unidade (unitPricePool), o de fora que diz o
+// tamanho só com os preços da casa do mesmo tamanho e, só quando a casa não tem
+// esse tamanho, com os dela que não dizem tamanho (um preço da casa sem tamanho
+// fica fora da comparação quando ela tem um do mesmo tamanho), o de fora sem
+// tamanho com todos os da casa, e dois tamanhos conhecidos e diferentes nunca;
+// e nunca a mais de 2,5 vezes de distância (SHARED_PRICE_BAND), que quase
+// sempre é outra embalagem (o fardo ou a lata avulsa sob a mesma descrição). A
+// lista e o "Onde comprar" usam a mesma regra para o preço por unidade
 // (fitsHouseholdPack).
 
 import { formatShortDate } from './dates';
