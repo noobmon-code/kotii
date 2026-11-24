@@ -3,19 +3,19 @@ import { describe, expect, it } from '@jest/globals';
 import { CONFIRMED_EDIT_NOTE, purchaseDateChange, receiptEditing, receiptTotalChange } from '../receiptEdit';
 
 describe('o que a nota deixa corrigir', () => {
-  it('na revisão, todos os itens, e dá para incluir um', () => {
-    expect(receiptEditing('draft')).toEqual({ items: 'all', addItem: true });
+  it('na revisão, todos os itens, e dá para incluir um (o produto se escolhe no próprio item)', () => {
+    expect(receiptEditing('draft')).toEqual({ items: 'all', addItem: true, changeProduct: false });
   });
 
-  it('confirmada: dos itens, só o valor do que ficou sem, e nada de item novo', () => {
-    expect(receiptEditing('confirmed')).toEqual({ items: 'missingValue', addItem: false });
+  it('confirmada: dos itens, o valor do que ficou sem, trocar o produto e incluir o que a leitura perdeu', () => {
+    expect(receiptEditing('confirmed')).toEqual({ items: 'missingValue', addItem: true, changeProduct: true });
   });
 });
 
 describe('a frase da nota confirmada', () => {
   it('diz que a correção fica na casa e não vai para os preços compartilhados', () => {
     expect(CONFIRMED_EDIT_NOTE).toBe(
-      'O que você corrigir aqui vale só para a casa (gastos, Mercado do mês e histórico de preço) e não vai para os preços compartilhados entre casas.',
+      'O que você corrigir aqui vale só para a casa (gastos, Mercado do mês, histórico de preço e despensa) e não vai para os preços compartilhados entre casas.',
     );
   });
 

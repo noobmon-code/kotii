@@ -1,9 +1,14 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 
 import { COMMON_ITEMS } from '../commonItems';
 import {
+  carriedDistinctPairs,
   defaultKeep,
   differentSizes,
+  DISTINCT_UNDO_GONE,
+  DISTINCT_UNDONE,
+  distinctFrom,
+  distinctIntro,
   factsLine,
   isProductRenamed,
   MERGE_RENAMED,
@@ -14,13 +19,17 @@ import {
   mergeSummary,
   mergeWarnings,
   orderedPair,
+  PRODUCT_MERGED_AWAY,
   productFacts,
   purchasesLabel,
   similarProducts,
+  undoDistinctLabel,
+  type DistinctPair,
   type MergePair,
   type MergeSide,
   type ProductFacts,
 } from '../productMerge';
+import * as similarNamesModule from '../similarNames';
 import {
   indexNames,
   kindWords,
@@ -727,5 +736,116 @@ describe('orderedPair', () => {
     const [low, high] = ['0a1f6c1e-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000000'];
     expect(orderedPair(high, low)).toEqual({ product_a: low, product_b: high });
     expect(orderedPair(low, high)).toEqual({ product_a: low, product_b: high });
+  });
+});
+
+describe('distinctFrom: os produtos marcados como diferentes deste', () => {
+  const list = products('Limão', 'Limão siciliano', 'Arroz', 'Arroz integral', 'Feijão');
+  it('das duas colunas do par, por nome, sem os pares dos outros produtos', () => {
+    const pairs = [orderedPair('p00', 'p01'), orderedPair('p03', 'p00'), orderedPair('p02', 'p04')];
+    expect(distinctFrom('p00', pairs, list).map((p) => p.name)).toEqual(['Arroz integral', 'Limão siciliano']);
+    expect(distinctFrom('p01', pairs, list).map((p) => p.name)).toEqual(['Limão']);
+    expect(distinctFrom('p04', pairs, list).map((p) => p.name)).toEqual(['Arroz']);
+  });
+
+  it('o par cujo outro produto não está no catálogo fica de fora; um par repetido aparece uma vez', () => {
+    const pairs = [orderedPair('p00', 'gone'), orderedPair('p00', 'p01'), orderedPair('p01', 'p00')];
+    expect(distinctFrom('p00', pairs, list).map((p) => p.id)).toEqual(['p01']);
+  });
+
+  it('sem pares (sem a tabela), sem produtos, ou sem par deste: nada', () => {
+    expect(distinctFrom('p00', null, list)).toEqual([]);
+    expect(distinctFrom('p00', undefined, list)).toEqual([]);
+    expect(distinctFrom('p00', [orderedPair('p00', 'p01')], undefined)).toEqual([]);
+    expect(distinctFrom('p00', [], list)).toEqual([]);
+    expect(distinctFrom('p02', [orderedPair('p00', 'p01')], list)).toEqual([]);
+  });
+});
+
+describe('carriedDistinctPairs: excluir não traz de volta o que a casa já recusou', () => {
+  const names = (pairs: readonly MergePair[]) => pairs.map((pair) => pair.map((product) => product.name).sort().join(' = ')).sort();
+  const key = (pair: DistinctPair) => `${pair.product_a} ${pair.product_b}`;
+
+  it('o par que a regra do nome escondia só pelo excluído passa para o gêmeo de nome dele', () => {
+    // A casa disse que "Limão siciliano" não é o "Limao"; o "Limão", mesmo nome do "Limao", ficava escondido junto.
+    const list = products('Limão siciliano', 'Limao', 'Limão');
+    const [a, b, twin] = list;
+    const pairs = [orderedPair(a.id, b.id)];
+    const before = mergeCandidates(list, pairs);
+    const carried = carriedDistinctPairs(b.id, list, pairs);
+    expect(carried).toEqual([orderedPair(a.id, twin.id)]);
+    // Sem B, com os pares que passaram, nada aparece que não aparecia antes.
+    const rest = list.filter((p) => p.id !== b.id);
+    const after = mergeCandidates(rest, carried);
+    const shown = new Set(names(before));
+    for (const pair of names(after)) expect(shown.has(pair)).toBe(true);
+    // Sem passar o par, a sugestão recusada voltaria.
+    expect(names(mergeCandidates(rest, []))).toEqual(['Limão = Limão siciliano']);
+  });
+
+  it('o par igual que já aparecia antes não passa', () => {
+    // "Limão" e "Limões" são o mesmo nome: o "São diferentes" com o "Limao" não esconde o par igual.
+    const list = products('Limão', 'Limao', 'Limões');
+    const [a, b] = list;
+    expect(carriedDistinctPairs(b.id, list, [orderedPair(a.id, b.id)])).toEqual([]);
+  });
+
+  it('o gêmeo que já tem o seu par com o mesmo produto não repete', () => {
+    const list = products('Limão siciliano', 'Limao', 'Limão');
+    const [a, b, twin] = list;
+    expect(carriedDistinctPairs(b.id, list, [orderedPair(a.id, b.id), orderedPair(a.id, twin.id)])).toEqual([]);
+  });
+
+  it('cada par passa uma vez, na ordem do banco', () => {
+    const list = products('Limão siciliano', 'Limao', 'Limão', 'Limões');
+    const [a, b] = list;
+    const carried = carriedDistinctPairs(b.id, list, [orderedPair(b.id, a.id)]);
+    expect(new Set(carried.map(key)).size).toBe(carried.length);
+    for (const pair of carried) expect(pair).toEqual(orderedPair(pair.product_a, pair.product_b));
+    expect(carried.every((pair) => pair.product_a === a.id || pair.product_b === a.id)).toBe(true);
+    expect(carried.length).toBeGreaterThan(0);
+  });
+
+  it('o excluído sem par guardado: nada, e as sugestões nem são calculadas', () => {
+    const spy = jest.spyOn(similarNamesModule, 'sameProductPairs');
+    try {
+      const list = products('Limão siciliano', 'Limao', 'Limão');
+      expect(carriedDistinctPairs('p01', list, [orderedPair('p00', 'p02')])).toEqual([]);
+      expect(carriedDistinctPairs('p01', list, [])).toEqual([]);
+      expect(spy).not.toHaveBeenCalled();
+      // Com o par, calcula (o espião vê a chamada).
+      carriedDistinctPairs('p01', list, [orderedPair('p00', 'p01')]);
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('sem pares ou produtos, ou com o excluído fora do catálogo: nada', () => {
+    const list = products('Limão siciliano', 'Limao', 'Limão');
+    const pairs = [orderedPair('p00', 'p01')];
+    expect(carriedDistinctPairs('p01', list, null)).toEqual([]);
+    expect(carriedDistinctPairs('p01', list, undefined)).toEqual([]);
+    expect(carriedDistinctPairs('p01', undefined, pairs)).toEqual([]);
+    expect(carriedDistinctPairs('p09', list, [orderedPair('p00', 'p09')])).toEqual([]);
+    // Um nome sem letra nem número não tem chave de nome: nada a passar.
+    expect(carriedDistinctPairs('p01', products('Limão', '!!!'), [orderedPair('p00', 'p01')])).toEqual([]);
+  });
+});
+
+describe('"Marcados como diferentes": as frases', () => {
+  it('a explicação, o rótulo de cada "Desfazer" e o que o leitor de tela ouve', () => {
+    expect(distinctIntro('Limão')).toBe(
+      'A casa disse que "Limão" não é o mesmo produto que estes, e eles não aparecem juntos em "Parecem o mesmo produto". Desfazendo, a sugestão pode voltar.',
+    );
+    expect(undoDistinctLabel('Limão', 'Limão siciliano')).toBe('Desfazer o "são diferentes" de Limão e Limão siciliano');
+    expect(DISTINCT_UNDONE).toBe('Desfeito. A sugestão de juntar pode voltar.');
+    expect(DISTINCT_UNDO_GONE).toBe(
+      'Esta marcação não estava mais guardada: alguém da casa já desfez, ou um dos dois produtos foi juntado com outro ou excluído.',
+    );
+  });
+
+  it('o produto que sumiu de uma gravação pode ter sido juntado ou excluído', () => {
+    expect(PRODUCT_MERGED_AWAY).toBe('Um produto daqui foi juntado com outro ou excluído. Confira e tente de novo.');
   });
 });

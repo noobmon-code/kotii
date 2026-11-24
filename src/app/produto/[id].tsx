@@ -1,5 +1,5 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { useBarcodes, useUnlinkBarcode } from '@/data/barcodes';
@@ -17,6 +17,7 @@ import { gtinLabel } from '@/domain/barcode';
 import { CATEGORIES, getCategory } from '@/domain/categories';
 import { genericItem } from '@/domain/genericItem';
 import { noStorePriceSentence } from '@/domain/priceHistory';
+import { missingProductView, PRODUCT_NOT_CHECKED, PRODUCT_NOT_IN_HOUSE } from '@/domain/productDelete';
 import { productCategoryNote } from '@/domain/productCategory';
 import { PRODUCT_NAME_TAKEN, productNameTakenHint } from '@/domain/productMerge';
 import type { ProductName } from '@/domain/similarNames';
@@ -30,6 +31,8 @@ import {
   storePriceLabel,
   storePricesView,
 } from '@/domain/storePrices';
+import { DeleteProductButton } from '@/features/DeleteProductButton';
+import { DistinctPairsSection } from '@/features/DistinctPairsSection';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { PriceHistorySection } from '@/features/market/PriceHistorySection';
 import { MergeProductsModal } from '@/features/MergeProductsModal';
@@ -37,6 +40,7 @@ import { MergeSuggestionsCard } from '@/features/MergeSuggestionsCard';
 import { useProductBarcode } from '@/features/ProductBarcode';
 import { SharedPricesSection } from '@/features/SharedPrices';
 import { FEATURES } from '@/lib/features';
+import { goBackOr } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
@@ -86,7 +90,31 @@ export default function ProductScreen() {
   const current = products.data?.find((p) => p.id === id);
   // O código lido vai para este produto; o que era de outro, só depois de a pessoa confirmar.
   const barcode = useProductBarcode({ linkTo: current, onProduct: () => undefined });
+  // "Juntar com outro produto": o foco volta para ele quando a última linha de "Marcados como diferentes" sai.
+  const joinRef = useRef<View>(null);
+  // Excluiu: a tela que sai não mostra o aviso de produto não encontrado sobre o que ela mesma acabou de excluir.
+  const [deleted, setDeleted] = useState(false);
 
+  // O catálogo guardado no aparelho pode ser velho (fica guardado, e só é buscado de novo depois de 30 s), ou o
+  // endereço pode ser de outra casa da pessoa: sem o produto nele, a tela busca os produtos uma vez antes de dizer
+  // que ele não está na casa.
+  const missing = products.data !== undefined && !current;
+  const checkedFor = useRef<string | null>(null);
+  const refetchProducts = products.refetch;
+  useEffect(() => {
+    if (!missing || deleted || products.isFetchedAfterMount || products.fetchStatus !== 'idle' || checkedFor.current === id) return;
+    checkedFor.current = id;
+    void refetchProducts();
+  }, [missing, deleted, products.isFetchedAfterMount, products.fetchStatus, id, refetchProducts]);
+
+  function onDeleted() {
+    setDeleted(true);
+    // Volta para de onde a pessoa veio (Preços, "Ver preços" de uma lista ou da despensa); sem para onde voltar
+    // (a página recarregada), Preços.
+    goBackOr('/precos');
+  }
+
+  if (deleted) return <Loading />;
   // Sem internet e sem o produto ou os mercados no aparelho, a busca fica parada (e segue sozinha quando a
   // conexão volta): um aviso, em vez de girar sem fim. Com eles guardados, a tela abre com o que há.
   if ([products, stores].some((query) => query.data === undefined && query.fetchStatus === 'paused')) {
@@ -98,7 +126,20 @@ export default function ProductScreen() {
     return error ? <ErrorNotice error={error} /> : <Loading />;
   }
   const product = products.data.find((p) => p.id === id);
-  if (!product) return <ErrorNotice error={{ message: 'Produto não encontrado.' }} />;
+  if (!product) {
+    // Só depois de uma busca desta visita que deu certo sem ele: sem internet, ou com a busca falhando, não deu
+    // para conferir. Antes da busca que o efeito acima pede, ela conta como a caminho.
+    const view = missingProductView({
+      fetching: products.fetchStatus === 'fetching' || (!products.isFetchedAfterMount && products.fetchStatus === 'idle'),
+      checked: products.isFetchedAfterMount && !products.isError && products.fetchStatus === 'idle',
+    });
+    if (view === 'loading') return <Loading />;
+    if (view === 'gone') return <ErrorNotice error={{ message: PRODUCT_NOT_IN_HOUSE }} />;
+    return <ErrorNotice error={{ message: PRODUCT_NOT_CHECKED }} onRetry={() => products.refetch()} />;
+  }
+  // Sem compra nenhuma (a busca respondeu, e não está parada nem falhou): dá para excluir. Durante uma busca nova
+  // com as compras na tela, o botão fica (não pisca).
+  const canExclude = purchases.isSuccess && purchases.data.length === 0;
 
   const byStore = storePricesView(
     { data: fromHistory.data, paused: fromHistory.fetchStatus === 'paused', failed: fromHistory.isError },
@@ -252,7 +293,11 @@ export default function ProductScreen() {
 
       <PriceHistorySection productId={product.id} productName={product.name} />
 
-      <Button title="Juntar com outro produto" icon="call-merge" variant="secondary" onPress={() => setJoining(true)} />
+      <Button ref={joinRef} title="Juntar com outro produto" icon="call-merge" variant="secondary" onPress={() => setJoining(true)} />
+
+      <DistinctPairsSection product={product} afterLast={joinRef} />
+
+      {canExclude ? <DeleteProductButton productId={product.id} onDeleted={onDeleted} /> : null}
 
       {joining ? (
         <MergeProductsModal

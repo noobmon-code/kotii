@@ -65,6 +65,8 @@ jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => ({ data: [], is
 jest.mock('@/features/market/PriceHistorySection', () => ({ PriceHistorySection: () => null }));
 jest.mock('@/features/SharedPrices', () => ({ SharedPricesSection: () => null }));
 jest.mock('@/features/MergeSuggestionsCard', () => ({ MergeSuggestionsCard: () => null }));
+jest.mock('@/features/DistinctPairsSection', () => ({ DistinctPairsSection: () => null }));
+jest.mock('@/features/DeleteProductButton', () => ({ DeleteProductButton: () => null }));
 jest.mock('@/features/MergeProductsModal', () => ({ MergeProductsModal: () => null }));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: { message?: string }) => error?.message ?? String(error) }));
 jest.mock('@/ui/dialogs', () => ({ confirmAction: jest.fn(), notify: jest.fn() }));

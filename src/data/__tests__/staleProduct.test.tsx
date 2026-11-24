@@ -360,7 +360,7 @@ describe('pôr na lista um produto que foi juntado', () => {
   });
 
   it('a frase é uma só, para a nota e para a lista', () => {
-    expect(PRODUCT_MERGED_AWAY).toBe('Um produto daqui foi juntado com outro. Confira e tente de novo.');
+    expect(PRODUCT_MERGED_AWAY).toBe('Um produto daqui foi juntado com outro ou excluído. Confira e tente de novo.');
   });
 });
 

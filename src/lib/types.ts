@@ -2,7 +2,9 @@
 
 import type { EventDayLike, FamilyEventLike } from '@/domain/familyEvents';
 import type { DietMeal, DietShoppingItem, ExamResult, WorkoutSession } from '@/domain/health';
+import type { FreezeKind } from '@/domain/freezer';
 import type { ListPriority } from '@/domain/listItem';
+import type { ExpirySource } from '@/domain/pantry';
 
 export type Unit = 'un' | 'kg' | 'g' | 'l' | 'ml';
 export const UNITS: Unit[] = ['un', 'kg', 'g', 'l', 'ml'];
@@ -92,6 +94,12 @@ export interface ReceiptItem {
    * cartela de 10). Ausente no banco de antes da coluna; null sem resposta.
    */
   pack_count?: number | null;
+  /**
+   * A linha incluída depois de a nota ser confirmada ("Item", add_confirmed_receipt_item): o texto dela é da pessoa,
+   * e trocar o produto dela não ensina apelido à casa. Só lida, nunca gravada pelo app; ausente no banco de antes da
+   * coluna (que também não tem as correções da nota confirmada).
+   */
+  added_after_confirmation?: boolean;
 }
 
 export interface LatestPrice {
@@ -158,8 +166,17 @@ export interface PantryItem {
   unit: Unit;
   purchased_on: string;
   expires_on: string | null;
-  expiry_source: 'categoria' | 'produto' | 'manual' | null;
+  expiry_source: ExpirySource | null;
   consumed_at: string | null;
+  /**
+   * O congelador (domain/freezer): undefined antes da migração 20261124173722_pantry_freezer.sql, nas leituras que
+   * repetiram sem as colunas e nas cópias guardadas de antes desta versão.
+   */
+  frozen_on?: string | null;
+  thawed_on?: string | null;
+  freeze_kind?: FreezeKind | null;
+  fresh_expires_on?: string | null;
+  fresh_expiry_source?: ExpirySource | null;
 }
 
 /** O dia em que um novo começou (botijão, galão, saco de ração). */

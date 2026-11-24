@@ -50,6 +50,12 @@ jest.mock('@/data/market', () => ({
   useAddToPantryList: () => mockMutation,
 }));
 jest.mock('@/data/supplies', () => ({ useSupplies: () => mockQueries.supplies, useRecordRefill: () => mockMutation }));
+// O congelador tem os testes dele (pantryFreezerPanel.test): aqui, sem ele no banco.
+jest.mock('@/data/freezer', () => ({
+  useFreezer: () => ({ available: false, days: null }),
+  useFreezePantryItems: () => mockMutation,
+  useThawPantryItems: () => mockMutation,
+}));
 
 const gas = { id: 's1', name: 'Gás de cozinha', kind: 'gas', typical_days: null, notes: null, created_at: '2026-10-01T10:00:00Z', refills: [] };
 const rice = {

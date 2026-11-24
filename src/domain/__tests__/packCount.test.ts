@@ -1,6 +1,17 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { asksPackCount, eachPriceLabel, packCountOf, packLabel, packLine, packSizeText, perItemLabel, readPackCount } from '../packCount';
+import {
+  asksPackCount,
+  eachPriceLabel,
+  PACK_LINE_CHANGED,
+  packCountOf,
+  packLabel,
+  packLine,
+  packSizeText,
+  perItemLabel,
+  readPackCount,
+} from '../packCount';
+import { WEIGHT_LINE_CHANGED } from '../receiptWeight';
 
 const eggs = (raw_description: string, over: Partial<{ unit: string; total_price: number; pack_count: number | null | undefined }> = {}) => ({
   raw_description,
@@ -56,6 +67,14 @@ describe('textos', () => {
     expect(readPackCount('1001')).toBeNull();
     expect(readPackCount('12,5')).toBeNull();
     expect(readPackCount('')).toBeNull();
+  });
+
+  it('a resposta que não achou a linha não culpa outro aparelho: pode ser a troca de produto desta tela, ainda sem a nota de volta', () => {
+    expect(PACK_LINE_CHANGED).toEqual({
+      title: 'Quantidade não salva',
+      message: 'Este item já mudou antes deste toque. Confira a nota e, se ainda precisar, responda de novo.',
+    });
+    for (const notice of [PACK_LINE_CHANGED, WEIGHT_LINE_CHANGED]) expect(notice.message).not.toMatch(/aparelho/);
   });
 });
 

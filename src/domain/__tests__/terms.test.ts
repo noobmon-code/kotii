@@ -258,6 +258,24 @@ describe('termos de uso', () => {
     expect(ai).toContain('só entram na despensa ou na lista quando você toca para guardar');
   });
 
+  it('os prazos de troca da casa são dado guardado, mas não mudam o que é compartilhado nem o que vai para a IA', () => {
+    // A mesma data de excluir produto e da lista aberta de preços (2026-11-24, o dia do merge): as frases saem juntas.
+    // Os prazos de troca, sozinhos, não trariam o aviso de volta; quem traz é a lista aberta.
+    expect(TERMS_VERSION).toBe('2026-11-24');
+    expect(termsNotice([TERMS_ACCEPT_VERSION])).toBeNull();
+    const stored = section('O que o app guarda e para quê');
+    expect(stored).toContain('despensa (com o que foi para o congelador), cardápio, os prazos de troca dos itens da casa (escova de dente, refil do filtro…), tarefas e pontos');
+  });
+
+  it('excluir o produto que não está em nenhuma nota é uma mudança de texto: a versão muda, e o aviso não volta', () => {
+    expect(TERMS_VERSION).toBe('2026-11-24');
+    // Excluir produto, sozinho, não traria o aviso de volta: o aceite de 2026-11-24 é o da lista aberta de preços.
+    expect(termsNotice(['2026-11-24'])).toBeNull();
+    const erase = section('Apagar dados e sair');
+    expect(erase).toContain('gás, água e ração, e os produtos que não estão em nenhuma nota.');
+    expect(erase).toContain('e os produtos que estão em alguma nota, os mercados e os históricos');
+  });
+
   it('manda a pessoa para Configurações (a aba "Ajustes"), não mais para a aba Família, que deixou de existir', () => {
     expect(all).not.toContain('aba Família');
     // A primeira vez que o texto fala de Configurações diz o nome que a barra de abas mostra.

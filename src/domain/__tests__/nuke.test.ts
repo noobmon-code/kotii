@@ -47,6 +47,18 @@ const snapshot: NukeSnapshot = {
 };
 
 describe('nuke context', () => {
+  it('a despensa vencendo diz o que está no congelador e a validade estimada ("por volta de")', () => {
+    const text = buildNukeContext({
+      ...snapshot,
+      expiring: [
+        { name: 'Leite', expires_on: '2026-09-28' },
+        { name: 'Frango', expires_on: '2026-09-27', estimated: true, frozen: true },
+        { name: 'Pão', expires_on: '2026-09-20', estimated: true },
+      ],
+    });
+    expect(text).toContain('Despensa vencendo: Leite (vence 28/09); Frango, no congelador (vence por volta de 27/09); Pão (venceu por volta de 20/09).');
+  });
+
   it('writes one short line per area, with overdue items called out', () => {
     const text = buildNukeContext(snapshot);
     expect(text).toContain('Moradores: Ana (quem está falando), Beto.');
