@@ -7,6 +7,7 @@ import WhereToBuyScreen from '@/app/lista/[id]/onde-comprar';
 import { formatShortDate, toISODate } from '@/domain/dates';
 import * as listEstimate from '@/domain/listEstimate';
 import { LinkIndex } from '@/domain/listLinks';
+import type { BrandKeyQuote, BrandSearchItem } from '@/domain/cheaperBrand';
 import type { OpenSearchItem } from '@/domain/openPrices';
 import { SHARED_PRICES_NOTICE, sharedWeekStart, type SharedPrice, type SharedQuote } from '@/domain/sharedPrices';
 import type { LatestPrice, Product, ShoppingListItem, Store } from '@/lib/types';
@@ -28,10 +29,18 @@ interface Query {
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockQueries: Record<string, Query> = {};
 /** A base aberta (useOpenSharedPrices): o que ela responde e o que a tela pediu a ela. */
-const mockOpen: { quotes: Map<string, SharedQuote[]>; waiting: boolean; asked: (OpenSearchItem[] | null)[] } = {
+const mockOpen: {
+  quotes: Map<string, SharedQuote[]>;
+  brandQuotes: Map<string, BrandKeyQuote[]>;
+  waiting: boolean;
+  asked: (OpenSearchItem[] | null)[];
+  brandAsked: (BrandSearchItem[] | null)[];
+} = {
   quotes: new Map(),
+  brandQuotes: new Map(),
   waiting: false,
   asked: [],
+  brandAsked: [],
 };
 
 jest.mock('expo-router', () => ({
@@ -51,10 +60,15 @@ jest.mock('@/data/market', () => ({
 }));
 jest.mock('@/data/sharedPrices', () => ({
   useSharedPrices: () => mockQueries.shared,
-  useOpenSharedPrices: (items: OpenSearchItem[] | null) => {
+  useOpenSharedPrices: (items: OpenSearchItem[] | null, _stores: unknown, brandItems: BrandSearchItem[] | null = null) => {
     mockOpen.asked.push(items);
-    return { quotes: mockOpen.quotes, waiting: mockOpen.waiting, refetch: async () => undefined };
+    mockOpen.brandAsked.push(brandItems);
+    return { quotes: mockOpen.quotes, brandQuotes: mockOpen.brandQuotes, waiting: mockOpen.waiting, refetch: async () => undefined };
   },
+}));
+// As descrições da casa (product_aliases), que a troca de marca não traz como "outra marca".
+jest.mock('@/data/learnedAbbreviations', () => ({
+  useProductAliases: () => mockQueries.aliases ?? { data: [], isPending: false, isError: false, error: null, fetchStatus: 'idle' },
 }));
 // Os desenhos animados (reanimated) e o fundo não entram no que se confere aqui.
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
@@ -144,7 +158,8 @@ beforeEach(() => {
     purchases: loaded([]),
     shared: loaded(null),
   });
-  Object.assign(mockOpen, { quotes: new Map(), waiting: false, asked: [] });
+  Object.assign(mockOpen, { quotes: new Map(), brandQuotes: new Map(), waiting: false, asked: [], brandAsked: [] });
+  delete mockQueries.aliases;
 });
 
 afterEach(async () => {

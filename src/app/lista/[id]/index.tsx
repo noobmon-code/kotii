@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { StyleSheet, View, type ColorValue } from 'react-native';
 
 import { usePantry } from '@/data/home';
-import { useLearnedAbbreviations } from '@/data/learnedAbbreviations';
+import { useLearnedAbbreviations, useProductAliases } from '@/data/learnedAbbreviations';
 import {
   dropPendingPhotos,
   emptyPhotoTrash,
@@ -44,6 +44,9 @@ import { compareByAisle, getCategory } from '@/domain/categories';
 import {
   chosenItemQuantity,
   currentStoreChoice,
+  brandSearchItems,
+  brandSpoken,
+  brandTileText,
   estimateList,
   openCandidates,
   formatItemCost,
@@ -178,6 +181,8 @@ export default function ShoppingListScreen() {
   const links = useListLinks();
   // O que a despensa já tem com o nome da nota ("Az gallo 500ml") é o "Azeite" do carrinho (domain/cartPantry).
   const learned = useLearnedAbbreviations();
+  // As descrições de nota dos produtos da casa: a troca de marca não as traz da base aberta como "outra marca".
+  const aliases = useProductAliases();
   const prices = useLatestPrices();
   const stores = useStores();
   // Preços de outras casas: só onde a casa não tem preço (domain/listEstimate). Sem a função no banco (null), com a
@@ -669,8 +674,26 @@ export default function ShoppingListScreen() {
         purchasedAt: p.purchased_at,
         // Quantos vinham na embalagem desse preço (os ovos da cartela de 10): os detalhes do item dizem.
         packCount: p.pack_count ?? null,
+        // A descrição da nota, de onde sai o tamanho do pacote (a troca de marca compara por kg ou litro).
+        description: p.raw_description ?? null,
       })),
     [prices.data],
+  );
+  // Os itens como a conta os lê: a "Marca preferida" decide se o item pode sair por outra marca.
+  const estimateItems = useMemo(
+    () =>
+      (items.data ?? []).map((i) => ({
+        id: i.id,
+        name: i.name,
+        productId: i.product_id,
+        quantity: Number(i.quantity),
+        unit: i.unit,
+        inCart: Boolean(i.checked_at),
+        // Nos ovos, "12 un" (o "1 dz" colado) são doze ovos, não doze cartelas.
+        category: i.category,
+        brandPreferred: i.brand_preferred === true,
+      })),
+    [items.data],
   );
   // A base aberta (domain/openPrices): o item sem preço nenhum, nem da casa nem de outras casas pelo produto, procura
   // o mesmo item, de qualquer marca, nas notas de outras casas do estado. Só depois de tudo o que dá preço ter
@@ -686,23 +709,30 @@ export default function ShoppingListScreen() {
   const openItems = useMemo(
     () =>
       priceSourcesSettled
-        ? openCandidates(
-            (items.data ?? []).map((i) => ({
-              id: i.id,
-              name: i.name,
-              productId: i.product_id,
-              quantity: Number(i.quantity),
-              unit: i.unit,
-              category: i.category,
-              brandPreferred: i.brand_preferred === true,
-            })),
+        ? openCandidates(estimateItems, estimatePrices, { links: links.data ?? undefined, products: products.data ?? [], shared: seenElsewhere })
+        : null,
+    [priceSourcesSettled, estimateItems, estimatePrices, links.data, products.data, seenElsewhere],
+  );
+  // O queijo pedido em "un" com o preço por kg conta o que a casa costuma levar dele (das notas), não 1 kg. Sem o
+  // histórico (a busca falhou, ou sem internet e ele nunca chegou neste aparelho), é o 1 kg, e o detalhe do item diz
+  // que o histórico não carregou. Enquanto a primeira busca ainda anda, o detalhe não diz isso.
+  const usual = useMemo(() => usualAmounts(purchases.data ?? []), [purchases.data]);
+  // A troca de marca (domain/cheaperBrand) procura na mesma base as marcas que só outras casas compraram, para os
+  // itens que já têm preço da casa. Com o mesmo portão e, também, com as descrições da casa (os apelidos): sem elas,
+  // a casa veria o próprio produto como "outra marca", e então nada vai (as marcas da casa continuam valendo).
+  const brandItems = useMemo(
+    () =>
+      priceSourcesSettled && aliases.data
+        ? brandSearchItems(
+            estimateItems,
             estimatePrices,
-            { links: links.data ?? undefined, products: products.data ?? [], shared: seenElsewhere },
+            { links: links.data ?? undefined, products: products.data ?? undefined, shared: seenElsewhere, usual },
+            aliases.data,
           )
         : null,
-    [priceSourcesSettled, items.data, estimatePrices, links.data, products.data, seenElsewhere],
+    [priceSourcesSettled, aliases.data, estimateItems, estimatePrices, links.data, products.data, seenElsewhere, usual],
   );
-  const openPrices = useOpenSharedPrices(openItems, stores.data ?? undefined);
+  const openPrices = useOpenSharedPrices(openItems, stores.data ?? undefined, brandItems);
   // Na ida ao mercado de quem está com o app, o que a casa pôs depois do aviso ganha o selo "Novo".
   const tripStart = myTrip?.created_at ?? null;
   // O que este aparelho pôs nesta lista (também por outras telas e antes de reabrir o app) não ganha o selo.
@@ -717,30 +747,23 @@ export default function ShoppingListScreen() {
     if (tripsKnown) pruneAddedItems(id, tripStart);
   }, [id, tripsKnown, tripStart, added]);
 
-  // O queijo pedido em "un" com o preço por kg conta o que a casa costuma levar dele (das notas), não 1 kg. Sem o
-  // histórico (a busca falhou, ou sem internet e ele nunca chegou neste aparelho), é o 1 kg, e o detalhe do item diz
-  // que o histórico não carregou. Enquanto a primeira busca ainda anda, o detalhe não diz isso.
-  const usual = useMemo(() => usualAmounts(purchases.data ?? []), [purchases.data]);
   // Lista no mercado (domain/listEstimate): quanto deve dar e o que está na despensa. Sem os preços, as
   // ligações ou a despensa carregados (sem internet e nunca vistos neste aparelho), mostra o que der. Só o selo
   // "Na despensa" espera o histórico de compras: sem ele, apareceria justamente no que acabou. O aparelho que
   // nunca carregou o histórico fica sem selo nenhum.
   const market = useMemo(() => {
     const all = items.data ?? [];
-    const estimate = estimateList(
-      all.map((i) => ({
-        id: i.id,
-        name: i.name,
-        productId: i.product_id,
-        quantity: Number(i.quantity),
-        unit: i.unit,
-        inCart: Boolean(i.checked_at),
-        // Nos ovos, "12 un" (o "1 dz" colado) são doze ovos, não doze cartelas.
-        category: i.category,
-      })),
-      estimatePrices,
-      { links: links.data, products: products.data ?? [], shared: seenElsewhere, open: openPrices.quotes, usual, storeId, historyMissing },
-    );
+    // Os produtos sem `?? []`: undefined é "não carregados", e aí não há troca de marca nem o produto do mesmo item.
+    const estimate = estimateList(estimateItems, estimatePrices, {
+      links: links.data,
+      products: products.data,
+      shared: seenElsewhere,
+      open: openPrices.quotes,
+      brandKeys: openPrices.brandQuotes,
+      usual,
+      storeId,
+      historyMissing,
+    });
     // O que o app acha que acabou não é "na despensa": tudo o que passou do costume (ranOut), sem tirar o que
     // já está na lista (é dela que se trata) e sem os cortes da faixa "Acho que acabou".
     const inPantry = historyKnown
@@ -755,11 +778,20 @@ export default function ShoppingListScreen() {
       const cost = estimate.byItem.get(i.id);
       const isNew = newIds.has(i.id);
       if (cost || inPantry.has(i.id) || isNew) {
-        hints.set(i.id, { cost: cost ? formatItemCost(cost) : undefined, inPantry: inPantry.has(i.id), ...(isNew ? { isNew } : {}) });
+        // A marca mais barata do mercado escolhido, embaixo do preço (e no que o leitor de tela diz).
+        const brand = brandTileText(cost);
+        const spoken = brandSpoken(cost);
+        hints.set(i.id, {
+          cost: cost ? formatItemCost(cost) : undefined,
+          inPantry: inPantry.has(i.id),
+          ...(isNew ? { isNew } : {}),
+          ...(brand ? { brand } : {}),
+          ...(spoken ? { brandSpoken: spoken } : {}),
+        });
       }
     }
     return { estimate, inPantry, hints };
-  }, [items.data, estimatePrices, links.data, products.data, seenElsewhere, openPrices.quotes, usual, pantry.data, ranOut, historyKnown, historyMissing, storeId, today, newIds]);
+  }, [items.data, estimateItems, estimatePrices, links.data, products.data, seenElsewhere, openPrices.quotes, openPrices.brandQuotes, usual, pantry.data, ranOut, historyKnown, historyMissing, storeId, today, newIds]);
 
   // As ligações e os produtos dão preço ao item digitado solto. Se não chegaram (a busca falhou, ou sem internet e
   // nunca vistos neste aparelho), o cartão diz que não deu para conferir o que ficou sem preço. A lista não espera
@@ -1298,6 +1330,8 @@ export default function ShoppingListScreen() {
               today,
               productName: (product) => products.data?.find((p) => p.id === product)?.name,
               category: editing.category,
+              // A mesma condição que mostra a "Marca preferida": o item tem um produto com marca.
+              canPreferBrand: Boolean(editing.product_id && brandChoice(products.data?.find((p) => p.id === editing.product_id))),
             })
           }
           brand={editing.product_id ? brandChoice(products.data?.find((p) => p.id === editing.product_id)) : null}

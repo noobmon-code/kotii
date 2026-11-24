@@ -122,8 +122,12 @@ describe('estimateList', () => {
     const priceAt = listStorePrices([item('l', 'Leite desnatado', 'il', 2)], quotes, { products });
     expect(priceAt('l', 'caro')).toMatchObject({ cost: 10, productId: 'il', source: 'product' });
     expect(priceAt('l', 'bom')).toMatchObject({ cost: 9, productId: 'il', source: 'product' });
-    // Sem a dica, o nome sem marca não acha preço de outra marca (o "mais barato de qualquer marca" é outro passo).
-    expect(estimateList([item('l', 'Leite desnatado', null, 2)], quotes, { products }).byItem.has('l')).toBe(false);
+    // Sem a dica, o nome sem marca fica com o produto da casa do mesmo item (desnatado), aproximado e dito; nunca o
+    // integral, que é outro tipo. Na conta de antes (cheaperBrands: false), sem preço.
+    const typed = estimateList([item('l', 'Leite desnatado', null, 2)], quotes, { products }).byItem.get('l')!;
+    expect(typed).toMatchObject({ cost: 10, kind: 'known', productId: 'il', sameItem: true });
+    expect(formatItemCost(typed)).toBe('~R$ 10,00');
+    expect(estimateList([item('l', 'Leite desnatado', null, 2)], quotes, { products, cheaperBrands: false }).byItem.has('l')).toBe(false);
   });
 
   it('item cujo produto não tem preço cai nas ligações do nome', () => {

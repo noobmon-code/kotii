@@ -11,6 +11,7 @@ import { FIRST_LIST_SKIP, FIRST_LIST_TEXT } from '@/domain/onboarding';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { PRICE_CALCULATOR_LABEL, WAITING_SENTENCE as WAITING_TEXT } from '@/domain/priceCalculator';
 import { listShareText } from '@/domain/listShare';
+import type { BrandKeyQuote, BrandSearchItem } from '@/domain/cheaperBrand';
 import { OPEN_PRICE_FACT, type OpenSearchItem } from '@/domain/openPrices';
 import { SHARED_PRICES_NOTICE, sharedWeekStart, type SharedPrice, type SharedQuote } from '@/domain/sharedPrices';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -53,9 +54,17 @@ interface Query {
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockQueries: Record<string, Query> = {};
 /** A base aberta (useOpenSharedPrices): o que ela responde e o que a tela pediu a ela. */
-const mockOpen: { quotes: Map<string, SharedQuote[]>; asked: (OpenSearchItem[] | null)[]; refetch: jest.Mock } = {
+const mockOpen: {
+  quotes: Map<string, SharedQuote[]>;
+  brandQuotes: Map<string, BrandKeyQuote[]>;
+  asked: (OpenSearchItem[] | null)[];
+  brandAsked: (BrandSearchItem[] | null)[];
+  refetch: jest.Mock;
+} = {
   quotes: new Map(),
+  brandQuotes: new Map(),
   asked: [],
+  brandAsked: [],
   refetch: jest.fn(async () => undefined),
 };
 /** O que a tela entregou à grade do que falta comprar e à faixa "Acho que acabou". */
@@ -157,14 +166,17 @@ const mockClipboard = { text: '' };
 jest.mock('expo-clipboard', () => ({ getStringAsync: async () => mockClipboard.text, setStringAsync: async () => true }));
 jest.mock('@/data/sharedPrices', () => ({
   useSharedPrices: () => mockQueries.shared,
-  useOpenSharedPrices: (items: OpenSearchItem[] | null) => {
+  useOpenSharedPrices: (items: OpenSearchItem[] | null, _stores: unknown, brandItems: BrandSearchItem[] | null = null) => {
     mockOpen.asked.push(items);
-    return { quotes: mockOpen.quotes, waiting: false, refetch: mockOpen.refetch };
+    mockOpen.brandAsked.push(brandItems);
+    return { quotes: mockOpen.quotes, brandQuotes: mockOpen.brandQuotes, waiting: false, refetch: mockOpen.refetch };
   },
 }));
 // As abreviações aprendidas têm os testes delas (learnedAbbreviations.test): aqui, nenhuma.
 jest.mock('@/data/learnedAbbreviations', () => ({
   useLearnedAbbreviations: () => jest.requireActual<typeof import('@/domain/learnedAbbreviations')>('@/domain/learnedAbbreviations').NO_LEARNED,
+  // As descrições da casa (product_aliases), que a troca de marca não traz como "outra marca".
+  useProductAliases: () => mockQueries.aliases ?? { data: [], isPending: false, isError: false, fetchStatus: 'idle' },
 }));
 jest.mock('@/lib/auth', () => ({
   useAuth: () => ({ session: { user: { id: 'u1' } } }),
@@ -383,7 +395,8 @@ function choose(label: string) {
 }
 
 beforeEach(() => {
-  Object.assign(mockOpen, { quotes: new Map(), asked: [] });
+  Object.assign(mockOpen, { quotes: new Map(), brandQuotes: new Map(), asked: [], brandAsked: [] });
+  delete mockQueries.aliases;
   delete mockRouteParams.primeira;
   mockTrips.list = [];
   mockTrips.online = true;
