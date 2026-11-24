@@ -14863,5 +14863,210 @@ begin
   assert not exists (select 1 from public.app_admins), 'and nobody is an admin';
 end $$;
 
+-- ---------------------------------------------------------------------------
+\echo '• prazos de troca: o que a casa mudou e a última compra de cada item'
+-- A tabela não tem FK para products (item_key é a chave da tabela do app): o bloco que confere quem aponta para
+-- products não muda, e merge_products e delete_product não a tocam.
+reset role;
+select set_config('request.jwt.claim.sub', '', false) \gset
+do $$
+declare
+  p text;
+  f constant text := 'public.long_cycle_purchases(text[], timestamptz)';
+begin
+  assert (select relrowsecurity from pg_class where oid = 'public.long_cycle_settings'::regclass), 'long_cycle_settings has RLS on';
+  -- Cada privilégio por si: com uma lista, has_table_privilege é verdade com qualquer um deles.
+  foreach p in array array['select', 'insert', 'update', 'delete', 'truncate'] loop
+    assert not has_table_privilege('anon', 'public.long_cycle_settings', p), 'anon has no ' || p || ' on long_cycle_settings';
+  end loop;
+  foreach p in array array['select', 'insert', 'update', 'delete'] loop
+    assert has_table_privilege('authenticated', 'public.long_cycle_settings', p), 'members need ' || p || ' on long_cycle_settings';
+    assert has_table_privilege('service_role', 'public.long_cycle_settings', p), 'service_role needs ' || p || ' on long_cycle_settings';
+  end loop;
+  foreach p in array array['truncate', 'references', 'trigger'] loop
+    assert not has_table_privilege('authenticated', 'public.long_cycle_settings', p), 'members have no ' || p || ' on long_cycle_settings';
+  end loop;
+  assert has_function_privilege('authenticated', f, 'execute'), 'members call ' || f;
+  assert not has_function_privilege('anon', f, 'execute'), 'anon cannot call ' || f;
+  assert not has_function_privilege('public', f, 'execute'), 'public cannot call ' || f;
+  assert not exists (
+    select 1 from pg_proc pr, aclexplode(pr.proacl) a where pr.oid = f::regprocedure and a.grantee = 0
+  ), 'public has no grant on ' || f;
+  assert (select not prosecdef and provolatile = 's' and proconfig = array['search_path=""'] from pg_proc where oid = f::regprocedure),
+    f || ' runs as the caller, only reads, with a fixed search_path';
+  assert not exists (
+    select 1 from pg_constraint where conrelid = 'public.long_cycle_settings'::regclass and contype = 'f'
+      and confrelid <> 'public.households'::regclass
+  ), 'the only foreign key is the household';
+end $$;
+
+-- O resto roda numa transação desfeita no fim: nada fica para os blocos de depois.
+begin;
+\set user_lc1 '00000000-0000-0000-0000-0000000007c1'
+\set user_lc2 '00000000-0000-0000-0000-0000000007c2'
+\set user_lc3 '00000000-0000-0000-0000-0000000007c3'
+insert into auth.users (id) values (:'user_lc1'), (:'user_lc2'), (:'user_lc3');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_lc1', false) \gset
+select set_config('test.lc_house', (public.create_household('Casa da Lia', 'Lia')).id::text, false) \gset
+select invite_code as lc_invite from public.households where id = current_setting('test.lc_house')::uuid \gset
+select set_config('request.jwt.claim.sub', :'user_lc2', false) \gset
+select public.join_household(:'lc_invite', 'Leo') \gset
+select set_config('request.jwt.claim.sub', :'user_lc3', false) \gset
+select set_config('test.lc_other', (public.create_household('Casa do Caco', 'Caco')).id::text, false) \gset
+
+-- Lia: o prazo da casa, o "não sugerir" e o "Já troquei", cada um na sua coluna.
+select set_config('request.jwt.claim.sub', :'user_lc1', false) \gset
+do $$
+declare
+  k text;
+  d date;
+  n integer;
+begin
+  insert into public.long_cycle_settings (item_key, every_months) values ('escova_dente', 2);
+  assert (select household_id from public.long_cycle_settings where item_key = 'escova_dente') = current_setting('test.lc_house')::uuid,
+    'the row belongs to the open household';
+  -- O upsert do app: só a coluna mudada, o resto fica.
+  insert into public.long_cycle_settings (item_key, off) values ('escova_dente', true)
+    on conflict (household_id, item_key) do update set off = excluded.off;
+  assert (select every_months = 2 and off and replaced_on is null from public.long_cycle_settings where item_key = 'escova_dente'),
+    'a partial upsert keeps the other columns';
+  update public.long_cycle_settings set replaced_on = current_date where item_key = 'escova_dente';
+  assert (select replaced_on = current_date from public.long_cycle_settings where item_key = 'escova_dente'), 'replaced_on today';
+
+  -- Os limites passam.
+  insert into public.long_cycle_settings (item_key, every_months, replaced_on) values ('vassoura', 1, date '2000-01-01');
+  insert into public.long_cycle_settings (item_key, every_months, replaced_on) values ('travesseiro', 24, date '2100-12-31');
+  insert into public.long_cycle_settings (item_key) values (repeat('a', 40));
+
+  -- E o que passa deles não.
+  foreach n in array array[0, 25] loop
+    begin
+      insert into public.long_cycle_settings (item_key, every_months) values ('chupeta', n);
+      raise exception 'FAIL: every_months % accepted', n;
+    exception when check_violation then null;
+    end;
+  end loop;
+  foreach k in array array['Escova', '', '1abc', repeat('a', 41), 'escova-dente'] loop
+    begin
+      insert into public.long_cycle_settings (item_key) values (k);
+      raise exception 'FAIL: item_key % accepted', k;
+    exception when check_violation then null;
+    end;
+  end loop;
+  foreach d in array array[date '1999-12-31', date '2101-01-01'] loop
+    begin
+      insert into public.long_cycle_settings (item_key, replaced_on) values ('chupeta', d);
+      raise exception 'FAIL: replaced_on % accepted', d;
+    exception when check_violation then null;
+    end;
+  end loop;
+  begin
+    insert into public.long_cycle_settings (item_key) values ('escova_dente');
+    raise exception 'FAIL: a second row of the same item';
+  exception when unique_violation then null;
+  end;
+end $$;
+
+-- Leo, da mesma casa, vê e muda.
+select set_config('request.jwt.claim.sub', :'user_lc2', false) \gset
+do $$
+begin
+  assert (select count(*) from public.long_cycle_settings) = 4, 'B sees the household rows';
+  update public.long_cycle_settings set every_months = 6 where item_key = 'escova_dente';
+  assert found, 'B updates a row of the household';
+end $$;
+
+-- Caco, de outra casa, não alcança nada.
+select set_config('request.jwt.claim.sub', :'user_lc3', false) \gset
+do $$
+begin
+  assert (select count(*) from public.long_cycle_settings) = 0, 'C sees no foreign rows';
+  update public.long_cycle_settings set off = true;
+  assert not found, 'C updates nothing';
+  delete from public.long_cycle_settings;
+  assert not found, 'C deletes nothing';
+  begin
+    insert into public.long_cycle_settings (household_id, item_key) values (current_setting('test.lc_house')::uuid, 'vassoura');
+    raise exception 'FAIL: C wrote into another household';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+reset role;
+do $$
+begin
+  assert (select every_months from public.long_cycle_settings
+          where household_id = current_setting('test.lc_house')::uuid and item_key = 'escova_dente') = 6, 'B''s change stays';
+  assert (select count(*) from public.long_cycle_settings where household_id = current_setting('test.lc_house')::uuid) = 4,
+    'C changed nothing of A''s household';
+end $$;
+
+-- A última compra de cada nome: as fixações entram como dona (o histórico não tem insert para o app), com a casa e as
+-- datas escolhidas (quem pagou a nota é a Lia, da casa).
+select set_config('request.jwt.claim.sub', :'user_lc1', false) \gset
+do $$
+declare
+  hh constant uuid := current_setting('test.lc_house')::uuid;
+  l uuid;
+  r uuid;
+  p uuid;
+begin
+  insert into public.purchase_history (household_id, name, category, bought_at) values
+    (hh, 'Escova de dente', 'higiene', now() - interval '100 days'),
+    (hh, 'Escova de dente', 'higiene', now() - interval '10 days'),
+    (hh, 'Pasta de dente', 'higiene', now() - interval '5 days'),
+    (hh, 'ESC DENT COLGATE', 'higiene', now() - interval '5 years');
+  insert into public.shopping_lists (household_id, name) values (hh, 'Mercado') returning id into l;
+  insert into public.shopping_list_items (household_id, list_id, name, category, checked_at) values
+    (hh, l, 'Travesseiro Nasa', 'outros', now() - interval '20 days');
+  insert into public.shopping_list_items (household_id, list_id, name, category) values (hh, l, 'Vassoura', 'limpeza');
+  insert into public.products (household_id, name, category) values (hh, 'Escova Dental Colgate', 'higiene') returning id into p;
+  insert into public.receipts (household_id, status, purchased_at) values (hh, 'confirmed', now() - interval '30 days') returning id into r;
+  insert into public.receipt_items (household_id, receipt_id, raw_description, product_id, unit_price, total_price)
+    values (hh, r, 'ESC DENTAL COLGATE', p, 9.9, 9.9);
+  insert into public.products (household_id, name, category) values (hh, 'Escova Oral-B', 'higiene') returning id into p;
+  insert into public.receipts (household_id, purchased_at) values (hh, now() - interval '3 days') returning id into r;
+  insert into public.receipt_items (household_id, receipt_id, raw_description, product_id, unit_price, total_price)
+    values (hh, r, 'ESC ORAL B', p, 12, 12);
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_lc1', false) \gset
+do $$
+declare
+  rows jsonb := (
+    select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb)
+      from public.long_cycle_purchases(array['escova', 'esc', 'travesseiro', 'vassoura'], now() - interval '48 months') x
+  );
+  dates timestamptz[];
+begin
+  assert jsonb_array_length(rows) = 3, 'three names: ' || rows::text;
+  assert (select count(*) from jsonb_array_elements(rows) e where e ->> 'name' = 'Escova de dente') = 1, 'one row per name';
+  assert (select (e ->> 'bought_at')::timestamptz between now() - interval '10 days 1 minute' and now() - interval '9 days 23 hours'
+            from jsonb_array_elements(rows) e where e ->> 'name' = 'Escova de dente'), 'the newest purchase of the name';
+  assert (select e ->> 'source' = 'list' and e ->> 'category' = 'outros' from jsonb_array_elements(rows) e where e ->> 'name' = 'Travesseiro Nasa'),
+    'the item in the cart counts, as a list purchase';
+  assert (select e ->> 'source' = 'receipt' and (e ->> 'product_id') is not null
+            from jsonb_array_elements(rows) e where e ->> 'name' = 'Escova Dental Colgate'),
+    'the line of a confirmed receipt counts by its product name';
+  assert not exists (select 1 from jsonb_array_elements(rows) e where e ->> 'name' in ('Pasta de dente', 'Vassoura', 'Escova Oral-B', 'ESC DENT COLGATE')),
+    'another first word, an unchecked item, a draft and a purchase older than the window are left out';
+  select array_agg((e ->> 'bought_at')::timestamptz order by ord) into dates from jsonb_array_elements(rows) with ordinality as t(e, ord);
+  assert dates[1] >= dates[2] and dates[2] >= dates[3], 'newest first';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_lc3', false) \gset
+do $$
+begin
+  assert not exists (select 1 from public.long_cycle_purchases(array['escova', 'esc', 'travesseiro', 'vassoura'], now() - interval '48 months')),
+    'another household reads nothing';
+end $$;
+reset role;
+rollback;
+
+do $$
+begin
+  assert not exists (select 1 from public.long_cycle_settings), 'the rollback left no setting';
+  assert not exists (select 1 from auth.users where id = '00000000-0000-0000-0000-0000000007c1'), 'nor the test accounts';
+end $$;
+
 \echo 'OK — todos os testes do banco passaram'
 
