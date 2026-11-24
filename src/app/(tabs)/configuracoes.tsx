@@ -12,6 +12,7 @@ import {
   useRemoveMember,
   useSignOutQuestion,
 } from '@/data/household';
+import { useLongCycleSettings } from '@/data/longCycle';
 import { useIsModerator } from '@/data/storeModeration';
 import { useHouseholdLocation } from '@/data/weather';
 import { DESKTOP_PANEL_SIDE_WIDTH } from '@/domain/desktop';
@@ -19,6 +20,7 @@ import { APP_DASHBOARD_TITLE } from '@/domain/appDashboard';
 import { FEEDBACK_FORM_TITLE } from '@/domain/appFeedback';
 import { THEME_CHOICES, THEME_HINT } from '@/domain/appearance';
 import { HOUSE_PLACE_TITLE, housePlaceRowSubtitle, openHouseName } from '@/domain/housePlace';
+import { LONG_CYCLE_TITLE, longCycleRowSubtitle } from '@/domain/longCycle';
 import { PREVIEW_SUBTITLE, PREVIEW_TITLE } from '@/domain/onboarding';
 import { MODERATION_TITLE } from '@/domain/storeModeration';
 import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
@@ -75,6 +77,7 @@ export default function SettingsScreen() {
   const isAdmin = useIsAppAdmin().data === true;
   const moderator = useIsModerator().data === true;
   const location = useHouseholdLocation();
+  const longCycle = useLongCycleSettings();
   // O começo novo (lib/onboarding): o convite compartilhado leva o link do site, além do código.
   const newOnboarding = useNewOnboarding();
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -395,6 +398,16 @@ export default function SettingsScreen() {
                 right={chevron}
                 onPress={() => router.push('/clima')}
               />
+              {/* Os prazos de troca da casa: só depois que a leitura respondeu com a tabela (antes da migração, nada). */}
+              {Array.isArray(longCycle.data) ? (
+                <ListRow
+                  left={<IconBadge icon="calendar-refresh-outline" tone="neutral" />}
+                  title={LONG_CYCLE_TITLE}
+                  subtitle={longCycleRowSubtitle(openHouseName(household.data))}
+                  right={chevron}
+                  onPress={() => router.push('/trocas')}
+                />
+              ) : null}
               <ListRow
                 left={<IconBadge icon="home-switch-outline" tone="neutral" />}
                 title={households.length > 1 ? `Suas casas (${households.length})` : 'Suas casas'}

@@ -334,38 +334,48 @@ export function longCycleStates({
     newest.set(key, found);
   }
   return LONG_CYCLE_ITEMS.map((item) => {
-    const setting = settings?.find((s) => s.item_key === item.key);
     const found = newest.get(item.key);
-    const record = found?.record ?? null;
-    const bought = record ? toISODate(new Date(Date.parse(record.at))) : null;
-    const replacedOn = setting?.replaced_on && isValidISODate(setting.replaced_on) ? setting.replaced_on : null;
-    const replaced = replacedOn && replacedOn > today ? today : replacedOn;
-    let last: LongCycleState['last'] = null;
-    if (bought && (!replaced || bought >= replaced)) last = { day: bought, via: 'compra' };
-    else if (replaced) last = { day: replaced, via: 'troca' };
-    const months = validMonths(setting?.every_months) ? setting.every_months : item.months;
-    const custom = validMonths(setting?.every_months) && setting.every_months !== item.months;
-    const off = setting?.off === true;
-    const dueOn = last ? addMonths(last.day, months) : null;
-    let status: LongCycleStatus;
-    if (off) status = 'off';
-    else if (!last || !dueOn) status = 'sem_compra';
-    else if (today < dueOn) status = 'em_dia';
-    else if (today < addMonths(last.day, months * LONG_CYCLE_GIVE_UP_FACTOR)) status = 'trocar';
-    else status = 'parou';
-    return {
+    return stateFor(
       item,
-      months,
-      custom,
-      off,
-      last,
-      record,
-      listRecord: found?.listRecord ?? null,
-      productId: found?.withProduct?.productId ?? null,
-      dueOn,
-      status,
-    };
+      { record: found?.record ?? null, listRecord: found?.listRecord ?? null, productId: found?.withProduct?.productId ?? null },
+      settings?.find((s) => s.item_key === item.key),
+      today,
+    );
   });
+}
+
+/**
+ * O mesmo item com outro ajuste da casa (o que acabou de ser gravado): as compras são as mesmas. Diz se o prazo novo
+ * ainda deixa o item na hora de trocar.
+ */
+export function longCycleRestate(state: LongCycleState, setting: LongCycleSetting | undefined, today: string): LongCycleState {
+  return stateFor(state.item, state, setting, today);
+}
+
+function stateFor(
+  item: LongCycleItem,
+  { record, listRecord, productId }: Pick<LongCycleState, 'record' | 'listRecord' | 'productId'>,
+  setting: LongCycleSetting | undefined,
+  today: string,
+): LongCycleState {
+  const bought = record ? toISODate(new Date(Date.parse(record.at))) : null;
+  const replacedOn = setting?.replaced_on && isValidISODate(setting.replaced_on) ? setting.replaced_on : null;
+  const replaced = replacedOn && replacedOn > today ? today : replacedOn;
+  let last: LongCycleState['last'] = null;
+  if (bought && (!replaced || bought >= replaced)) last = { day: bought, via: 'compra' };
+  else if (replaced) last = { day: replaced, via: 'troca' };
+  const houseMonths = setting?.every_months;
+  const months = validMonths(houseMonths) ? houseMonths : item.months;
+  const custom = validMonths(houseMonths) && houseMonths !== item.months;
+  const off = setting?.off === true;
+  const dueOn = last ? addMonths(last.day, months) : null;
+  let status: LongCycleStatus;
+  if (off) status = 'off';
+  else if (!last || !dueOn) status = 'sem_compra';
+  else if (today < dueOn) status = 'em_dia';
+  else if (today < addMonths(last.day, months * LONG_CYCLE_GIVE_UP_FACTOR)) status = 'trocar';
+  else status = 'parou';
+  return { item, months, custom, off, last, record, listRecord, productId, dueOn, status };
 }
 
 // ---------------------------------------------------------------------------

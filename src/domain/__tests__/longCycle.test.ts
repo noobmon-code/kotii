@@ -47,6 +47,7 @@ import {
   longCyclePeriodChoices,
   longCyclePeriodNotice,
   longCycleReplacedNotice,
+  longCycleRestate,
   longCycleRowSubtitle,
   longCycleRowText,
   longCycleSaveMonths,
@@ -505,6 +506,21 @@ describe('a tela dos prazos', () => {
       'escova_sanitaria',
       'travesseiro',
     ]);
+  });
+
+  it('o mesmo item com o ajuste gravado: as compras são as mesmas', () => {
+    const state = stateOf('vassoura', [record('Vassoura', '2025-09-01', { category: 'limpeza' })]);
+    expect(state.status).toBe('trocar');
+    // 9 meses: ainda na hora; 6 meses: passou do dobro; 24 meses: ainda não é a hora; "não sugerir": desligado.
+    expect(longCycleRestate(state, setting('vassoura', { every_months: 9 }), TODAY)).toMatchObject({ status: 'trocar', months: 9, custom: true });
+    expect(longCycleRestate(state, setting('vassoura', { every_months: 6 }), TODAY).status).toBe('parou');
+    expect(longCycleRestate(state, setting('vassoura', { every_months: 24 }), TODAY).status).toBe('em_dia');
+    expect(longCycleRestate(state, setting('vassoura', { off: true }), TODAY).status).toBe('off');
+    expect(longCycleRestate(state, setting('vassoura', { replaced_on: TODAY }), TODAY)).toMatchObject({
+      status: 'em_dia',
+      last: { day: TODAY, via: 'troca' },
+      record: state.record,
+    });
   });
 
   it('o que "Salvar" grava', () => {

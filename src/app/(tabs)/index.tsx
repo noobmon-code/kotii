@@ -8,7 +8,7 @@ import { useFamilyCalendar } from '@/data/family';
 import { useBills, useBudgets, useRecentBillPayments, useSpending } from '@/data/finance';
 import { usePeople } from '@/data/health';
 import { useDocuments, useEquipmentList } from '@/data/house';
-import { useAddItemsToList, useOpenMarketList, usePurchaseRecords, useShoppingLists } from '@/data/market';
+import { useOpenMarketList, usePurchaseRecords, useShoppingLists } from '@/data/market';
 import { useRefreshMarketTrips } from '@/data/marketTrips';
 import { useMenu } from '@/data/menu';
 import { useForecast, useHouseholdLocation, useRefreshWeather } from '@/data/weather';
@@ -23,7 +23,7 @@ import { todayEntries } from '@/domain/familyEvents';
 import type { FirstStepKey } from '@/domain/firstSteps';
 import { currentTimeHHMM, doseKey, dosesForDay } from '@/domain/medications';
 import { listExclusion, type PurchaseRecord } from '@/domain/recentPurchases';
-import { restockSuggestions, type RestockItem } from '@/domain/restock';
+import { restockSuggestions } from '@/domain/restock';
 import { currentSky, defaultSky } from '@/domain/sky';
 import {
   ALL_CLEAR_TITLE,
@@ -45,6 +45,7 @@ import { useRefills } from '@/features/health/MedicationSections';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
 import { MarketTripBanner } from '@/features/MarketTrip';
+import { LongCycleGroup, marketItemOf, useLongCycleToday, useMarketAdd } from '@/features/LongCycle';
 import { InviteSheet, inviteOrigin } from '@/features/onboarding/InviteSheet';
 import { OnboardingContinuation } from '@/features/onboarding/OnboardingContinuation';
 import { useJustListed } from '@/features/RecentPurchases';
@@ -127,7 +128,6 @@ export default function TodayScreen() {
   const menu = useMenu(today, today);
   // Gás, água, ração: num banco ainda sem as tabelas a busca devolve vazio, sem erro.
   const supplies = useSupplies();
-  const addToList = useAddItemsToList();
   const openMarketList = useOpenMarketList();
   const [paying, setPaying] = useState<Bill | null>(null);
   // Itens de todas as listas abertas; os postos agora há pouco somem já no toque.
@@ -175,6 +175,8 @@ export default function TodayScreen() {
     refreshWeather();
     refreshTrips();
     family.refetch();
+    // Os prazos de troca também ficam fora de `queries`: são sugestão, não seguram o "Tudo em dia".
+    longCycle.refetch();
     firstSteps.refresh();
     if (billsDue.length) recentPayments.refetch();
   };
@@ -235,6 +237,18 @@ export default function TodayScreen() {
   const activeLists = (lists.data ?? []).filter((l) => l.pending > 0);
   // "Acho que acabou": do mercado, menos o que já está em alguma lista aberta.
   const restock = useRestock(lists.isSuccess ? onLists : undefined, purchases.data, restocked.pending, today);
+  // "Hora de trocar": o que dura meses e passou do prazo (domain/longCycle). Só com tudo o que pode esconder uma linha
+  // em mãos: as listas (como "Acho que acabou"), o histórico, as reposições, as tarefas e os aparelhos.
+  const longCycle = useLongCycleToday({
+    onLists: lists.isSuccess ? onLists : undefined,
+    justListed: restocked,
+    purchases: purchases.data,
+    restock: lists.isSuccess && purchases.data ? restock : undefined,
+    supplies: supplies.data ? supplies.data.supplies : undefined,
+    chores: chores.data,
+    equipment: equipment.data,
+    today,
+  });
   const dateLabel = capitalizeFirst(now.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }));
   // O céu de agora (do clima da casa) é o fundo do topo; sem bairro ou sem previsão, o céu de sempre da hora.
   const colors = useColors();
@@ -247,33 +261,10 @@ export default function TodayScreen() {
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
-  // Uma inclusão por vez (os botões ficam desativados enquanto isso): sem lista
-  // de mercado aberta, dois pedidos ao mesmo tempo criariam duas "Mercado".
-  const addingRestock = useRef(false);
-  async function addRestock(restockItems: RestockItem[], open: boolean) {
-    if (addingRestock.current) return;
-    addingRestock.current = true;
-    const names = restockItems.map((i) => i.name);
-    // Some já no toque; volta quando as listas carregadas trouxerem o item e
-    // ele sair delas depois (useJustListed). A tela Hoje fica montada o tempo todo.
-    restocked.add(names);
-    try {
-      const { id } = await addToList.mutateAsync({
-        // A lista de mercado aberta mais recente vem do servidor, não do que a
-        // tela tem guardado: pode ter sido arquivada por outra pessoa, ou
-        // criada pelo toque anterior e ainda não ter chegado.
-        newListName: 'Mercado',
-        reuseMarketList: true,
-        items: restockItems.map(({ name, category, productId, quantity, unit }) => ({ name, category, productId, quantity, unit })),
-      });
-      if (open) router.push({ pathname: '/lista/[id]', params: { id } });
-    } catch (err) {
-      restocked.drop(names);
-      onError(err);
-    } finally {
-      addingRestock.current = false;
-    }
-  }
+  // "Acho que acabou" e "Hora de trocar" põem na lista de mercado pelo mesmo caminho, uma inclusão por vez (os botões
+  // ficam desativados enquanto isso): sem lista de mercado aberta, dois pedidos ao mesmo tempo criariam duas "Mercado".
+  // Some já no toque (useJustListed); a tela Hoje fica montada o tempo todo.
+  const marketAdd = useMarketAdd({ justListed: restocked, onError });
 
   // "Lista de mercado": abre a lista de mercado aberta mais recente, ou cria uma (domain/today). Um pedido por vez:
   // dois toques seguidos, sem lista aberta, não criam duas.
@@ -356,8 +347,23 @@ export default function TodayScreen() {
   const suggestions = (
     <TodaySuggestions
       restock={restock}
-      adding={addToList.isPending}
-      onRestock={(restockItems, open) => void addRestock(restockItems, open)}
+      adding={marketAdd.busy}
+      onRestock={(restockItems, open) => void marketAdd.add(restockItems, open)}
+      longCycle={
+        longCycle.shown.length || longCycle.notice ? (
+          <LongCycleGroup
+            today={today}
+            suggestions={longCycle.shown}
+            total={longCycle.total}
+            editable={longCycle.editable}
+            settings={longCycle.settings}
+            notice={longCycle.notice}
+            setNotice={longCycle.setNotice}
+            busy={marketAdd.busy}
+            onAdd={(suggestion) => void marketAdd.add([marketItemOf(suggestion)])}
+          />
+        ) : null
+      }
       menu={menu.data ?? []}
       lists={activeLists}
     />
