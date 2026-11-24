@@ -96,6 +96,17 @@ const itemCount = (count: number) => (count === 1 ? '1 item' : `${count} itens`)
 const missingText = (missing: number) => `${(missing >= 100 && missing < 200) || missing === 1 ? 'Falta' : 'Faltam'} ${formatBRL(missing / 100)}`;
 
 /**
+ * No formulário do item que faltou numa nota confirmada, embaixo do "Total do item": quanto falta para o total da
+ * nota, só quando falta mais que a tolerância e nenhum item está sem valor (com um item sem valor, o que falta pode
+ * ser dele, e a tela já sugere isso nele). Null: o aviso de sempre.
+ */
+export function addedItemHint(gap: ReceiptGap): string | null {
+  const missing = gap.missingCents;
+  if (gap.unpriced.length || missing == null || missing <= TOTAL_TOLERANCE_CENTS) return null;
+  return `${missingText(missing)} para o total da nota.`;
+}
+
+/**
  * Os avisos do cabeçalho da nota, um selo cada: o que é a diferença e, quando
  * falta valor, quantos itens estão sem. Dentro da tolerância, ou sem total,
  * não há o que dizer.

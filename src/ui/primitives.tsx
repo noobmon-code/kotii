@@ -375,6 +375,7 @@ export function IconButton({
   color = 'textMuted',
   disabled,
   expanded,
+  ref,
 }: {
   icon: IconName;
   onPress: () => void;
@@ -384,9 +385,12 @@ export function IconButton({
   disabled?: boolean;
   /** Para o botão que abre e fecha um conteúdo (como `ListRow`): o leitor de tela diz se está aberto. */
   expanded?: boolean;
+  /** Para levar o foco ao botão (`moveFocus` de `src/ui/focus.ts`) quando o que tinha o foco sai da tela. */
+  ref?: Ref<View>;
 }) {
   return (
     <Pressable
+      ref={ref}
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityState={disabled ? { disabled } : undefined}

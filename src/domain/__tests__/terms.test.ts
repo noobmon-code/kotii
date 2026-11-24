@@ -196,7 +196,6 @@ describe('termos de uso', () => {
   });
 
   it('a foto de produto no "Escanear" é um envio novo à IA: o texto diz, e o aviso volta para todo mundo', () => {
-    expect(TERMS_VERSION).toBe('2026-11-14');
     expect(TERMS_ACCEPT_VERSION).toBe('2026-11-14');
     // Quem aceitou a versão de antes (a do código de barras) vê o aviso de novo: agora a foto de produto ou de
     // prateleira também vai para a IA.
@@ -208,6 +207,23 @@ describe('termos de uso', () => {
     expect(ai).toContain('Essa foto pode mostrar o que há na sua casa, então enquadre só os produtos');
     expect(ai).toContain('Ela não fica guardada: é apagada logo depois de lida');
     expect(ai).toContain('só entram na despensa ou na lista quando você toca para guardar');
+  });
+
+  it('os prazos de troca da casa são dado guardado, mas não mudam o que é compartilhado nem o que vai para a IA', () => {
+    // A mesma data de excluir produto (2026-11-24, o dia do merge): as duas frases saem juntas, e o aviso não volta.
+    expect(TERMS_VERSION).toBe('2026-11-24');
+    expect(termsNotice(['2026-11-14'])).toBeNull();
+    const stored = section('O que o app guarda e para quê');
+    expect(stored).toContain('despensa (com o que foi para o congelador), cardápio, os prazos de troca dos itens da casa (escova de dente, refil do filtro…), tarefas e pontos');
+  });
+
+  it('excluir o produto que não está em nenhuma nota é uma mudança de texto: a versão muda, e o aviso não volta', () => {
+    expect(TERMS_VERSION).toBe('2026-11-24');
+    // Quem aceitou a versão da foto de produto não vê o aviso de novo.
+    expect(termsNotice(['2026-11-14'])).toBeNull();
+    const erase = section('Apagar dados e sair');
+    expect(erase).toContain('gás, água e ração, e os produtos que não estão em nenhuma nota.');
+    expect(erase).toContain('e os produtos que estão em alguma nota, os mercados e os históricos');
   });
 
   it('manda a pessoa para Configurações (a aba "Ajustes"), não mais para a aba Família, que deixou de existir', () => {

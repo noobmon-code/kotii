@@ -2,6 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 
 import { RECEIPT_CHECK_CENTS, receiptTotalMismatch } from '../marketSpend';
 import {
+  addedItemHint,
   confirmUnpricedQuestion,
   gapNotices,
   hasReceiptTotal,
@@ -319,5 +320,25 @@ describe('o total da nota, que a revisão deixa corrigir', () => {
     expect(readReceiptTotal('abc')).toEqual(unreadable);
     expect(readReceiptTotal('-5')).toEqual(unreadable);
     expect(readReceiptTotal('1.5000')).toEqual(unreadable);
+  });
+});
+
+describe('o item que faltou numa nota confirmada: o que falta para o total, embaixo do total do item', () => {
+  it('acima da tolerância, quanto falta', () => {
+    expect(addedItemHint(gapOf(66.7, 50))).toBe('Faltam R$ 16,70 para o total da nota.');
+    expect(addedItemHint(gapOf(51.5, 50))).toBe('Falta R$ 1,50 para o total da nota.');
+    expect(addedItemHint(gapOf(10.06, 10))).toBe('Faltam R$ 0,06 para o total da nota.');
+  });
+
+  it('dentro da tolerância, com a soma acima do total, ou sem total: nada (o aviso de sempre)', () => {
+    expect(addedItemHint(gapOf(10.05, 10))).toBeNull();
+    expect(addedItemHint(gapOf(10, 10))).toBeNull();
+    expect(addedItemHint(gapOf(9, 10))).toBeNull();
+    expect(addedItemHint(gapOf(null, 10))).toBeNull();
+    expect(addedItemHint(gapOf(0, 10))).toBeNull();
+  });
+
+  it('com um item sem valor, nada: o que falta pode ser dele, e a tela já sugere isso nele', () => {
+    expect(addedItemHint(gapOf(66.7, 50, line('x', 0)))).toBeNull();
   });
 });

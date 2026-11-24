@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { groupPantry, takeOne, type PantryLot } from '../pantry';
+import { describeLots, groupPantry, takeOne, type PantryLot } from '../pantry';
 
 const lot = (over: Partial<PantryLot>): PantryLot => ({
   id: 'l1',
@@ -94,5 +94,68 @@ describe('takeOne', () => {
     expect(takeOne([lot({ quantity: 1 })])).toBeNull();
     expect(takeOne([lot({ quantity: 0.5, unit: 'kg' })])).toBeNull();
     expect(takeOne([])).toBeNull();
+  });
+});
+
+describe('o congelador na despensa', () => {
+  const frango = (over: Partial<PantryLot>) => lot({ product_id: 'frango', name: 'Frango', category: 'carnes', ...over });
+
+  it('o que está no congelador é outro grupo; o descongelado volta para o do fresco', () => {
+    const groups = groupPantry([
+      frango({ id: 'fresco', purchased_on: '2026-11-15', expires_on: '2026-11-18', expiry_source: 'categoria' }),
+      frango({ id: 'cong1', purchased_on: '2026-11-01', expires_on: '2027-01-30', expiry_source: 'congelado', frozen_on: '2026-11-01', thawed_on: null }),
+      frango({ id: 'cong2', purchased_on: '2026-11-05', expires_on: '2027-02-03', expiry_source: 'congelado', frozen_on: '2026-11-05', thawed_on: null }),
+      frango({ id: 'desc', purchased_on: '2026-11-01', expires_on: '2026-11-23', expiry_source: 'descongelado', frozen_on: '2026-11-01', thawed_on: '2026-11-20' }),
+    ]);
+    expect(groups.map((g) => [g.key, g.lots.map((l) => l.id), g.frozen, g.frozenOn])).toEqual([
+      ['produto:frango', ['desc', 'fresco'], false, null],
+      ['produto:frango:congelado', ['cong1', 'cong2'], true, '2026-11-01'],
+    ]);
+  });
+
+  it('a validade é estimada quando todas as compras com ela são estimadas; a certa vence o empate', () => {
+    const [estimated] = groupPantry([
+      frango({ id: 'a', expires_on: '2026-11-18', expiry_source: 'categoria' }),
+      frango({ id: 'b', expires_on: '2026-11-25', expiry_source: 'manual' }),
+    ]);
+    expect(estimated.expiryEstimated).toBe(true);
+    const [tie] = groupPantry([
+      frango({ id: 'a', expires_on: '2026-11-18', expiry_source: 'categoria' }),
+      frango({ id: 'b', expires_on: '2026-11-18', expiry_source: 'produto' }),
+    ]);
+    expect(tie.expiryEstimated).toBe(false);
+    // Sem origem (as compras antigas, e as cópias de antes desta versão): a cor de sempre.
+    expect(groupPantry([frango({ expires_on: '2026-11-18' })])[0].expiryEstimated).toBe(false);
+    expect(groupPantry([frango({ expires_on: null, expiry_source: null })])[0].expiryEstimated).toBe(false);
+  });
+
+  it('thawedOn: a compra que decide a validade saiu do congelador', () => {
+    const [group] = groupPantry([
+      frango({ id: 'a', expires_on: '2026-11-23', expiry_source: 'descongelado', frozen_on: '2026-11-01', thawed_on: '2026-11-20' }),
+      frango({ id: 'b', expires_on: '2026-11-25', expiry_source: 'categoria' }),
+    ]);
+    expect(group.thawedOn).toBe('2026-11-20');
+    const [other] = groupPantry([
+      frango({ id: 'a', expires_on: '2026-11-28', expiry_source: 'descongelado', frozen_on: '2026-11-01', thawed_on: '2026-11-20' }),
+      frango({ id: 'b', expires_on: '2026-11-25', expiry_source: 'categoria' }),
+    ]);
+    expect(other.thawedOn).toBeNull();
+  });
+
+  it('describeLots marca a compra descongelada, com o ano só quando é outro', () => {
+    expect(
+      describeLots(
+        {
+          lots: [
+            frango({ purchased_on: '2026-11-12', thawed_on: '2026-11-20', frozen_on: '2026-11-12' }),
+            frango({ purchased_on: '2026-11-21' }),
+          ],
+        },
+        '2026-11-22',
+      ),
+    ).toBe('Compras: 12 nov (1 un, descongelado em 20 nov) e 21 nov (1 un).');
+    expect(describeLots({ lots: [frango({ purchased_on: '2025-12-30' }), frango({ purchased_on: '2026-01-02' }), frango({ purchased_on: '2026-01-03' })] }, '2026-01-05')).toBe(
+      'Compras: 30 dez 2025 (1 un), 2 jan (1 un) e 3 jan (1 un).',
+    );
   });
 });

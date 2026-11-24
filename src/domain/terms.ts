@@ -6,7 +6,7 @@
 import { formatBRDate } from './dates';
 
 /** Data da versão do texto (AAAA-MM-DD). Muda a cada mudança no texto. */
-export const TERMS_VERSION = '2026-11-14';
+export const TERMS_VERSION = '2026-11-24';
 
 /**
  * A versão que a pessoa aceita (AAAA-MM-DD). Só muda numa mudança importante (o que é guardado, compartilhado
@@ -80,7 +80,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
   {
     title: 'O que o app guarda e para quê',
     paragraphs: [
-      'O app guarda o que você e a sua casa registram, para mostrar de volta e fazer as contas dele: notas fiscais (mercado, CNPJ, data, itens e preços), listas de compras, despensa, cardápio, tarefas e pontos, aparelhos e prestadores, documentos (número, validade e fotos), saúde (fichas das pessoas e dos pets, remédios, consultas, vacinas, exames, treino e dieta) e finanças (gastos, contas, orçamento e quem pagou o quê).',
+      'O app guarda o que você e a sua casa registram, para mostrar de volta e fazer as contas dele: notas fiscais (mercado, CNPJ, data, itens e preços), listas de compras, despensa (com o que foi para o congelador), cardápio, os prazos de troca dos itens da casa (escova de dente, refil do filtro…), tarefas e pontos, aparelhos e prestadores, documentos (número, validade e fotos), saúde (fichas das pessoas e dos pets, remédios, consultas, vacinas, exames, treino e dieta) e finanças (gastos, contas, orçamento e quem pagou o quê).',
       'Tudo fica no Supabase, o serviço de banco de dados e de login que o Kotii usa, com regras que deixam cada casa ler só o que é dela. As fotos ficam num armazenamento privado da casa. O aparelho guarda uma cópia do que você abriu, para o app abrir sem internet.',
       'Dados de saúde são sensíveis. Qualquer morador da casa pode registrá-los, inclusive sobre você ou sobre quem não usa o app (crianças, idosos, pets), e todos os moradores os veem. Eles servem às funções de saúde do app e ao Nuke, como explicado abaixo.',
       'Para a previsão do tempo, a casa pode informar o CEP ou usar a localização do aparelho. O app guarda a localização da casa só aproximada (cerca de 1 km) e o nome do bairro, não o endereço. Para isso ele consulta serviços públicos de CEP e de mapa (ViaCEP, BrasilAPI e OpenStreetMap) e de previsão do tempo (Open-Meteo), mandando só o CEP ou as coordenadas.',
@@ -138,8 +138,8 @@ export const TERMS_SECTIONS: TermsSection[] = [
   {
     title: 'Apagar dados e sair',
     paragraphs: [
-      'Nas telas do app dá para excluir notas fiscais e itens delas, itens das listas, tarefas, aparelhos, prestadores e serviços, documentos, gastos, contas, consultas, vacinas, exames, fichas de treino e de dieta, compromissos, fichas de pessoas e pets, e gás, água e ração.',
-      'Nem tudo sai assim: os remédios só são arquivados; apagar a ficha de uma pessoa não apaga os remédios dela; o item da despensa fica marcado como consumido; e os produtos, os mercados e os históricos (compras, tarefas feitas, pontos trocados, treinos feitos e idas ao mercado) ficam com a casa.',
+      'Nas telas do app dá para excluir notas fiscais e itens delas, itens das listas, tarefas, aparelhos, prestadores e serviços, documentos, gastos, contas, consultas, vacinas, exames, fichas de treino e de dieta, compromissos, fichas de pessoas e pets, gás, água e ração, e os produtos que não estão em nenhuma nota.',
+      'Nem tudo sai assim: os remédios só são arquivados; apagar a ficha de uma pessoa não apaga os remédios dela; o item da despensa fica marcado como consumido; e os produtos que estão em alguma nota, os mercados e os históricos (compras, tarefas feitas, pontos trocados, treinos feitos e idas ao mercado) ficam com a casa.',
       `Para apagar tudo o que é seu, escreva para ${TERMS_CONTACT}.`,
       'Sair da casa ("Sair desta casa", em Configurações) tira o seu acesso a ela; o que você registrou continua com a casa. Se você é a última pessoa, sair apaga a casa e tudo o que ela tem, para sempre: listas, notas, despensa, tarefas, saúde, documentos e fotos.',
       'Sair da conta só desconecta este aparelho; não apaga nada.',

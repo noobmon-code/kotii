@@ -82,8 +82,12 @@ export const PACK_SAVED_NOT_SHOWN = {
   title: 'Quantidade salva',
   message: 'Não deu para atualizar a nota na tela: a quantidade aparece quando ela for buscada de novo.',
 };
-/** A linha que já não está na nota (outro aparelho a apagou ou mudou): a resposta não gravou nada. */
+/**
+ * A linha já não é a que a tela mostrava: saiu da nota, ou passou para outro produto, em outro aparelho ou nesta tela
+ * (a troca de produto cuja nota relida ainda não voltou, ou cuja resposta se perdeu). A resposta não gravou nada. Como o
+ * peso (WEIGHT_LINE_CHANGED), a frase não culpa outro aparelho.
+ */
 export const PACK_LINE_CHANGED = {
   title: 'Quantidade não salva',
-  message: 'A linha mudou em outro aparelho. Confira a nota e responda de novo, se ainda precisar.',
+  message: 'Este item já mudou antes deste toque. Confira a nota e, se ainda precisar, responda de novo.',
 };

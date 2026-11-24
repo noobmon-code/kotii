@@ -28,7 +28,9 @@ const row = {
   total_price: 18.9,
 };
 
-type Column = 'generic_name' | 'store_code' | 'pack_count';
+type Column = 'generic_name' | 'store_code' | 'pack_count' | 'added_after_confirmation';
+/** As colunas recentes que a leitura dos itens pede, na ordem em que o app as tira quando o banco não as tem. */
+const READ_COLUMNS = ['generic_name', 'store_code', 'pack_count', 'added_after_confirmation'] as const;
 const VALUES: Record<'generic_name' | 'store_code', string> = { generic_name: 'café em pó', store_code: '7896005800010' };
 
 /**
@@ -47,10 +49,11 @@ function fakeDb(has: Column[], failure?: { code?: string; message: string }) {
             expect([table, column, value, by]).toEqual(['receipt_items', 'receipt_id', 'r1', 'position']);
             if (failure) return { data: null, error: failure };
             const asked = columns.split(', ');
-            const missing = (['generic_name', 'store_code', 'pack_count'] as const).find((c) => asked.includes(c) && !has.includes(c));
+            const missing = READ_COLUMNS.find((c) => asked.includes(c) && !has.includes(c));
             if (missing) return { data: null, error: { code: '42703', message: `column receipt_items.${missing} does not exist` } };
             const extra = Object.fromEntries((['generic_name', 'store_code'] as const).filter((c) => asked.includes(c)).map((c) => [c, VALUES[c]]));
-            return { data: [{ ...row, ...extra }], error: null };
+            const added = asked.includes('added_after_confirmation') ? { added_after_confirmation: false } : {};
+            return { data: [{ ...row, ...extra, ...added }], error: null };
           },
         }),
       }),
@@ -62,33 +65,37 @@ function fakeDb(has: Column[], failure?: { code?: string; message: string }) {
 const asks = (reads: string[], column: Column) => reads.map((columns) => columns.split(', ').includes(column));
 
 describe('fetchReceiptItems', () => {
-  it('lê os itens com o item genérico da leitura por foto e o código do produto na nota', async () => {
-    const { db, reads } = fakeDb(['generic_name', 'store_code', 'pack_count']);
-    expect(await fetchReceiptItems('r1', db)).toEqual([{ ...row, generic_name: 'café em pó', store_code: '7896005800010' }]);
+  it('lê os itens com o item genérico da leitura por foto, o código do produto na nota e a marca da linha incluída depois', async () => {
+    const { db, reads } = fakeDb([...READ_COLUMNS]);
+    expect(await fetchReceiptItems('r1', db)).toEqual([
+      { ...row, generic_name: 'café em pó', store_code: '7896005800010', added_after_confirmation: false },
+    ]);
     expect(reads).toHaveLength(1);
   });
 
-  it('banco de antes das colunas recentes (item genérico, código e embalagem): lê de novo sem as que faltam, e a revisão fica como era', async () => {
+  it('banco de antes das colunas recentes (item genérico, código, embalagem e linha incluída): lê de novo sem as que faltam, e a revisão fica como era', async () => {
     const { db, reads } = fakeDb([]);
     const [item] = await fetchReceiptItems('r1', db);
     expect(item).toEqual(row);
     expect(item.generic_name).toBeUndefined();
     expect(item.store_code).toBeUndefined();
-    expect(asks(reads, 'generic_name')).toEqual([true, false, false, false]);
-    expect(asks(reads, 'store_code')).toEqual([true, true, false, false]);
-    expect(asks(reads, 'pack_count')).toEqual([true, true, true, false]);
+    expect(item.added_after_confirmation).toBeUndefined();
+    expect(asks(reads, 'generic_name')).toEqual([true, false, false, false, false]);
+    expect(asks(reads, 'store_code')).toEqual([true, true, false, false, false]);
+    expect(asks(reads, 'pack_count')).toEqual([true, true, true, false, false]);
+    expect(asks(reads, 'added_after_confirmation')).toEqual([true, true, true, true, false]);
   });
 
   it('banco com o item genérico e sem o código: lê sem o código, com o genérico', async () => {
-    const { db, reads } = fakeDb(['generic_name', 'pack_count']);
-    expect(await fetchReceiptItems('r1', db)).toEqual([{ ...row, generic_name: 'café em pó' }]);
+    const { db, reads } = fakeDb(['generic_name', 'pack_count', 'added_after_confirmation']);
+    expect(await fetchReceiptItems('r1', db)).toEqual([{ ...row, generic_name: 'café em pó', added_after_confirmation: false }]);
     expect(asks(reads, 'store_code')).toEqual([true, false]);
     expect(asks(reads, 'generic_name')).toEqual([true, true]);
   });
 
   it('banco com o código e sem o item genérico: lê sem o genérico, com o código', async () => {
-    const { db, reads } = fakeDb(['store_code', 'pack_count']);
-    expect(await fetchReceiptItems('r1', db)).toEqual([{ ...row, store_code: '7896005800010' }]);
+    const { db, reads } = fakeDb(['store_code', 'pack_count', 'added_after_confirmation']);
+    expect(await fetchReceiptItems('r1', db)).toEqual([{ ...row, store_code: '7896005800010', added_after_confirmation: false }]);
     expect(asks(reads, 'generic_name')).toEqual([true, false]);
     expect(asks(reads, 'store_code')).toEqual([true, true]);
   });
@@ -98,7 +105,16 @@ describe('fetchReceiptItems', () => {
     const [item] = await fetchReceiptItems('r1', db);
     expect(item).toEqual({ ...row, generic_name: 'café em pó', store_code: '7896005800010' });
     expect(item.pack_count).toBeUndefined();
-    expect(asks(reads, 'pack_count')).toEqual([true, false]);
+    expect(asks(reads, 'pack_count')).toEqual([true, false, false]);
+  });
+
+  it('banco sem a marca da linha incluída depois da confirmação (as correções ainda não migradas): uma leitura a mais, sem ela', async () => {
+    const { db, reads } = fakeDb(['generic_name', 'store_code', 'pack_count']);
+    const [item] = await fetchReceiptItems('r1', db);
+    expect(item).toEqual({ ...row, generic_name: 'café em pó', store_code: '7896005800010' });
+    expect(item.added_after_confirmation).toBeUndefined();
+    expect(asks(reads, 'added_after_confirmation')).toEqual([true, false]);
+    expect(asks(reads, 'pack_count')).toEqual([true, true]);
   });
 
   it('outro erro (sem internet, outra coluna) continua sendo erro, sem segunda tentativa', async () => {

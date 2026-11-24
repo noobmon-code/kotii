@@ -7,6 +7,13 @@ import { pricePerBase } from './units';
 
 const UNIT_ORDER = ['un', 'kg', 'l'];
 
+/**
+ * Em Preços, buscando, o produto da casa que ainda não tem preço de nota (o nome dado a um código de barras, o
+ * que ficou de uma nota excluída) aparece depois dos que têm, com esta linha: é por aí que se chega à tela dele
+ * (para juntar, desfazer um "São diferentes" ou excluir).
+ */
+export const NO_PRICE_YET = 'Sem preço de nota ainda';
+
 export interface PriceLike {
   store_id: string;
   unit: string;

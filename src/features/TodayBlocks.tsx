@@ -12,7 +12,8 @@ import { getFinanceCategory } from '@/domain/finance';
 import { financeAddress } from '@/domain/tabs';
 import { doseKey } from '@/domain/medications';
 import { MEALS, type MenuItem } from '@/domain/menu';
-import { describeExpiry } from '@/domain/pantry';
+import { FROZEN_ROW_SUBTITLE, thawedRowSubtitle } from '@/domain/freezer';
+import { expiryBadge, isEstimatedExpiry, isFrozen } from '@/domain/pantry';
 import { describeRestock, type RestockItem } from '@/domain/restock';
 import { seeAllLabel, SUGGESTION_TITLES, TODAY_BLOCK_TITLES, type TodayBlockContent, type TodayItem } from '@/domain/today';
 import { announceCompletion } from '@/features/ChoresPanel';
@@ -165,12 +166,24 @@ export function useTodayRow(context: TodayRowContext): (item: TodayItem) => Reac
       }
       case 'pantry': {
         const { item: pantryItem, status } = item.data;
+        // A validade estimada (pela categoria, pelo congelador, depois de descongelar) é neutra, com "~"; o lugar e a
+        // contagem no Hoje não mudam.
+        const badge = expiryBadge(status, isEstimatedExpiry(pantryItem.expiry_source));
+        const subtitle = isFrozen(pantryItem)
+          ? FROZEN_ROW_SUBTITLE
+          : pantryItem.thawed_on
+            ? thawedRowSubtitle(pantryItem.thawed_on, today)
+            : undefined;
         return (
           <ListRow
             key={pantryItem.id}
             left={<CategoryIcon category={pantryItem.category} name={pantryItem.name} />}
             title={pantryItem.name}
-            right={<Badge label={describeExpiry(status)} tone={status.kind === 'vencido' ? 'danger' : 'warning'} />}
+            subtitle={subtitle}
+            right={
+              badge ? <Badge label={badge.label} tone={badge.estimated ? 'neutral' : status.kind === 'vencido' ? 'danger' : 'warning'} /> : null
+            }
+            accessibilityLabel={badge ? [pantryItem.name, subtitle, badge.accessibilityLabel].filter(Boolean).join(', ') : undefined}
             onPress={() => router.push({ pathname: '/despensa/[id]', params: { id: pantryItem.id } })}
           />
         );
@@ -258,7 +271,7 @@ export function TodayBlock({
 }
 
 /** Um grupo de "Sugestões": o nome dele (também para quem navega pelos títulos), a ação dele e as linhas. */
-function SuggestionGroup({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
+export function SuggestionGroup({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
     <View style={styles.group}>
       <View style={styles.groupHeader}>
@@ -273,13 +286,15 @@ function SuggestionGroup({ title, action, children }: { title: string; action?: 
 }
 
 /**
- * "Sugestões": o que acabou pelas contas do app ("Acho que acabou", com "Pôr na lista"), o cardápio de hoje e as
- * listas abertas com algo para comprar. Não são pendências: não entram na conta do topo nem seguram o "Tudo em dia".
+ * "Sugestões": o que acabou pelas contas do app ("Acho que acabou", com "Pôr na lista"), o que está na hora de trocar
+ * (`longCycle`, o grupo dos prazos de troca, features/LongCycle), o cardápio de hoje e as listas abertas com algo para
+ * comprar. Não são pendências: não entram na conta do topo nem seguram o "Tudo em dia".
  */
 export function TodaySuggestions({
   restock,
   adding,
   onRestock,
+  longCycle,
   menu,
   lists,
 }: {
@@ -288,6 +303,8 @@ export function TodaySuggestions({
   adding: boolean;
   /** Põe na lista de mercado; `open` abre a lista depois ("Pôr tudo na lista"). */
   onRestock: (items: RestockItem[], open: boolean) => void;
+  /** "Hora de trocar": só quando tem uma linha ou um aviso para mostrar. */
+  longCycle?: ReactNode;
   menu: MenuItem[];
   lists: { id: string; name: string; kind: ListKind; pending: number }[];
 }) {
@@ -295,7 +312,7 @@ export function TodaySuggestions({
     const item = menu.find((i) => i.meal === key);
     return item ? [{ key, label, dish: item.dish }] : [];
   });
-  if (!restock.length && !meals.length && !lists.length) return null;
+  if (!restock.length && !longCycle && !meals.length && !lists.length) return null;
   return (
     <Section title={TODAY_BLOCK_TITLES.sugestoes}>
       <View style={styles.groups}>
@@ -317,6 +334,8 @@ export function TodaySuggestions({
             </ListCard>
           </SuggestionGroup>
         ) : null}
+
+        {longCycle}
 
         {meals.length ? (
           <SuggestionGroup title={SUGGESTION_TITLES.menu}>
