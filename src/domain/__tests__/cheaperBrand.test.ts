@@ -122,6 +122,24 @@ describe('a marca de um produto da casa (brandHead)', () => {
     expect(brandHead({ name: 'Refrigerante Coca-Cola 2l', category: 'bebidas' })).toBeNull();
     expect(brandHead({ name: 'Arroz 5kg', category: 'graos' })).toBeNull();
   });
+
+  it('as palavras que descrevem qualquer marca antes dela não são a marca (UHT, longa vida, torrado, líquido, agulhinha)', () => {
+    const heads: [string, string, string][] = [
+      ['Leite UHT Integral Italac 1L', 'laticinios', 'italac'],
+      ['Leite Longa Vida Integral Piracanjuba 1L', 'laticinios', 'piracanjuba'],
+      ['Café Torrado e Moído Pilão 500g', 'cafe_cha', 'pilao'],
+      ['Café Superior Torrado e Moído 3 Corações 500g', 'cafe_cha', 'coracoes'],
+      ['Café Extra Forte Melitta 500g', 'cafe_cha', 'melitta'],
+      ['Detergente Líquido Ypê Neutro 500ml', 'limpeza', 'ype'],
+      ['Arroz Agulhinha Tipo 1 Tio João 5kg', 'graos', 'tio'],
+      ['Sal Refinado Iodado Cisne 1kg', 'temperos', 'cisne'],
+      ['Azeite Extra Virgem Gallo 500ml', 'oleos', 'gallo'],
+      ['Cerveja Pilsen Skol Lata 350ml', 'alcoolicas', 'skol'],
+      ['Amaciante Concentrado Downy 500ml', 'limpeza', 'downy'],
+      ['Queijo Mussarela Fatiado Tirolez 200g', 'frios', 'tirolez'],
+    ];
+    expect(heads.map(([name, category]) => brandHead({ name, category }))).toEqual(heads.map(([, , head]) => head));
+  });
 });
 
 describe('o mesmo item de outra marca (candidateFits)', () => {
@@ -212,7 +230,16 @@ describe('os textos', () => {
     expect(quantityShort(five)).toBe('5 pacotes de 1 kg');
     expect(quantitySentence({ ...five, amount: 0.5, packages: 1, pack: { unit: 'kg', amount: 0.5, label: '500 g' } })).toBe('A conta usa 500 g: 1 pacote de 500 g.');
     expect(quantitySentence({ ...five, sayQuantity: false })).toBeNull();
-    expect(quantityShort({ ...five, packages: null })).toBeNull();
+    expect(quantityShort({ ...five, sayQuantity: false })).toBeNull();
+    // Sem pacotes inteiros (o pacote de 2 kg numa conta de 5 kg, ou o queijo a granel de "Queijo mussarela 500g"): a
+    // quantidade da lista pelo preço por kg.
+    const twoKg = { ...five, perBase: 6, pack: KG(2), packagePrice: 12, packages: null };
+    expect(quantitySentence(twoKg)).toBe('A conta usa 5 kg a R$ 6,00/kg: pacotes de 2 kg não fecham essa quantidade.');
+    expect(quantityShort(twoKg)).toBe('5 kg a R$ 6,00/kg');
+    const loose = { ...five, perBase: 45, pack: null, packagePrice: null, amount: 0.5, packages: null };
+    expect(quantitySentence(loose)).toBe('A conta usa 500 g a R$ 45,00/kg.');
+    expect(quantityShort(loose)).toBe('500 g a R$ 45,00/kg');
+    expect(quantityShort({ ...loose, sayQuantity: false })).toBeNull();
   });
 
   it('o selo, o ranking e as frases fixas', () => {
@@ -286,6 +313,21 @@ describe('a busca das marcas (brandKeyGroups)', () => {
       expect(group.signature).toBe(groupSignature(group.keys, group.weightOnly, group.expected));
       expect(group.items).toEqual([{ id: 'a', base: 'kg', size: group.expected, referenceKey: 'i:arroz' }]);
     }
+  });
+
+  it('a marca da casa depois de "UHT" não tira da busca o leite UHT das outras marcas', () => {
+    const reference = 'Leite UHT Integral Italac 1L';
+    const leite = searchItem('l', 'Leite integral', {
+      category: 'laticinios',
+      referenceKey: genericItem(reference, 'laticinios').key,
+      referenceName: reference,
+      base: 'l',
+      amounts: [1],
+      houseHeads: [brandHead({ name: reference, category: 'laticinios' })!],
+    });
+    const { groups } = brandAnswered([leite], () => [key('LEITE UHT INT PIRACANJUBA 1L', 'un', 3), key('LEITE UHT INT ITALAC 1L', 'un', 5)]);
+    // O Italac é da casa; o Piracanjuba, outra marca.
+    expect(groups.map((group) => group.keys)).toEqual([['LEITE UHT INT PIRACANJUBA 1L']]);
   });
 
   it('a quantidade que a lista diz só pergunta os tamanhos que cabem inteiros nela', () => {

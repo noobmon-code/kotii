@@ -34,6 +34,7 @@ import {
   OTHER_PRODUCT_WORDS,
   otherProductMarks,
   ownSameItemKeys,
+  type OwnSameItems,
   parseSharedItemKeys,
   parseSharedItemPrices,
   restorePackMark,
@@ -97,14 +98,14 @@ function serverAccepts(group: { k: string[]; w?: string[]; p?: { u: string; a: n
 
 describe('que itens procuram preço na base aberta', () => {
   it('o item de qualquer marca, de uma categoria que se compartilha, "outros" ou sem categoria', () => {
-    const none = new Set<string>();
+    const none: OwnSameItems = new Map();
     expect(openPriceItem({ name: 'Arroz', category: 'graos' }, none)).toBe(true);
     expect(openPriceItem({ name: 'Detergente', category: null }, none)).toBe(true);
     expect(openPriceItem({ name: 'Leite', category: 'outros' }, none)).toBe(true);
   });
 
   it('não procuram: "Marca preferida", a marca no nome, o item que o app não conhece, higiene, e ração e fralda (o nome é o item)', () => {
-    const none = new Set<string>();
+    const none: OwnSameItems = new Map();
     expect(openPriceItem({ name: 'Arroz', category: 'graos', brandPreferred: true }, none)).toBe(false);
     expect(openPriceItem({ name: 'Biscoito Oreo', category: 'doces' }, none)).toBe(false);
     expect(openPriceItem({ name: 'Leite IL Desnatado', category: 'laticinios' }, none)).toBe(false);
@@ -125,9 +126,18 @@ describe('que itens procuram preço na base aberta', () => {
       // Zero não é preço.
       { productId: 'italac', unitPrice: 0 },
     ]);
-    expect([...own]).toEqual(['i:arroz']);
+    expect([...own.keys()]).toEqual(['i:arroz']);
     expect(openPriceItem({ name: 'Arroz', category: 'graos' }, own)).toBe(false);
     expect(openPriceItem({ name: 'Leite integral', category: 'laticinios' }, own)).toBe(true);
+  });
+
+  it('o produto da casa com a chave do item e marca de outro produto ("Arroz Quebrado") não tira o "Arroz" da busca', () => {
+    // A conta não dá ao "Arroz" o preço do quebrado (itemFits): sem a base aberta ele ficaria sem preço nenhum.
+    const quebrado = ownSameItemKeys([{ id: 'qb', name: 'Arroz Quebrado Kicaldo 5kg', category: 'graos' }], [{ productId: 'qb', unitPrice: 14.9 }]);
+    expect([...quebrado.keys()]).toEqual(['i:arroz']);
+    expect(openPriceItem({ name: 'Arroz', category: 'graos' }, quebrado)).toBe(true);
+    // A lista que pede o quebrado é dele.
+    expect(openPriceItem({ name: 'Arroz quebrado', category: 'graos' }, quebrado)).toBe(false);
   });
 });
 

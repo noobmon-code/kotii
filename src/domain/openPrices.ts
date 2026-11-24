@@ -165,27 +165,38 @@ export function productsByGenericKey(
   return byKey;
 }
 
+/** Os produtos da casa com preço, por chave de item sem marca (ownSameItemKeys). */
+export type OwnSameItems = ReadonlyMap<string, readonly { name: string; category: string | null }[]>;
+
 /**
- * As chaves de item sem marca dos produtos da casa que têm preço (acima de zero). O item digitado "Arroz" numa casa
- * que comprou "Arroz Camil 5kg" fica fora da base aberta: o dado da casa vence, e dar preço a ele pelos produtos
- * da casa é outra mudança.
+ * Os produtos da casa que têm preço (acima de zero), por chave de item sem marca. O item digitado "Arroz" numa casa
+ * que comprou "Arroz Camil 5kg" fica fora da base aberta: o dado da casa vence, e ele sai por esse produto (`sameItem`,
+ * em domain/listEstimate). Numa casa que só comprou "Arroz Quebrado Kicaldo 5kg", não: o quebrado tem a chave do
+ * arroz, mas não é o "Arroz" da lista (openPriceItem confere o mesmo item, como a conta).
  */
 export function ownSameItemKeys(
   products: readonly { id: string; name: string; category?: string | null }[],
   prices: readonly { productId: string; unitPrice: number }[],
-): Set<string> {
+): OwnSameItems {
   const priced = new Set(prices.filter((price) => price.unitPrice > 0).map((price) => price.productId));
-  return new Set(productsByGenericKey(products, (id) => priced.has(id)).keys());
+  const byId = new Map(products.map((product) => [product.id, product]));
+  return new Map(
+    [...productsByGenericKey(products, (id) => priced.has(id))].map(([key, ids]) => [
+      key,
+      ids.map((id) => ({ name: byId.get(id)!.name, category: byId.get(id)!.category ?? null })),
+    ]),
+  );
 }
 
 /**
  * O item pode buscar preço na base aberta (quem chama já sabe que ele não tem preço nenhum: itemsWithoutPrice): de
  * qualquer marca (brandFreeItemKey), de uma categoria que se compartilha, "outros" ou sem categoria, com palavras
- * para buscar, e não é o item de um produto da casa com preço (`ownKeys`).
+ * para buscar, e não é o item de um produto da casa com preço (`own`: a mesma chave e o mesmo item, itemFits, sem
+ * marca de outro produto que a lista não diga; a mesma regra que dá a ele o preço desse produto).
  */
-export function openPriceItem(item: Pick<OpenSearchItem, 'name' | 'category' | 'brandPreferred'>, ownKeys: ReadonlySet<string>): boolean {
+export function openPriceItem(item: Pick<OpenSearchItem, 'name' | 'category' | 'brandPreferred'>, own: OwnSameItems): boolean {
   const key = brandFreeItemKey(item);
-  if (!key || ownKeys.has(key)) return false;
+  if (!key || (own.get(key) ?? []).some((product) => itemFits(item, product))) return false;
   if (item.category != null && item.category !== 'outros' && !SHARED_CATEGORIES.includes(item.category)) return false;
   return searchWords(item.name, item.category) != null;
 }

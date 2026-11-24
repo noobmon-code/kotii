@@ -397,6 +397,11 @@ interface KindDimension {
    * de fora (addsForm). Não muda o "mesmo item" da revisão da nota.
    */
   form?: boolean;
+  /**
+   * Valores que são a marca, não um tipo de qualquer marca (a Coca, a Pepsi do refrigerante): a chave com um deles já diz
+   * a marca, e toda descrição com essa chave é dela (keyNamesBrand). Não muda o "mesmo item".
+   */
+  brands?: readonly string[];
 }
 
 const FLAVORS: Readonly<Record<string, readonly string[]>> = {
@@ -467,6 +472,7 @@ const KINDS: readonly KindDimension[] = [
       limao: ['limao', 'sprite', 'soda limonada'],
       tonica: ['tonica'],
     },
+    brands: ['coca', 'pepsi', 'fanta', 'schweppes'],
   },
   { keys: ['suco', 'iogurte', 'bebida_lactea', 'biscoito', 'sorvete', 'picole', 'bolo', 'gelatina'], values: FLAVORS },
   // O biscoito que a lista diz: o recheado não é o de maisena. Um "Biscoito" só, sem tipo, é qualquer um.
@@ -690,6 +696,21 @@ function readKinds(text: string, key: string, family: string | null): Map<number
 /** Um valor de tipo que este item conhece ("pó" do café, "soja" do óleo): aí a palavra não faz outra coisa. */
 function isKindWord(word: string, key: string, family: string | null): boolean {
   return KINDS.some((dimension) => dimensionFits(dimension, key, family) && Object.values(dimension.values).some((terms) => terms.includes(word)));
+}
+
+/**
+ * A chave sem marca (genericItem, "i:refrigerante|4=coca") já diz a marca: um tipo dela é uma marca (`brands`). Aí
+ * outra descrição com a mesma chave é a mesma marca, nunca "outra marca".
+ */
+export function keyNamesBrand(key: string): boolean {
+  return key
+    .split('|')
+    .slice(1)
+    .some((part) => {
+      const [at, values = ''] = part.split('=');
+      const brands = /^\d+$/.test(at) ? KINDS[Number(at)]?.brands : undefined;
+      return brands != null && values.split(',').some((value) => brands.includes(value));
+    });
 }
 
 /** O grupo do item, pela chave de itemIdentity ("papel_toalha" é de casa, "presunto" é comida). */

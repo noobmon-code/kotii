@@ -133,11 +133,18 @@ export function brandFreeKey(item: {
 }
 
 // Não são a marca: os conectivos, o "tipo" e as palavras que descrevem qualquer marca ("Arroz Branco Camil",
-// "Café Tradicional Pilão"). Uma palavra a mais aqui só deixa de tirar descrições da busca; uma a menos tiraria todas
-// as que a têm ("ARROZ BRANCO T1 KICALDO").
+// "Café Tradicional Pilão", "Leite UHT Integral Italac", "Café Torrado e Moído Pilão", "Detergente Líquido Ypê"), já
+// por extenso (spelledOut: "LIQ" é "liquido"). Uma palavra a mais aqui só deixa de tirar descrições da busca; uma a
+// menos tiraria todas as que a têm ("ARROZ BRANCO T1 KICALDO", "LEITE UHT INT PIRACANJUBA 1L").
 const BRAND_SKIP = new Set([
   'de', 'da', 'do', 'das', 'dos', 'em', 'com', 'e', 'a', 'o', 'ao', 'para', 'sem', 'tipo', 'tp', 'branco', 'branca',
   'tradicional', 'original', 'classico', 'classica', 'comum', 'puro', 'pura', 'extra', 'especial', 'novo', 'nova',
+  // Leite, café, arroz, açúcar, sal, azeite, cerveja, limpeza: o jeito, o ponto, o grão, a forma.
+  'uht', 'longa', 'vida', 'pasteurizado', 'pasteurizada', 'integral', 'desnatado', 'desnatada', 'semidesnatado',
+  'semidesnatada', 'zero', 'light', 'diet', 'lactose', 'torrado', 'torrada', 'moido', 'moida', 'forte', 'extraforte',
+  'suave', 'superior', 'gourmet', 'premium', 'vacuo', 'soluvel', 'granulado', 'agulhinha', 'longo', 'polido',
+  'parboilizado', 'grao', 'refinado', 'refinada', 'cristal', 'iodado', 'virgem', 'pilsen', 'liquido', 'liquida',
+  'concentrado', 'concentrada', 'neutro', 'neutra', 'fatiado', 'fatiada', 'ralado', 'ralada', 'cremoso', 'cremosa',
 ]);
 const words = (text: string) => spelledOut(text).split(' ').filter(Boolean);
 
@@ -195,7 +202,11 @@ export interface CheaperBrand {
 export interface PerBaseCost extends ComparablePrice {
   amount: number;
   packages: number | null;
-  /** Os detalhes e a linha dizem quantos pacotes (a lista não é em "un", ou os pacotes não são as unidades dela). */
+  /**
+   * Os detalhes e a linha dizem a quantidade: quantos pacotes (a lista não é em "un", ou os pacotes não são as
+   * unidades dela); sem pacotes inteiros, quanto e a que preço por kg ou litro (o pacote que não fecha a quantidade
+   * da lista, ou a quantidade do nome a granel: "Queijo mussarela 500g").
+   */
   sayQuantity: boolean;
 }
 
@@ -448,16 +459,22 @@ export function brandTileName(name: string, category?: string | null): string {
   return onlySizes ? name.trim() : rest.join(' ');
 }
 
-/** "A conta usa 5 kg: 5 pacotes de 1 kg."; null quando não há o que dizer. */
+/**
+ * "A conta usa 5 kg: 5 pacotes de 1 kg."; sem pacotes inteiros, "A conta usa 5 kg a R$ 6,00/kg: pacotes de 2 kg não
+ * fecham essa quantidade." ou "A conta usa 500 g a R$ 45,00/kg."; null quando não há o que dizer.
+ */
 export function quantitySentence(cost: PerBaseCost): string | null {
-  if (!cost.sayQuantity || cost.packages == null || !cost.pack) return null;
-  return `A conta usa ${amountLabel(cost.base, cost.amount)}: ${cost.packages} ${packagesWord(cost.packages)} de ${cost.pack.label}.`;
+  if (!cost.sayQuantity) return null;
+  const amount = amountLabel(cost.base, cost.amount);
+  if (cost.packages != null) return cost.pack ? `A conta usa ${amount}: ${cost.packages} ${packagesWord(cost.packages)} de ${cost.pack.label}.` : null;
+  return `A conta usa ${amount} a ${perBaseLabel(cost)}${cost.pack ? `: pacotes de ${cost.pack.label} não fecham essa quantidade` : ''}.`;
 }
 
-/** "5 pacotes de 1 kg", na linha do "Onde comprar"; null quando não há o que dizer. */
+/** "5 pacotes de 1 kg", na linha do "Onde comprar"; sem pacotes inteiros, "5 kg a R$ 6,00/kg"; null quando não há o que dizer. */
 export function quantityShort(cost: PerBaseCost): string | null {
-  if (!cost.sayQuantity || cost.packages == null || !cost.pack) return null;
-  return `${cost.packages} ${packagesWord(cost.packages)} de ${cost.pack.label}`;
+  if (!cost.sayQuantity) return null;
+  if (cost.packages != null) return cost.pack ? `${cost.packages} ${packagesWord(cost.packages)} de ${cost.pack.label}` : null;
+  return `${amountLabel(cost.base, cost.amount)} a ${perBaseLabel(cost)}`;
 }
 
 /** Depois da outra marca que só outras casas compraram, nos detalhes do item. */

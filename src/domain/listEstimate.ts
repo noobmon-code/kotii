@@ -68,6 +68,7 @@ import {
 } from './openPrices';
 import { normalizeSearch } from './search';
 import type { PurchaseRecord } from './recentPurchases';
+import { keyNamesBrand } from './sameItem';
 import { SHARED_PRICES_NOTICE, seenLabel, sharedStoreLabel, withinBand, type SharedQuote } from './sharedPrices';
 import { convertQuantity, pricePerBase, priceQuantity, sameDimension } from './units';
 
@@ -592,6 +593,12 @@ interface BrandPlan {
   stated: { amount: number; units: number } | null;
   /** O tamanho de pacote que todo preço por unidade do de sempre diz, para a estimativa pelo nível de preço; null sem ele. */
   usualSize: PackageSize | null;
+  /**
+   * Sem esse tamanho único (o de sempre comprado em pacotes de tamanhos diferentes, todos lidos): a média dos preços por
+   * kg ou litro deles, para a estimativa pelo nível de preço levar a quantidade que a lista diz. null quando algum
+   * preço por unidade não diz o tamanho.
+   */
+  estimatedPerBase: number | null;
   reference: { id: string; name: string; key: string };
   /** Os produtos da casa com a chave do de sempre e preço (o de sempre também). */
   sameKey: string[];
@@ -676,10 +683,14 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
     const stated = statedAmount(item);
     if (stated && stated.base !== base) return null;
     // A estimativa pelo nível de preço não diz o tamanho: o que todo preço por unidade do de sempre diz, quando é um só.
-    const unitSizes = resolved.own.filter((quote) => quote.unit === 'un').map((quote) => quoteSize(quote.description));
+    const unitQuotes = resolved.own.filter((quote) => quote.unit === 'un');
+    const unitSizes = unitQuotes.map((quote) => quoteSize(quote.description));
     const first = unitSizes[0] ?? null;
     const usualSize =
       first && first.unit === base && unitSizes.every((size) => size != null && samePackageSize(size, first)) ? first : null;
+    const unitPerBase = unitQuotes.map((quote, at) => comparablePrice('un', quote.unitPrice, unitSizes[at]));
+    const estimatedPerBase =
+      unitPerBase.length && unitPerBase.every((price) => price?.base === base) ? average(unitPerBase.map((price) => price!.perBase)) : null;
     const reference = { id: product.id, name: product.name, key };
     const contestants = new Map<string, Contestant[]>();
     const add = (storeId: string, contestant: Contestant) => {
@@ -707,8 +718,9 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
         add(quote.storeId, { id: `s:${productId}`, name: other.name, category, productId, own: null, shared: quote, price, day: quote.seenWeek, unit: quote.unit });
       }
     }
-    // (c) As marcas que só outras casas compraram, feitas para este mesmo de sempre.
-    for (const found of sources.brandKeys?.get(item.id) ?? []) {
+    // (c) As marcas que só outras casas compraram, feitas para este mesmo de sempre. Não quando a chave já diz a marca
+    // (a Coca do refrigerante): toda descrição com ela é a própria marca da casa, e não "outra marca".
+    for (const found of keyNamesBrand(key) ? [] : (sources.brandKeys?.get(item.id) ?? [])) {
       if (found.referenceKey !== key) continue;
       const contestant: Contestant = {
         id: `k:${found.group}`,
@@ -728,6 +740,7 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
       centre: middle,
       stated: stated ? { amount: stated.amount, units: stated.units } : null,
       usualSize,
+      estimatedPerBase,
       reference,
       sameKey,
       contestants,
@@ -819,9 +832,49 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
       return priced('estimated', null, average(quotes.map((quote) => quote.unitPrice)) * (index.get(storeId) ?? 1));
     };
 
+    /**
+     * O de sempre num mercado, por kg ou litro: o pacote lido na descrição, o preço a granel, o tamanho único da
+     * estimativa pelo nível de preço e, com a quantidade que a lista diz, a estimativa pelos preços por kg dos pacotes
+     * de tamanhos diferentes. null quando não vira (o pacote sem tamanho lido) ou é de outra medida.
+     */
+    const usualComparable = (usual: StorePrice, storeId: string, brand: BrandPlan): ComparablePrice | null => {
+      const price = usual.used
+        ? comparablePrice(usual.used.unit, usual.used.unitPrice, quoteSize(usual.used.description))
+        : usual.shared
+          ? comparablePrice(usual.shared.unit, usual.shared.unitPrice, usual.shared.pack)
+          : usual.unit !== 'un' || brand.usualSize
+            ? comparablePrice(usual.unit, usual.unitPrice, usual.unit === 'un' ? brand.usualSize : null)
+            : brand.stated && brand.estimatedPerBase != null
+              ? { base: brand.base, perBase: round4(brand.estimatedPerBase * (index.get(storeId) ?? 1)), pack: null, packagePrice: null }
+              : null;
+      return price?.base === brand.base ? price : null;
+    };
+
+    /**
+     * A quantidade que a lista diz vale em todo mercado ou em nenhum: os mercados com o item (das notas da casa ou
+     * de outras casas) e, havendo preço da casa na unidade de sempre, a estimativa dos outros. Um de sempre que não
+     * vira preço por kg ou litro em algum deles (o pacote sem tamanho lido) deixa a conta de hoje em todos: senão um
+     * mercado contaria 5 kg e outro um pacote, e o "Onde comprar" compararia quantidades diferentes.
+     */
+    const statedEverywhere = (brand: BrandPlan): boolean => {
+      const storeIds = new Set([...all.map((quote) => quote.storeId), ...shared.flatMap((quote) => (quote.storeId ? [quote.storeId] : []))]);
+      for (const storeId of storeIds) {
+        const usual = tierAt(storeId);
+        if (usual && !usualComparable(usual, storeId, brand)) return false;
+      }
+      if (!quotes.length) return true;
+      const estimated = priced('estimated', null, average(quotes.map((quote) => quote.unitPrice)));
+      return usualComparable(estimated, '', brand) != null;
+    };
+
     let plan: BrandPlan | null | undefined;
     // A troca de marca só se calcula quando alguém pergunta por um mercado (sem mercado escolhido, nada muda).
-    const brandPlan = () => (plan === undefined ? (plan = brandsOn && resolved ? planFor(item, resolved) : null) : plan);
+    const brandPlan = () => {
+      if (plan !== undefined) return plan;
+      const made = brandsOn && resolved ? planFor(item, resolved) : null;
+      plan = made?.stated && !statedEverywhere(made) ? null : made;
+      return plan;
+    };
 
     /**
      * A disputa num mercado (domain/cheaperBrand): o de sempre lá (tierAt) contra as outras marcas do mesmo item, na
@@ -829,15 +882,12 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
      * ou o pedaço de costume e o 1 kg do preço a granel): "1 un" continua sendo um pacote do que a casa compra ali.
      * Outra marca entra em pacotes inteiros (1 a MAX_WHOLE_PACKAGES por unidade da lista) ou a granel, e vence só
      * custando ao menos um centavo menos que o de sempre na mesma quantidade. Sem vencedora, a lista que diz a
-     * quantidade leva o de sempre em pacotes inteiros dela ("Arroz 5kg" onde a casa compra o de 1 kg: 5 pacotes).
+     * quantidade leva o de sempre nela, em todo mercado: em pacotes inteiros ("Arroz 5kg" onde a casa compra o de 1 kg:
+     * 5 pacotes), ou pelo preço por kg quando o pacote de lá não fecha a quantidade (o de 2 kg, "~") e no preço a granel.
      */
     const contest = (usual: StorePrice, storeId: string, brand: BrandPlan): StorePrice => {
-      const usualPrice = usual.used
-        ? comparablePrice(usual.used.unit, usual.used.unitPrice, quoteSize(usual.used.description))
-        : usual.shared
-          ? comparablePrice(usual.shared.unit, usual.shared.unitPrice, usual.shared.pack)
-          : comparablePrice(usual.unit, usual.unitPrice, usual.unit === 'un' ? brand.usualSize : null);
-      if (!usualPrice || usualPrice.base !== brand.base) return usual;
+      const usualPrice = usualComparable(usual, storeId, brand);
+      if (!usualPrice) return usual;
       // A quantidade (na base) e quantas unidades da lista ela cobre.
       const loose = usualPrice.pack == null;
       const fromLoose = !brand.stated && loose;
@@ -866,8 +916,10 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
       const winner = fitting.length
         ? fitting.reduce((a, b) => (b.cost < a.cost || (b.cost === a.cost && contestantOrder(b.contestant, a.contestant) < 0) ? b : a))
         : null;
-      const sayQuantity = (packages: number | null) => packages != null && (item.unit !== 'un' || packages !== item.quantity);
       const stated = brand.stated != null;
+      // Os pacotes, quando não são as unidades da lista; sem pacotes, a quantidade do nome ("Queijo mussarela 500g").
+      const sayQuantity = (packages: number | null) =>
+        packages != null ? item.unit !== 'un' || packages !== item.quantity : stated && item.unit === 'un';
       // O mais barato por kg que não cabe: só nos detalhes.
       const biggerOf = (answerPerBase: number, answer: Contestant | null): BiggerPack | null => {
         if (!priced.length) return null;
@@ -916,17 +968,43 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
         };
       }
       const bigger = biggerOf(usualPrice.perBase, null);
-      // O de sempre, em pacotes inteiros da quantidade que a lista diz (exato: o pacote dele, tantas vezes).
-      const recosted: StorePrice =
-        stated && usualPackages != null
-          ? {
-              ...usual,
-              cost: round2(usualPackages * usualPrice.packagePrice!),
-              approximateQuantity: false,
-              perBase: { ...usualPrice, amount, packages: usualPackages, sayQuantity: sayQuantity(usualPackages) },
-            }
-          : usual;
+      const recosted = stated ? statedUsual(usual, usualPrice, amount, usualPackages, sayQuantity) : usual;
       return bigger ? { ...recosted, biggerPack: bigger } : recosted;
+    };
+
+    /**
+     * O de sempre na quantidade que a lista diz, quando nenhuma outra marca vence: em pacotes inteiros (exato: o pacote
+     * dele, tantas vezes); sem eles, pelo preço por kg ou litro (o pacote de lá que não fecha a quantidade, "~"; o preço
+     * a granel ou a estimativa, na quantidade do nome). Toda resposta assim leva `perBase` com a quantidade (`amount`).
+     */
+    const statedUsual = (
+      usual: StorePrice,
+      usualPrice: ComparablePrice,
+      amount: number,
+      packages: number | null,
+      sayQuantity: (packages: number | null) => boolean,
+    ): StorePrice => {
+      if (packages != null) {
+        return {
+          ...usual,
+          cost: round2(packages * usualPrice.packagePrice!),
+          approximateQuantity: false,
+          perBase: { ...usualPrice, amount, packages, sayQuantity: sayQuantity(packages) },
+        };
+      }
+      const packaged = usualPrice.pack != null;
+      // A granel, na lista em kg ou litro, a conta de hoje já é a quantidade da lista: só diz a conta por kg.
+      if (!packaged && item.unit !== 'un' && usual.unit !== 'un') return { ...usual, perBase: { ...usualPrice, amount, packages: null, sayQuantity: false } };
+      // A quantidade é a da lista: o costume (o pedaço de sempre) e o 1 kg de hoje não valem mais aqui.
+      const { perPiece: _piece, historyMissing: _missing, ...rest } = usual;
+      return {
+        ...rest,
+        cost: round2(usualPrice.perBase * amount),
+        // A estimativa pelos preços por kg (sem pacote) mostra o preço por kg: o preço "por unidade" seria a média de pacotes diferentes.
+        ...(!packaged && usual.unit === 'un' ? { unitPrice: round8(usualPrice.perBase), unit: usualPrice.base } : {}),
+        approximateQuantity: packaged,
+        perBase: { ...usualPrice, amount, packages: null, sayQuantity: true },
+      };
     };
 
     return {
@@ -1035,8 +1113,9 @@ export function itemsWithoutPrice(
 /**
  * Os itens da lista que procuram preço na base aberta, na ordem da lista: os sem preço nenhum (itemsWithoutPrice) que
  * podem buscar (openPriceItem: de qualquer marca, de categoria que se compartilha, e não o item de um produto da casa
- * com preço, ownSameItemKeys). O item digitado "Arroz" numa casa que comprou "Arroz Camil 5kg" não procura: ele sai
- * pelo produto da casa do mesmo item (`sameItem`, itemResolver), e o dado da casa vence.
+ * com preço que é o mesmo item, ownSameItemKeys e itemFits). O item digitado "Arroz" numa casa que comprou "Arroz
+ * Camil 5kg" não procura: ele sai pelo produto da casa do mesmo item (`sameItem`, itemResolver), e o dado da casa
+ * vence. Numa casa que só comprou "Arroz Quebrado Kicaldo 5kg", procura: o quebrado não dá preço a ele.
  */
 export function openCandidates(
   items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit' | 'category' | 'brandPreferred'>[],
@@ -1061,8 +1140,8 @@ export function openCandidates(
 
 /**
  * Os itens que a troca de marca procura na base aberta (as marcas que só outras casas compraram), na ordem da lista:
- * os que podem trocar de marca (o mesmo plano da conta, sem as marcas de fora), cada um com o de sempre (a chave e o
- * nome), a medida (kg ou litro), as quantidades por unidade da lista que ele pode pedir nos mercados (a que a lista
+ * os que podem trocar de marca (o mesmo plano da conta, sem as marcas de fora; não o de chave que já diz a marca,
+ * keyNamesBrand: a Coca do refrigerante), cada um com o de sempre (a chave e o nome), a medida (kg ou litro), as quantidades por unidade da lista que ele pode pedir nos mercados (a que a lista
  * diz; sem ela, os tamanhos dos pacotes do de sempre, da casa e vistos em outras casas, e, no preço a granel, o pedaço
  * de costume e o 1 kg ou litro), as descrições da própria casa (`aliases`, product_aliases: as dos produtos dela com
  * a mesma chave, que não são outra marca) e a primeira palavra da marca desses produtos (brandHead).
@@ -1090,7 +1169,8 @@ export function brandSearchItems(
   const found: BrandSearchItem[] = [];
   for (const item of items) {
     const plan = price(item)?.brandPlan();
-    if (!plan) continue;
+    // A chave que já diz a marca (a Coca do refrigerante) não tem outra marca na base aberta: só a da casa.
+    if (!plan || keyNamesBrand(plan.reference.key)) continue;
     const { reference, base } = plan;
     const amounts = new Set<number>();
     if (plan.stated) amounts.add(round(plan.stated.amount / plan.stated.units));
