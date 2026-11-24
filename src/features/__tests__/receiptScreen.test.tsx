@@ -12,8 +12,15 @@ import { PayerChips } from '@/features/finance/PayerChips';
 import { FEATURES } from '@/lib/features';
 import { stopWaitingForReceipt, takeConfirmedReceipt, waitForReceipt } from '@/lib/finishPurchase';
 import { formatBRL } from '@/domain/money';
-import { DELETE_CONFIRM, DELETE_PURCHASED, DELETE_PURCHASED_TITLE, DELETE_TITLE, deleteQuestion } from '@/domain/productDelete';
-import { PRODUCT_MERGED_AWAY } from '@/domain/productMerge';
+import {
+  DELETE_CHECK_FAILED_TITLE,
+  DELETE_CONFIRM,
+  DELETE_PURCHASED,
+  DELETE_PURCHASED_TITLE,
+  DELETE_TITLE,
+  deleteQuestion,
+} from '@/domain/productDelete';
+import { orderedPair, PRODUCT_MERGED_AWAY } from '@/domain/productMerge';
 import { CATEGORY_SHELF_LIFE_DAYS, CORRECTION_STALE } from '@/domain/receiptCorrection';
 import { ITEM_SAVED_NOT_SHOWN, OTHER_ITEM_SAVING, RECEIPT_BEING_UPDATED } from '@/domain/receiptGap';
 import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
@@ -66,6 +73,12 @@ const mockDb: {
   deleteAvailable: boolean | 'missing' | 'fails';
   deleteProbes: number;
   deleteError: Row | null;
+  /**
+   * Os pares "São diferentes" da casa (product_distinct_pairs: delete_product apaga os do produto, cascade) e as
+   * gravações deles (upsert: os que passam para o gêmeo de nome do excluído).
+   */
+  pairs: Row[];
+  upserts: { table: string; rows: unknown; options: unknown }[];
   /** Quantos pedidos saíram e quantos já voltaram (um seguro por `hold` fica no meio): é por eles que `quiet` vê a tela andar. */
   sent: number;
   answered: number;
@@ -87,6 +100,8 @@ const mockDb: {
   deleteAvailable: false,
   deleteProbes: 0,
   deleteError: null,
+  pairs: [],
+  upserts: [],
   sent: 0,
   answered: 0,
 };
@@ -146,6 +161,8 @@ jest.mock('@/data/market', () => {
     useOpenListItems: () => loaded(mockMarket.listItems),
     usePriceObservations: () => loaded(mockPriceHistory.points),
     useProducts: () => ({ ...loaded(mockMarket.products), refetch: mockMarket.productsRefetch }),
+    // O catálogo que o caminho de excluir busca quando não está na memória (o useProducts daqui não a enche).
+    fetchProducts: async () => mockMarket.products.map((product) => ({ ...product })),
     usePurchaseRecords: () => loaded([]),
     useStores: () => loaded(mockMarket.stores),
   };
@@ -188,6 +205,7 @@ jest.mock('@/lib/supabase', () => {
       if (name === 'receipts') return mockDb.receipts;
       if (name === 'stores') return mockDb.stores;
       if (name === 'products') return mockMarket.products;
+      if (name === 'product_distinct_pairs') return mockDb.pairs;
       if (name === 'pantry_items' || name === 'shopping_list_items' || name === 'product_barcodes') return [];
       return mockDb.items;
     };
@@ -232,6 +250,18 @@ jest.mock('@/lib/supabase', () => {
       // A leitura de excluir pede uma linha só, com prazo: aqui, todas as que acharem (só importa se há alguma).
       limit: () => builder,
       abortSignal: () => builder,
+      // Os pares vêm por páginas (fetchDistinctPairs): aqui, todos de uma vez.
+      range: () => builder,
+      // A gravação dos pares que passam (storeCarriedPairs): os que ainda não estão lá entram.
+      upsert: (values: Row[], options: unknown) => {
+        mockDb.upserts.push({ table: name, rows: values, options });
+        const request = answer({ table: name, verb: 'insert', values: { rows: values } }, () => {
+          const known = (row: Row) => mockDb.pairs.some((pair) => pair.product_a === row.product_a && pair.product_b === row.product_b);
+          mockDb.pairs.push(...values.filter((row) => !known(row)));
+          return { data: null, error: null };
+        });
+        return Object.assign(request, { abortSignal: () => request });
+      },
       eq: (column: string, value: unknown) => {
         filters.push([column, value]);
         return builder;
@@ -285,6 +315,7 @@ jest.mock('@/lib/supabase', () => {
         if (args.p_name != null && args.p_name !== found.name) return { data: null, error: { code: 'NK008', message: 'product renamed', details: null, hint: null } };
         if (mockDb.items.some((row) => row.product_id === args.p_id)) return { data: null, error: { code: 'NK016', message: 'product has purchases', details: null, hint: null } };
         mockMarket.products = mockMarket.products.filter((product) => product.id !== args.p_id);
+        mockDb.pairs = mockDb.pairs.filter((pair) => pair.product_a !== args.p_id && pair.product_b !== args.p_id);
         return { data: { deleted: args.p_id, pantry: 0, list: 0, barcodes: 0 }, error: null };
       });
     }
@@ -554,6 +585,8 @@ beforeEach(() => {
   mockDb.deleteAvailable = false;
   mockDb.deleteProbes = 0;
   mockDb.deleteError = null;
+  mockDb.pairs = [];
+  mockDb.upserts = [];
   mockMarket.products = [];
   mockPriceHistory.points = [];
   mockMarket.pantryNear = [];
@@ -2158,6 +2191,7 @@ describe('nota já confirmada: "Excluir o produto de antes", depois de "Trocar p
   const OFFER = '"Feijão", o produto de antes, ficou sem nenhuma compra.';
   const DELETED = '"Feijão" foi excluído dos produtos da casa.';
   const offerButton = (title: string) => renderer!.root.findAllByType(Button).find((entry) => entry.props.title === title);
+  const leftOfferShown = () => offerButton('Excluir o produto de antes') !== undefined;
   const announced = () => jest.mocked(AccessibilityInfo.announceForAccessibility).mock.calls.map(([text]) => text);
   const focused = () => jest.mocked(AccessibilityInfo.sendAccessibilityEvent).mock.calls;
   /** O foco foi uma vez, e para esta View (por identidade: comparar o objeto em si leva a árvore toda para a mensagem). */
@@ -2354,6 +2388,126 @@ describe('nota já confirmada: "Excluir o produto de antes", depois de "Trocar p
     expect(confirmAction).not.toHaveBeenCalled();
     expect(notify).not.toHaveBeenCalled();
   });
+
+  it('a nota não tinha os pares "São diferentes" na memória: o toque os busca, e o par que passa para o gêmeo de nome é gravado', async () => {
+    // A casa recusou "Limao / Limão siciliano"; pela regra do nome, isso também esconde "Limão / Limão siciliano".
+    // A nota confirmada não mostra os pares (nem Preços nem a tela de um produto foram abertos nesta abertura do app):
+    // sem buscá-los, delete_product os apagaria (cascade) e a sugestão escondida pelo nome voltaria para sempre.
+    mockMarket.products = [
+      { id: 'p1', name: 'Limao', category: 'hortifruti', shelf_life_days: null },
+      ARROZ,
+      { id: 'p3', name: 'Limão', category: 'hortifruti', shelf_life_days: null },
+      { id: 'p4', name: 'Limão siciliano', category: 'hortifruti', shelf_life_days: null },
+    ];
+    mockDb.pairs = [{ ...orderedPair('p1', 'p4') }];
+    await changeToRice();
+    expect(client.getQueryData(['productDistinctPairs'])).toBeUndefined();
+    await press(offerButton('Excluir o produto de antes'));
+    expect(mockDb.reads.product_distinct_pairs).toBe(1);
+    await run(() => jest.mocked(confirmAction).mock.calls[0][3]());
+    expect(correctionCalls('delete_product').map((call) => call.args)).toEqual([{ p_id: 'p1', p_name: 'Limao' }]);
+    expect(mockDb.upserts).toEqual([{ table: 'product_distinct_pairs', rows: [orderedPair('p3', 'p4')], options: { ignoreDuplicates: true } }]);
+    expect(mockDb.pairs).toEqual([orderedPair('p3', 'p4')]);
+    expect(said(card('Arroz'))).toContain('"Limao" foi excluído dos produtos da casa.');
+  });
+
+  it('a busca dos pares falha no toque: "Não deu para conferir", nada é perguntado nem excluído, e a oferta fica', async () => {
+    await changeToRice();
+    mockDb.fails = [({ table }) => table === 'product_distinct_pairs'];
+    await press(offerButton('Excluir o produto de antes'));
+    expect(lastNotice()).toEqual([DELETE_CHECK_FAILED_TITLE, 'caiu a rede']);
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(correctionCalls('delete_product')).toEqual([]);
+    expect(said(card('Arroz'))).toContain(OFFER);
+    // De novo, com a rede de volta: os pares chegam, e a pergunta de sempre sai.
+    mockDb.fails = [];
+    await press(offerButton('Excluir o produto de antes'));
+    expect(jest.mocked(confirmAction).mock.calls).toHaveLength(1);
+  });
+
+  it('a troca de outra linha respondeu enquanto o pedido de excluir ia, e o banco recusou o de antes: a oferta nova fica, e o foco não pula', async () => {
+    const DETERGENTE = { id: 'p5', name: 'Detergente', category: 'limpeza', shelf_life_days: null };
+    const SABAO = { id: 'p6', name: 'Sabão', category: 'limpeza', shelf_life_days: null };
+    const DETERGENT_OFFER = '"Detergente", o produto de antes, ficou sem nenhuma compra.';
+    mockMarket.products = [FEIJAO, ARROZ, DETERGENTE, SABAO];
+    mockDb.items[1].product_id = 'p5';
+    await changeToRice();
+    await press(offerButton('Excluir o produto de antes'));
+    const release = hold(({ table }) => table === 'delete_product');
+    // Outro aparelho confirmou uma nota com o feijão enquanto isso.
+    mockDb.deleteError = { code: 'NK016', message: 'product has purchases', details: null, hint: null };
+    await run(() => jest.mocked(confirmAction).mock.calls[0][3]());
+    await press(chip('Trocar produto', card('Detergente')));
+    await run(() => productPicker()!.props.onSelect('p6'));
+    await release();
+    await nextFrame();
+    expect(lastNotice()).toEqual([DELETE_PURCHASED_TITLE, DELETE_PURCHASED]);
+    expect(said(card('Sabão'))).toContain(DETERGENT_OFFER);
+    expect(focused().length).toBe(0);
+  });
+
+  it('a troca de outra linha respondeu enquanto o pedido de excluir ia: a oferta nova fica, o foco não pula, e o excluído é avisado', async () => {
+    const DETERGENTE = { id: 'p5', name: 'Detergente', category: 'limpeza', shelf_life_days: null };
+    const SABAO = { id: 'p6', name: 'Sabão', category: 'limpeza', shelf_life_days: null };
+    const DETERGENT_OFFER = '"Detergente", o produto de antes, ficou sem nenhuma compra.';
+    mockMarket.products = [FEIJAO, ARROZ, DETERGENTE, SABAO];
+    mockDb.items[1].product_id = 'p5';
+    await changeToRice();
+    await press(offerButton('Excluir o produto de antes'));
+    // O sinal fraco: o pedido de excluir o feijão fica no caminho.
+    const release = hold(({ table }) => table === 'delete_product');
+    await run(() => jest.mocked(confirmAction).mock.calls[0][3]());
+    expect(correctionCalls('delete_product')).toHaveLength(1);
+    // Enquanto isso, a pessoa troca o detergente pelo sabão: a oferta do detergente toma o lugar, e é ouvida.
+    await press(chip('Trocar produto', card('Detergente')));
+    await run(() => productPicker()!.props.onSelect('p6'));
+    expect(said(card('Sabão'))).toContain(DETERGENT_OFFER);
+    expect(page()).not.toContain(OFFER);
+    await release();
+    await nextFrame();
+    expect(mockMarket.products).toEqual([ARROZ, DETERGENTE, SABAO]);
+    // A oferta do detergente continua (não foi respondida), e o aviso do feijão não toma o lugar dela.
+    expect(said(card('Sabão'))).toContain(DETERGENT_OFFER);
+    expect(page()).not.toContain(DELETED);
+    expect(lastNotice()).toEqual(['Produto excluído', DELETED]);
+    expect(focused().length).toBe(0);
+    expect(announced()).toEqual([`${OFFER} Dá para excluir o produto de antes ou manter.`, `${DETERGENT_OFFER} Dá para excluir o produto de antes ou manter.`]);
+  });
+
+  it.each<[string, 'fails' | 'slow']>([
+    ['a nota relida falha', 'fails'],
+    ['a nota relida passa do prazo', 'slow'],
+  ])('%s: a linha ainda mostra o produto de antes, a oferta fica escondida e calada, e só é ouvida quando aparece', async (_case, how) => {
+    await open();
+    await press(chip('Trocar produto'));
+    let release: (() => Promise<void>) | undefined;
+    if (how === 'fails') mockDb.fails = [receiptRead];
+    else release = hold(receiptRead);
+    await run(() => productPicker()!.props.onSelect('p2'), how === 'slow' ? 4200 : 30);
+    // A troca respondeu e a leitura diz que o feijão dá para excluir, mas a nota em tela ainda está com ele.
+    expect(mockDb.reads.products).toBe(1);
+    expect(leftOfferShown()).toBe(false);
+    expect(said(card('Feijão'))).not.toContain(OFFER);
+    expect(announced()).toEqual([]);
+    // A nota volta ("Tentar de novo", ou a busca lenta que chega): a linha no arroz, e só agora a oferta aparece e é ouvida.
+    if (how === 'fails') {
+      mockDb.fails = [];
+      await act(async () => {
+        await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+      });
+      await settle();
+    } else {
+      await release!();
+    }
+    expect(said(card('Arroz'))).toContain(OFFER);
+    expect(announced()).toEqual([`${OFFER} Dá para excluir o produto de antes ou manter.`]);
+    // Desenhada de novo (outra busca da nota), não se repete.
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    expect(announced()).toHaveLength(1);
+  }, 15_000);
 });
 
 describe('nota já confirmada: "Item", o item que a leitura perdeu', () => {

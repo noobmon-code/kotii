@@ -58,11 +58,13 @@ type Reply = { data: unknown; error: object | null };
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim. O banco de mentira, como o servidor o serve.
 const mockDb = {
-  products: [] as { id: string; name: string }[],
+  products: [] as { id: string; name: string; category?: string }[],
   lines: [] as Line[],
   pantry: [] as { product_id: string; consumed_at: string | null }[],
   listItems: [] as { product_id: string; archived_at: string | null }[],
   barcodes: [] as { product_id: string; gtin: string }[],
+  /** Os pares "São diferentes" guardados (a busca de todos, fetchDistinctPairs, por páginas). */
+  pairs: [] as DistinctPair[],
   /** O erro que só as leituras de uma tabela devolvem. */
   tableErrors: {} as Record<string, object>,
   /** As leituras destas tabelas ficam sem resposta: só o corte termina a espera. */
@@ -104,7 +106,10 @@ jest.mock('@/lib/supabase', () => {
             const product = filters['eq product_id'];
             switch (table) {
               case 'products':
-                return mockDb.products.filter((p) => p.id === filters['eq id']);
+                // Um produto (a leitura do toque) ou o catálogo inteiro (fetchProducts).
+                return 'eq id' in filters ? mockDb.products.filter((p) => p.id === filters['eq id']) : mockDb.products;
+              case 'product_distinct_pairs':
+                return mockDb.pairs.map((pair) => ({ ...pair }));
               case 'receipt_items':
                 return mockDb.lines
                   .filter((line) => line.product_id === product && line.status === filters['eq receipt.status'])
@@ -153,6 +158,8 @@ jest.mock('@/lib/supabase', () => {
               limit = rows;
               return query;
             },
+            // Só a primeira página (a casa de teste cabe nela).
+            range: () => query,
             abortSignal: (given: AbortSignal) => {
               signal = given;
               mockDb.readSignals.push(given);
@@ -242,6 +249,7 @@ afterEach(async () => {
     pantry: [],
     listItems: [],
     barcodes: [],
+    pairs: [],
     tableErrors: {},
     holdTables: [],
     asked: [],
@@ -444,6 +452,77 @@ describe('excluir', () => {
     await flush();
     expect(mockDb.upserts).toEqual([{ table: 'product_distinct_pairs', rows: [orderedPair('p00', 'p02')], options: { ignoreDuplicates: true } }]);
     expect(hook.invalidated).toContain('productDistinctPairs');
+  });
+
+  describe('a tela que não tem os pares "São diferentes" na memória (a nota confirmada não os mostra)', () => {
+    const LIMOES = [
+      { id: 'p00', name: 'Limão siciliano', category: 'hortifruti' },
+      { id: 'p01', name: 'Limao', category: 'hortifruti' },
+      { id: 'p02', name: 'Limão', category: 'hortifruti' },
+    ];
+    const pairsRead = () => mockDb.asked.filter((asked) => asked.table === 'product_distinct_pairs').length;
+
+    it('os pares são buscados antes do pedido, e o que passa para o gêmeo de nome é gravado', async () => {
+      mockDb.pairs = [orderedPair('p00', 'p01')];
+      const hook = await withHook(() => useDeleteProduct());
+      // O catálogo a tela tem (useProducts); os pares, não.
+      hook.client.setQueryData(['products'], LIMOES);
+      await act(async () => {
+        await hook.value().mutateAsync({ id: 'p01', name: 'Limao' });
+      });
+      expect(pairsRead()).toBe(1);
+      expect(mockDb.rpcs).toEqual([{ name: 'delete_product', args: { p_id: 'p01', p_name: 'Limao' } }]);
+      expect(mockDb.upserts).toEqual([{ table: 'product_distinct_pairs', rows: [orderedPair('p00', 'p02')], options: { ignoreDuplicates: true } }]);
+      expect(hook.client.getQueryData(['productDistinctPairs'])).toEqual([orderedPair('p00', 'p02')]);
+    });
+
+    it('sem o catálogo também: os dois são buscados', async () => {
+      mockDb.products = LIMOES;
+      mockDb.pairs = [orderedPair('p00', 'p01')];
+      const hook = await withHook(() => useDeleteProduct());
+      await act(async () => {
+        await hook.value().mutateAsync({ id: 'p01', name: 'Limao' });
+      });
+      expect(mockDb.asked.filter((asked) => asked.table === 'products' && asked.count === 'exact')).toHaveLength(1);
+      expect(mockDb.upserts.map((upsert) => upsert.rows)).toEqual([[orderedPair('p00', 'p02')]]);
+    });
+
+    it('com os dois na memória, nada é buscado antes do pedido', async () => {
+      const hook = await withHook(() => useDeleteProduct());
+      hook.client.setQueryData(['products'], LIMOES);
+      hook.client.setQueryData<DistinctPair[]>(['productDistinctPairs'], []);
+      await act(async () => {
+        await hook.value().mutateAsync({ id: 'p01', name: 'Limao' });
+      });
+      expect(mockDb.asked).toEqual([]);
+    });
+
+    it('a busca dos pares falha: o pedido de excluir nem sai (melhor não excluir do que perder o par recusado)', async () => {
+      mockDb.pairs = [orderedPair('p00', 'p01')];
+      mockDb.tableErrors = { product_distinct_pairs: { message: 'TypeError: Network request failed' } };
+      const hook = await withHook(() => useDeleteProduct());
+      hook.client.setQueryData(['products'], LIMOES);
+      await act(async () => {
+        await expect(hook.value().mutateAsync({ id: 'p01', name: 'Limao' })).rejects.toEqual({ message: 'TypeError: Network request failed' });
+      });
+      expect(mockDb.rpcs).toEqual([]);
+      expect(mockDb.upserts).toEqual([]);
+      expect(hook.invalidated).toEqual([]);
+    });
+
+    it('a busca dos pares pendurada: no prazo da leitura, "não deu para conferir", e o pedido nem sai', async () => {
+      jest.useFakeTimers();
+      mockDb.holdTables = ['product_distinct_pairs'];
+      const hook = await withHook(() => useDeleteProduct());
+      hook.client.setQueryData(['products'], LIMOES);
+      await act(async () => {
+        const failed = expect(hook.value().mutateAsync({ id: 'p01', name: 'Limao' })).rejects.toThrow(DELETE_CHECK_FAILED);
+        await jest.advanceTimersByTimeAsync(PRODUCT_DELETE_CHECK_MS);
+        await failed;
+      });
+      expect(mockDb.rpcs).toEqual([]);
+      expect(deleteErrorNotice(new Error(DELETE_CHECK_FAILED))).toEqual({ title: DELETE_FAILED_TITLE, message: DELETE_CHECK_FAILED });
+    });
   });
 
   it('banco ainda sem a função (PGRST202, ou 42883 com o nome dela): "Ainda não está disponível", e nada é buscado nem gravado', async () => {

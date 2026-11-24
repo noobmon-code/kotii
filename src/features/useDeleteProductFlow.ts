@@ -6,12 +6,13 @@ import {
   deleteErrorNotice,
   fetchDeleteFacts,
   forgetDeletedProduct,
-  pairsToCarry,
+  loadPairsToCarry,
   refreshDeletedProduct,
   useDeleteProduct,
 } from '@/data/productDelete';
 import { isProductGone } from '@/data/productMerge';
 import { DELETE_CHECK_FAILED_TITLE, deleteStep, isProductInReview, isProductPurchased, OPEN_REVIEW, type DeleteFacts } from '@/domain/productDelete';
+import type { DistinctPair } from '@/domain/productMerge';
 import type { ProductName } from '@/domain/similarNames';
 import { errorMessage } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -34,8 +35,10 @@ export interface DeleteProductFlowEnds {
  * O toque (`ask`) lê o produto de novo no banco (fetchDeleteFacts) antes de perguntar: se ele sumiu, se ganhou uma
  * compra, se está num item de nota para revisar, ou a pergunta (deleteQuestion), com o nome lido. Uma confirmação
  * manda um pedido só (delete_product com o nome lido, useDeleteProduct: os pares que passam e as buscas novas), e o
- * erro do pedido aparece mesmo depois de sair da tela; o da leitura, não (nada foi tentado). Os fins (`ends`) só rodam
- * com a tela montada: uma resposta que chega depois de ela sair não mexe em nada.
+ * erro do pedido aparece mesmo depois de sair da tela; o da leitura, não (nada foi tentado). Os pares "São diferentes"
+ * que passam para o gêmeo de nome não dependem da tela: sem eles na memória, a leitura do toque os busca
+ * (loadPairsToCarry). Os fins (`ends`) só rodam com a tela montada: uma resposta que chega depois de ela sair não mexe
+ * em nada. Eles são os do desenho do toque: quem chama confere o estado de agora antes de mexer nele.
  */
 export function useDeleteProductFlow(ends: DeleteProductFlowEnds): { ask: (productId: string) => Promise<void>; busy: boolean } {
   const queryClient = useQueryClient();
@@ -59,11 +62,13 @@ export function useDeleteProductFlow(ends: DeleteProductFlowEnds): { ask: (produ
     reading.current = true;
     setChecking(true);
     // Os pares que passam para o gêmeo de nome, se a leitura achar o produto já excluído: do que a memória tem
-    // antes dela, como o pedido de excluir (uma busca nova que chegue no meio pode já ter tirado o produto).
-    const carry = pairsToCarry(queryClient, productId);
+    // antes dela, como o pedido de excluir (uma busca nova que chegue no meio pode já ter tirado o produto). A tela
+    // que não mostra os pares (a nota confirmada) pode não os ter na memória: então eles (e o catálogo, se faltar) são
+    // buscados junto com a leitura (loadPairsToCarry), e o pedido de excluir, depois, já os acha lá.
+    let carry: DistinctPair[];
     let facts: DeleteFacts;
     try {
-      facts = await fetchDeleteFacts(productId);
+      [carry, facts] = await Promise.all([loadPairsToCarry(queryClient, productId), fetchDeleteFacts(productId)]);
     } catch (err) {
       // Sem internet, "Sem internet agora…"; o prazo da leitura, DELETE_CHECK_FAILED. Nada foi tentado.
       if (mounted.current) notify(DELETE_CHECK_FAILED_TITLE, errorMessage(err));

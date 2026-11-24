@@ -37,8 +37,9 @@ import type { ProductName } from '@/domain/similarNames';
 import { isDeadlock } from '@/lib/databaseErrors';
 import { errorMessage, supabase, unwrap } from '@/lib/supabase';
 
+import { fetchProducts } from './market';
 import { isMissingFunction, isMissingTable } from './missingSchema';
-import { isProductGone, openListRow, openPantryRow } from './productMerge';
+import { fetchDistinctPairs, isProductGone, openListRow, openPantryRow } from './productMerge';
 
 /** Quanto a leitura antes da pergunta espera (não é o DELETE_CHECK_MS de data/providers, de 4 s). */
 export const PRODUCT_DELETE_CHECK_MS = 10_000;
@@ -164,6 +165,35 @@ export function pairsToCarry(queryClient: QueryClient, id: string): DistinctPair
   );
 }
 
+/**
+ * pairsToCarry com o catálogo e os pares "São diferentes" na memória: sem um deles, carriedDistinctPairs não tem de
+ * onde tirar e devolve [], calado, e delete_product apaga os pares do produto (cascade) sem que os do gêmeo de nome
+ * sejam gravados (só o app os grava): a sugestão que a casa recusou voltaria para sempre. Nem toda tela que oferece
+ * excluir carrega os pares (a nota confirmada não os mostra, e eles não estão em PERSISTED): o que a memória já tem
+ * vale (e a conta sai dela na hora, antes de qualquer busca nova); o que não tem é buscado agora, com o mesmo prazo
+ * da leitura do toque (PRODUCT_DELETE_CHECK_MS). A busca que falha, ou passa do prazo (DELETE_CHECK_FAILED), lança:
+ * melhor não excluir do que excluir sem saber o que passa.
+ */
+export async function loadPairsToCarry(queryClient: QueryClient, id: string): Promise<DistinctPair[]> {
+  const missing: Promise<unknown>[] = [];
+  if (queryClient.getQueryData(['products']) === undefined) missing.push(queryClient.fetchQuery({ queryKey: ['products'], queryFn: fetchProducts }));
+  if (queryClient.getQueryData(['productDistinctPairs']) === undefined) {
+    missing.push(queryClient.fetchQuery({ queryKey: ['productDistinctPairs'], queryFn: fetchDistinctPairs }));
+  }
+  if (missing.length) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.all(missing),
+        new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(DELETE_CHECK_FAILED)), PRODUCT_DELETE_CHECK_MS))),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return pairsToCarry(queryClient, id);
+}
+
 /** Os pares guardados na memória sem os de `id` (null: nenhum sai) e com os de `carry` que ainda não estão lá. */
 function withCarriedPairs(queryClient: QueryClient, id: string | null, carry: readonly DistinctPair[]): void {
   queryClient.setQueryData<DistinctPair[] | null>(['productDistinctPairs'], (pairs) => {
@@ -243,8 +273,9 @@ export function useDeleteProduct() {
   return useMutation({
     // Os pares a passar saem do que a tela tinha antes do pedido (uma vez, também quando ele se repete): depois
     // dele, os do produto já não existem. Servem à resposta de excluiu, à de "já não existe" (P0002) e à que não
-    // chegou.
-    onMutate: ({ id }: { id: string; name: string | null }) => ({ carry: pairsToCarry(queryClient, id) }),
+    // chegou. Sem os pares ou o catálogo na memória, são buscados antes (loadPairsToCarry); se a busca falha, o pedido
+    // nem sai.
+    onMutate: async ({ id }: { id: string; name: string | null }) => ({ carry: await loadPairsToCarry(queryClient, id) }),
     mutationFn: async ({ id, name }: { id: string; name: string | null }): Promise<DeleteResult> => {
       // Pedido pendurado (sinal fraco no mercado; no Android o pedido não tem prazo): sem cortar, o botão
       // ficaria girando sem saída.

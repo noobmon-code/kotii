@@ -1666,6 +1666,7 @@ export default function ReceiptScreen() {
                       busy={leftOffer.busy}
                       onDelete={leftOffer.remove}
                       onKeep={leftOffer.keep}
+                      onShown={leftOffer.shown}
                     />
                   ) : null
                 }

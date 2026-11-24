@@ -380,6 +380,11 @@ export const leftProductDeleteLabel = (name: string) => `Excluir o produto de an
 export const leftProductKeepLabel = (name: string) => `Manter o produto ${name}`;
 /** Excluído: a tela da nota fica (é a nota que a pessoa estava corrigindo), e diz isto no lugar da oferta. */
 export const leftProductDeleted = (name: string) => `"${name}" foi excluído dos produtos da casa.`;
+/**
+ * O título do mesmo aviso como alerta: quando a oferta de outra linha tomou o lugar desta enquanto o pedido ia (a troca
+ * dela respondeu no meio), o aviso não tem onde ficar na linha, e a oferta nova fica.
+ */
+export const LEFT_PRODUCT_DELETED_TITLE = 'Produto excluído';
 
 /** A busca de fundo falhou: as correções da nota confirmada esperam a nota voltar. */
 export const CORRECTION_STALE = {
