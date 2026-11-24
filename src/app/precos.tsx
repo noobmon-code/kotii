@@ -4,15 +4,15 @@ import { FlatList, StyleSheet, View } from 'react-native';
 
 import { useLatestPrices, useProducts, useStores } from '@/data/market';
 import { useSharedPrices } from '@/data/sharedPrices';
-import { formatBRL } from '@/domain/money';
-import { NO_PRICE_YET, pricesByProduct, summarizePrices, type PriceSummary } from '@/domain/prices';
+import { NO_PRICE_YET, storeSummaryLine, storeSummaryPrice, summarizeStorePrices, type StoreSummary } from '@/domain/prices';
 import { normalizeSearch } from '@/domain/search';
-import { cheaperSharedHint, cheaperSharedPrice, SHARED_PRICES_NOTICE, type SharedPriceRow, sharedRowsByProduct } from '@/domain/sharedPrices';
+import { cheaperSharedHint, cheaperSharedPrice, comparedSharedByProduct, SHARED_PRICES_NOTICE, type ShownSharedPrice } from '@/domain/sharedPrices';
+import { savedPricesByProduct } from '@/domain/storePrices';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { MergeSuggestionsCard } from '@/features/MergeSuggestionsCard';
 import { useProductBarcode } from '@/features/ProductBarcode';
 import { settledData } from '@/lib/settledData';
-import type { LatestPrice, Product } from '@/lib/types';
+import type { Product } from '@/lib/types';
 import {
   CategoryIcon,
   EmptyState,
@@ -28,12 +28,12 @@ import {
 import { radius, space, useColors } from '@/ui/theme';
 
 /** O texto de sempre embaixo do produto e, quando outra casa viu mais barato, uma linha pequena a mais. */
-function withSeenCheaper(text: string, cheaper: SharedPriceRow | null) {
+function withSeenCheaper(text: string, cheaper: ShownSharedPrice | null, category: string) {
   if (!cheaper) return text;
   return (
     <>
       <Text variant="muted">{text}</Text>
-      <Text variant="small">{cheaperSharedHint(cheaper)}</Text>
+      <Text variant="small">{cheaperSharedHint(cheaper, undefined, category)}</Text>
     </>
   );
 }
@@ -54,14 +54,16 @@ export default function PricesScreen() {
   // "mais barato que o da casa" seria dito contra um preço que talvez já não seja o dela.
   const settledPrices = settledData(prices);
   const settledStores = settledData(stores);
-  const seenElsewhere = useMemo(
-    () => (shared.data && settledPrices && settledStores ? sharedRowsByProduct(shared.data, settledPrices, settledStores) : null),
+  // Comparados com os da casa na unidade da linha, e pelo tamanho da embalagem (domain/sharedPrices).
+  const compared = useMemo(
+    () => (shared.data && settledPrices && settledStores ? comparedSharedByProduct(shared.data, settledPrices, settledStores) : null),
     [shared.data, settledPrices, settledStores],
   );
 
-  // Os preços de cada produto (g já por kg, ml por litro), agrupados uma vez só, e o nome de cada produto pronto
-  // para a busca: digitar uma letra só filtra os produtos.
-  const byProduct = useMemo(() => pricesByProduct(prices.data ?? []), [prices.data]);
+  // O "Último preço por mercado" de cada produto, como a tela do produto o mostra (por kg, litro ou item do pacote
+  // quando as embalagens têm tamanhos diferentes), agrupado uma vez só, e o nome de cada produto pronto para a
+  // busca: digitar uma letra só filtra os produtos.
+  const byProduct = useMemo(() => savedPricesByProduct(prices.data ?? []), [prices.data]);
   const searchable = useMemo(() => (products.data ?? []).map((product) => ({ product, key: normalizeSearch(product.name) })), [products.data]);
   const storeName = useMemo(() => new Map((stores.data ?? []).map((s) => [s.id, s.name])), [stores.data]);
 
@@ -69,18 +71,18 @@ export default function PricesScreen() {
   // depois deles: sem a busca a tela é a dos preços, e um produto sem preço só é achado pelo nome.
   const rows = useMemo(() => {
     const q = normalizeSearch(query);
-    const priced: { product: Product; summary: PriceSummary<LatestPrice>; cheaper: SharedPriceRow | null }[] = [];
+    const priced: { product: Product; summary: StoreSummary; cheaper: ShownSharedPrice | null }[] = [];
     const unpriced: { product: Product; summary: null; cheaper: null }[] = [];
     for (const { product, key } of searchable) {
       if (q && !key.includes(q)) continue;
-      const own = byProduct.get(product.id) ?? [];
-      const summary = summarizePrices(own);
-      // Só quando outra casa viu mais barato que o menor preço da casa, na mesma unidade.
-      if (summary) priced.push({ product, summary, cheaper: cheaperSharedPrice(own, seenElsewhere?.get(product.id) ?? [], summary.unit) });
+      const summary = summarizeStorePrices(byProduct.get(product.id) ?? []);
+      const seen = compared?.get(product.id);
+      // Só quando outra casa viu mais barato que o preço da casa com que se compara, na unidade da linha.
+      if (summary) priced.push({ product, summary, cheaper: seen ? cheaperSharedPrice(seen) : null });
       else if (q) unpriced.push({ product, summary: null, cheaper: null });
     }
     return [...priced, ...unpriced];
-  }, [searchable, byProduct, seenElsewhere, query]);
+  }, [searchable, byProduct, compared, query]);
 
   const queries = [products, prices, stores];
   // Sem internet e sem nada guardado no aparelho, a busca fica parada (e segue sozinha quando a conexão volta):
@@ -156,25 +158,11 @@ export default function PricesScreen() {
                   left={<CategoryIcon category={product.category} name={product.name} size={36} />}
                   title={product.name}
                   subtitle={withSeenCheaper(
-                    [
-                      summary.storeCount > 1
-                        ? `Mais barato: ${storeName.get(summary.cheapest.store_id) ?? 'mercado'} · ${summary.storeCount} mercados`
-                        : `Só em ${storeName.get(summary.cheapest.store_id) ?? 'um mercado'}`,
-                      summary.otherUnits.length ? `também vendido por ${summary.otherUnits.join(', ')}` : null,
-                    ]
-                      .filter(Boolean)
-                      .join(' · '),
+                    storeSummaryLine(summary, (id) => storeName.get(id), product.category),
                     cheaper,
+                    product.category,
                   )}
-                  right={
-                    <Text variant="label">
-                      {formatBRL(summary.cheapest.unit_price)}
-                      {summary.storeCount > 1 && summary.highest > summary.cheapest.unit_price
-                        ? `–${formatBRL(summary.highest).replace('R$ ', '')}`
-                        : ''}
-                      {summary.unit === 'un' ? '' : `/${summary.unit}`}
-                    </Text>
-                  }
+                  right={<Text variant="label">{storeSummaryPrice(summary, product.category)}</Text>}
                   onPress={open}
                 />
               ) : (

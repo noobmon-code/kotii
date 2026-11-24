@@ -44,6 +44,11 @@ export interface PurchaseLine {
   description?: string;
   /** Quantos vinham na embalagem, respondido na revisão (domain/packCount): vale quando a descrição não diz o tamanho. */
   packCount?: number | null;
+  /**
+   * O tamanho já lido, quando a linha não traz a descrição como impressa (o preço de outra casa: o servidor leu o
+   * tamanho na nota, shared_prices.pack_*). Presente (mesmo null), vale no lugar da descrição e de packCount.
+   */
+  pack?: PackageSize | null;
 }
 
 /** Uma compra do produto: as linhas iguais de uma mesma nota (mesma unidade, mesmo preço impresso), somadas. */
@@ -135,7 +140,7 @@ export const storeKey = (name: string) => `nome:${name.trim().toLocaleLowerCase(
 const newestFirst = (a: Purchase, b: Purchase) => b.time - a.time || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 
 /** A cartela que a pessoa disse na revisão ("10 ovos"): um pacote de N itens, como "C/10" na descrição. */
-const answeredPack = (count: number | null | undefined): PackageSize | null =>
+export const answeredPack = (count: number | null | undefined): PackageSize | null =>
   count != null && count >= 2 ? { unit: 'un', amount: count, label: `${count} un` } : null;
 
 /**
@@ -150,7 +155,12 @@ export function toPurchases(lines: PurchaseLine[]): Purchase[] {
   const printed = new Map<string, number>();
   for (const line of lines) {
     const key = `${line.receiptId}|${line.unit}|${line.unitPrice}`;
-    const pack = line.unit === 'un' ? ((line.description ? packageSize(line.description) : null) ?? answeredPack(line.packCount)) : null;
+    const pack =
+      line.unit !== 'un'
+        ? null
+        : line.pack !== undefined
+          ? line.pack
+          : ((line.description ? packageSize(line.description) : null) ?? answeredPack(line.packCount));
     const same = byKey.get(key);
     if (same) {
       same.quantity = Math.round((same.quantity + line.quantity) * 1000) / 1000;

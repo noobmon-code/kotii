@@ -15,7 +15,7 @@ Deno.test('nfceReadLines: descrição, unidade do app e preço unitário como no
       { description: 'DESCONTO', quantity: 1, unit: 'UN', unitPrice: 1, totalPrice: -1 },
     ]),
     [
-      { description: 'ARROZ T.JOAO 5KG', unit: 'un', unit_price: 22.9 },
+      { description: 'ARROZ T.JOAO 5KG', unit: 'un', unit_price: 22.9, single_unit: true },
       { description: 'BANANA PRATA', unit: 'kg', unit_price: 6.99 },
       { description: 'PAO FRANCES', unit: 'kg', unit_price: 17.9 },
       { description: 'LEITE', unit: 'l', unit_price: 4.59 },
@@ -37,9 +37,16 @@ Deno.test('nfceReadLines: o código de barras que quem chama tirou do código da
       { description: 'PAO FRANCES', quantity: 1, unit: 'KG', unitPrice: 17.9, totalPrice: 17.9 },
     ]),
     [
-      { description: 'LEITE ITALAC 1L', unit: 'un', unit_price: 4.59, gtin: '07891000100103' },
+      { description: 'LEITE ITALAC 1L', unit: 'un', unit_price: 4.59, gtin: '07891000100103', single_unit: true },
       { description: 'BANANA PRATA', unit: 'kg', unit_price: 6.99 },
       { description: 'PAO FRANCES', unit: 'kg', unit_price: 17.9 },
     ],
   );
+});
+
+Deno.test('nfceReadLines: a unidade da Sefaz de um item só marca a linha (é a que pode levar o tamanho da embalagem)', () => {
+  const lines = (units: string[]) =>
+    nfceReadLines(units.map((unit) => ({ description: 'ITEM', quantity: 1, unit, unitPrice: 1, totalPrice: 1 }))).map((line) => line.single_unit === true);
+  assertEquals(lines(['UN', 'un', 'UND', 'PÇ', 'GF', 'UNID.', 'LATA', 'PT']), [true, true, true, true, true, true, true, true]);
+  assertEquals(lines(['PCT', 'CX', 'FD', 'DZ', 'KG', '', 'KIT']), [false, false, false, false, false, false, false]);
 });

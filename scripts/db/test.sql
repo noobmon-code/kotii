@@ -213,6 +213,9 @@ begin
   assert (select pack_count from public.latest_prices where product_id = p_arroz and store_id = s_caro) = 12,
     'latest price carries the pack count';
   assert (select pack_count from public.price_observations where receipt_id = r2) = 12, 'observation carries the pack count';
+  assert (select raw_description from public.latest_prices where product_id = p_arroz and store_id = s_caro) = 'ARROZ T JOAO 5KG',
+    'latest price carries the line description (the package size)';
+  assert (select raw_description from public.price_observations where receipt_id = r2) = 'ARROZ T JOAO 5KG', 'observation carries the description';
   begin
     update public.receipt_items set pack_count = 1 where id = i_arroz2;
     raise exception 'FAIL: pack of one accepted';
@@ -5506,6 +5509,10 @@ end $$;
 -- O banco da Supabase roda em UTC: o dia tem de sair de São Paulo, não do fuso da sessão.
 set time zone 'UTC';
 select set_config('test.sp_today', ((now() at time zone 'America/Sao_Paulo')::date)::text, false) \gset
+-- A semana de hoje (a segunda-feira dela). As datas desta seção contam dela, nunca de hoje: as regras da lista aberta
+-- (20261124181819_shared_prices_open.sql) são por semana, e o resultado não pode depender do dia da semana em que o
+-- teste roda. Os blocos de quem entrou leem esta config: shared_week não é dos clientes.
+select set_config('test.sp_week', public.shared_week(current_setting('test.sp_today')::date)::text, false) \gset
 
 do $$
 begin
@@ -5515,7 +5522,8 @@ begin
   -- em toda loja (20261024120000_shared_prices_gtin.sql).
   assert (select array_agg(column_name || ' ' || data_type order by ordinal_position) from information_schema.columns
             where table_schema = 'public' and table_name = 'shared_prices')
-    = array['store_cnpj text', 'store_uf text', 'store_name text', 'item_key text', 'unit text', 'seen_on date', 'unit_price numeric', 'visible_on date', 'gtin text'],
+    = array['store_cnpj text', 'store_uf text', 'store_name text', 'item_key text', 'unit text', 'seen_on date', 'unit_price numeric', 'visible_on date', 'gtin text',
+            'pack_unit text', 'pack_amount numeric', 'pack_of smallint'],
     'shared_prices has exactly store, state, name, item key, unit, day, price, the day it becomes readable and the barcode';
   assert (select bool_and(is_nullable = 'NO') from information_schema.columns
             where table_schema = 'public' and table_name = 'shared_prices' and column_name in ('seen_on', 'visible_on')),
@@ -5543,7 +5551,8 @@ select public.create_household('Casa da Paula', 'Paula') \gset
 do $$
 declare
   today constant date := current_setting('test.sp_today')::date;
-  d constant date := today - 10;
+  -- Uma sexta-feira de três semanas atrás.
+  d constant date := current_setting('test.sp_week')::date - 17;
   ata constant text := '11222333000181';
   s_ata uuid;
   s_other uuid;
@@ -5764,15 +5773,15 @@ begin
     select r, g, 'ITEM NO TETO ' || g, 'graos', 'un', 1 + g / 100.0, 1 + g / 100.0 from generate_series(1, 300) as g;
   perform pg_temp.confirm_as_read(r, '[]');
 
-  -- A compra de HOJE (QR code): entra na base, mas ninguém a lê antes de amanhã.
+  -- A compra de HOJE (QR code): entra na base, mas ninguém a lê antes da segunda-feira que vem.
   insert into public.receipts (store_id, access_key, source)
     values (s_ata, '352610' || ata || repeat('0', 23) || '9', 'qrcode') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'CAFE PILAO 500G', 'cafe_cha', 'un', 18.90, 18.90);
   perform pg_temp.confirm_as_read(r, '[]');
 
-  -- A compra de ONTEM confirmada hoje (QR code, noutro mercado de São Paulo): o que segura a linha é o dia da
-  -- GRAVAÇÃO, não o da compra. Também só amanhã.
+  -- A compra de ONTEM confirmada hoje (QR code, noutro mercado de São Paulo): o que segura a linha é a semana da
+  -- GRAVAÇÃO, não o dia da compra. Também só na segunda-feira que vem.
   insert into public.receipts (store_id, purchased_at, access_key, source)
     values (s_other, (today - 1 + time '19:00') at time zone 'America/Sao_Paulo', '352610' || '99888777000166' || repeat('0', 23) || '4', 'qrcode')
     returning id into r;
@@ -5785,12 +5794,16 @@ reset role;
 do $$
 declare
   today constant date := current_setting('test.sp_today')::date;
-  d constant date := today - 10;
+  week constant date := current_setting('test.sp_week')::date;
+  d constant date := week - 17;
   ata constant text := '11222333000181';
 begin
-  -- Tudo o que foi gravado hoje passa a ser lido amanhã, seja a compra de há 10 dias, de ontem ou de hoje.
-  assert (select count(*) from public.shared_prices where visible_on <> today + 1) = 0,
-    'every row written today becomes readable tomorrow, whatever its purchase day';
+  -- Tudo o que foi gravado nesta semana passa a ser lido na segunda-feira que vem, seja a compra de há três semanas,
+  -- de ontem ou de hoje.
+  assert (select count(*) from public.shared_prices where visible_on <> week + 7) = 0,
+    'every row written this week becomes readable next Monday, whatever its purchase day';
+  assert (select bool_and(extract(isodow from visible_on) = 1 and visible_on > today and visible_on <= today + 7) from public.shared_prices),
+    'a Monday, after today, within a week';
   -- Do QR: o arroz (uma linha, o preço da última), a banana e a maçã, no dia de São Paulo das 22:30, com o
   -- estado da chave. Da foto: o leite, no dia da 00:30, sem estado. E os três itens da nota sem remédio.
   assert (select array_agg(item_key || ' ' || unit || ' ' || seen_on || ' ' || unit_price || ' ' || coalesce(store_uf, '-') order by item_key)
@@ -5833,8 +5846,9 @@ begin
   -- O atacado, o outro mercado, a loja de nome comprido, as 300 do teto, os quatro leites e os quatro Pague Menos.
   assert (select count(*) from public.shared_prices) = 8 + 2 + 1 + 300 + 4 + 4, 'nothing else was shared';
 
-  -- O dia vira só para a banana: como se a nota da Paula tivesse sido confirmada ontem, a linha já pode ser lida.
-  update public.shared_prices set visible_on = today where item_key = 'BANANA PRATA';
+  -- A semana vira só para a banana: como se a nota da Paula tivesse sido confirmada na semana passada, a linha já pode
+  -- ser lida.
+  update public.shared_prices set visible_on = week where item_key = 'BANANA PRATA';
 end $$;
 
 -- Quico: o mesmo arroz e a mesma banana, no mesmo atacado, no mesmo dia de compra, por outros preços e com
@@ -5844,7 +5858,7 @@ select set_config('request.jwt.claim.sub', :'user_q', false) \gset
 select public.create_household('Casa do Quico', 'Quico') \gset
 do $$
 declare
-  d constant date := current_setting('test.sp_today')::date - 10;
+  d constant date := current_setting('test.sp_week')::date - 17;
   ata constant text := '11222333000181';
   s uuid;
   r uuid;
@@ -5867,18 +5881,19 @@ reset role;
 do $$
 declare
   today constant date := current_setting('test.sp_today')::date;
+  week constant date := current_setting('test.sp_week')::date;
   ata constant text := '11222333000181';
 begin
   assert (select count(*) from public.shared_prices where item_key = 'ARROZ T JOAO 5KG') = 1, 'two households, same item, store and day: ONE row';
-  -- O arroz foi gravado hoje pela Paula: ninguém leu ainda, e vale a última gravação, preço e nome (uma
-  -- confirmação honesta conserta uma falsa), mesmo sendo compra de há 10 dias. O dia em que passa a ser lida
+  -- O arroz foi gravado nesta semana pela Paula: ninguém leu ainda, e vale a última gravação, preço e nome (uma
+  -- confirmação honesta conserta uma falsa), mesmo sendo compra de há três semanas. O dia em que passa a ser lida
   -- não anda.
   assert (select unit_price || ' ' || store_name || ' ' || visible_on from public.shared_prices where item_key = 'ARROZ T JOAO 5KG')
-    = '23.5000 ATACADAO MOOCA LJ 12 ' || (today + 1), 'a row nobody can read yet takes the newer write, and its day of becoming readable stays';
+    = '23.5000 ATACADAO MOOCA LJ 12 ' || (week + 7), 'a row nobody can read yet takes the newer write, and its day of becoming readable stays';
   -- A banana já pode ser lida: se mudasse, quem a observa saberia que outra casa acabou de confirmar uma
   -- nota. A MESMA confirmação que trocou o arroz a deixa como está: preço, nome, estado e dia.
   assert (select unit_price || ' ' || store_name || ' ' || store_uf || ' ' || visible_on from public.shared_prices where item_key = 'BANANA PRATA')
-    = '6.9900 ATACADAO MOOCA 35 ' || today, 'a row that is already readable never changes';
+    = '6.9900 ATACADAO MOOCA 35 ' || week, 'a row that is already readable never changes';
   -- O café de hoje no atacado: a última gravação, e o estado que a foto não traz continua o que a linha já tinha.
   assert (select count(*) from public.shared_prices where item_key = 'CAFE PILAO 500G' and store_cnpj = ata) = 1, 'today too: ONE row';
   assert (select unit_price || ' ' || store_name || ' ' || store_uf || ' ' || seen_on from public.shared_prices where item_key = 'CAFE PILAO 500G' and store_cnpj = ata)
@@ -5916,11 +5931,13 @@ begin
   assert (select count(*) from public.shared_latest_prices()) = 0, 'a household without that description sees nothing';
 end $$;
 
--- As linhas para a leitura, postas direto (como servidor): o arroz em vários mercados, dias e estados.
+-- As linhas para a leitura, postas direto (como servidor): o arroz em vários mercados, semanas e estados.
 reset role;
 do $$
 declare
   today constant date := current_setting('test.sp_today')::date;
+  -- A segunda-feira desta semana. week - 7 é a da semana passada, week - 14 a da retrasada.
+  week constant date := current_setting('test.sp_week')::date;
   ata constant text := '11222333000181';
 begin
   assert (select unit_price || ' ' || store_name from public.shared_prices where item_key = 'CAFE PILAO 500G' and store_cnpj = ata) = '20.0000 ATACADAO MOOCA LJ 12',
@@ -5928,39 +5945,42 @@ begin
   assert (select store_name || ' ' || coalesce(store_uf, '-') from public.shared_prices where item_key = 'MACARRAO RENATA 500G') = 'CNPJ ' || ata || ' -',
     'and on a new row it is accepted';
 
-  -- A última coluna é o dia em que a linha passa a ser lida: o seguinte ao da gravação. Quase todas como a
-  -- nota confirmada no próprio dia da compra; as outras são o que se testa.
+  -- A última coluna é o dia em que a linha passa a ser lida: a segunda-feira depois da semana da gravação. Quase todas
+  -- como a nota confirmada na própria semana da compra; as outras são o que se testa.
   insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
-    -- No atacado: a de há 3 dias é mais nova que a de há 6 (as duas já podem ser lidas) e que a de há 10;
-    -- outra unidade é outra linha.
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 6, 22.00, today - 5),
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 3, 24.10, today - 2),
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'kg', today - 5, 4.80, today - 4),
-    -- Ninguém lê ainda: a compra de anteontem e a de ontem gravadas HOJE (o que conta é o dia da gravação), a
-    -- de hoje, e uma de amanhã. Mais novas e mais baratas que a de há 3 dias, que continua sendo a que se vê.
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 2, 2.00, today + 1),
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 1, 1.50, today + 1),
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today, 1.00, today + 1),
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today + 1, 0.50, today + 2),
-    -- Os 90 dias contam do dia da COMPRA: há 91 dias é velho demais, mesmo gravado há pouco (a nota
-    -- confirmada com atraso). Há exatamente 90: ainda vale (e é o mais barato de São Paulo).
-    ('99888777000166', '35', 'SUPER OUTRO', 'ARROZ T JOAO 5KG', 'un', today - 91, 10.00, today - 5),
-    ('60000000000108', '35', 'MERCADO SP 8', 'ARROZ T JOAO 5KG', 'un', today - 90, 15.00, today - 89),
+    -- No atacado: a da semana passada (terça) é mais nova que a da retrasada (terça) e que a de três semanas atrás;
+    -- outra unidade é outra linha (sexta da retrasada).
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', week - 13, 22.00, week - 7),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', week - 6, 24.10, week),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'kg', week - 10, 4.80, week - 7),
+    -- Ninguém lê ainda: a compra de sábado e a de domingo passados gravadas NESTA semana (o que conta é a semana da
+    -- gravação), a de hoje, e uma de amanhã. Mais novas e mais baratas que a de terça passada, que continua sendo a
+    -- que se vê.
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', week - 2, 2.00, week + 7),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', week - 1, 1.50, week + 7),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today, 1.00, week + 7),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today + 1, 0.50, week + 8),
+    -- As 13 semanas contam da semana da COMPRA, de segunda a segunda: o domingo antes delas é velho demais, mesmo
+    -- gravado há pouco (a nota confirmada com atraso). A segunda-feira em que elas começam ainda vale (e é o mais
+    -- barato de São Paulo).
+    ('99888777000166', '35', 'SUPER OUTRO', 'ARROZ T JOAO 5KG', 'un', week - 92, 10.00, week - 7),
+    ('60000000000108', '35', 'MERCADO SP 8', 'ARROZ T JOAO 5KG', 'un', week - 91, 15.00, week - 84),
     -- No Rio e num mercado sem estado (só fotos): mais baratos, mas não para quem compra em São Paulo.
-    ('60000000000201', '33', 'MERCADO RJ', 'ARROZ T JOAO 5KG', 'un', today - 2, 9.00, today - 1),
-    ('60000000000301', null, 'MERCADO SEM ESTADO', 'ARROZ T JOAO 5KG', 'un', today - 2, 8.00, today - 1),
-    -- Gravada ontem, lida a partir de hoje: o primeiro dia em que aparece.
-    ('60000000000101', '35', 'MERCADO SP 1', 'ARROZ T JOAO 5KG', 'kg', today - 4, 5.10, today),
-    -- No MERCADO SP 2 (22 reais há 2 dias, logo abaixo): uma linha mais nova sem estado (nota lida por foto),
-    -- que para quem não compra ali não conta, e uma de hoje, que ninguém lê.
-    ('60000000000102', null, 'MERCADO SP 2', 'ARROZ T JOAO 5KG', 'un', today - 1, 1.50, today),
-    ('60000000000102', '35', 'MERCADO SP 2', 'ARROZ T JOAO 5KG', 'un', today, 1.00, today + 1),
-    -- Na padaria que vai ser mercado da Rita: sem estado, há exatamente 90 dias (vale); e há 91 (velho demais).
-    ('12345678000195', null, 'PADARIA DA RITA', 'ARROZ T JOAO 5KG', 'un', today - 90, 14.00, today - 89),
-    ('12345678000195', '35', 'PADARIA DA RITA', 'ARROZ T JOAO 5KG', 'kg', today - 91, 3.00, today - 90);
-  -- Sete mercados de São Paulo, de 21 a 27 reais.
+    ('60000000000201', '33', 'MERCADO RJ', 'ARROZ T JOAO 5KG', 'un', week - 5, 9.00, week),
+    ('60000000000301', null, 'MERCADO SEM ESTADO', 'ARROZ T JOAO 5KG', 'un', week - 5, 8.00, week),
+    -- Gravada na semana passada, lida a partir desta segunda: a primeira semana em que aparece.
+    ('60000000000101', '35', 'MERCADO SP 1', 'ARROZ T JOAO 5KG', 'kg', week - 4, 5.10, week),
+    -- No MERCADO SP 2 (22 reais na semana retrasada, logo abaixo): uma linha mais nova sem estado (nota lida por
+    -- foto), que para quem não compra ali não conta, e uma de hoje, que ninguém lê.
+    ('60000000000102', null, 'MERCADO SP 2', 'ARROZ T JOAO 5KG', 'un', week - 2, 1.50, week),
+    ('60000000000102', '35', 'MERCADO SP 2', 'ARROZ T JOAO 5KG', 'un', today, 1.00, week + 7),
+    -- Na padaria que vai ser mercado da Rita: sem estado, na segunda-feira em que as 13 semanas começam (vale); e no
+    -- domingo antes (velho demais).
+    ('12345678000195', null, 'PADARIA DA RITA', 'ARROZ T JOAO 5KG', 'un', week - 91, 14.00, week - 84),
+    ('12345678000195', '35', 'PADARIA DA RITA', 'ARROZ T JOAO 5KG', 'kg', week - 92, 3.00, week - 91);
+  -- Sete mercados de São Paulo, de 21 a 27 reais, na quarta-feira da semana retrasada.
   insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
-    select '6000000000010' || g, '35', 'MERCADO SP ' || g, 'ARROZ T JOAO 5KG', 'un', today - 2, 20 + g, today - 1 from generate_series(1, 7) as g;
+    select '6000000000010' || g, '35', 'MERCADO SP ' || g, 'ARROZ T JOAO 5KG', 'un', week - 12, 20 + g, week - 7 from generate_series(1, 7) as g;
 
   -- A linha nunca pode ser lida no dia da compra, nem antes: o banco recusa, venha de onde vier.
   begin
@@ -5978,6 +5998,7 @@ select public.create_household('Casa da Rita', 'Rita') \gset
 do $$
 declare
   today constant date := current_setting('test.sp_today')::date;
+  week constant date := current_setting('test.sp_week')::date;
   ata constant text := '11222333000181';
   s_ata uuid;
   s_bakery uuid;
@@ -5989,30 +6010,37 @@ declare
 begin
   assert (select count(*) from public.shared_latest_prices()) = 0, 'a household without the description sees nothing';
 
-  -- Um membro grava os próprios produtos, apelidos e mercados (é a regra de sempre). Sem nota confirmada
-  -- nenhuma, ainda assim não vê nada.
+  -- Um membro grava os próprios produtos, apelidos e mercados (é a regra de sempre). Sem nota confirmada nenhuma, já
+  -- vê os preços dos mercados dela (não há mais a porta da primeira nota); dos outros, nada: ela não tem estado.
   insert into public.products (name, category) values ('Arroz', 'graos') returning id into p;
   insert into public.product_aliases (alias, product_id) values ('ARROZ T JOAO 5KG', p);
   insert into public.stores (name, cnpj) values ('Atacadão da Rita', ata) returning id into s_ata;
-  assert (select count(*) from public.shared_latest_prices()) = 0, 'a household with no confirmed receipt sees nothing';
+  assert (select array_agg(store_cnpj || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by unit) from public.shared_latest_prices())
+    = array[ata || ' kg 4.8000 ' || (week - 14) || ' true', ata || ' un 24.1000 ' || (week - 7) || ' true'],
+    'with no receipt at all: her own stores; nothing from other stores without a state';
+  -- O local da casa dá o estado: com São Paulo nele, também os outros mercados do estado.
+  insert into public.household_location (label, latitude, longitude, source, state_code) values ('Mooca, São Paulo', -23.55, -46.6, 'cep', '35');
+  assert (select count(*) from public.shared_latest_prices() where not mine) = 6, 'the state of the house place opens the other stores of her state';
+  delete from public.household_location;
+  assert (select count(*) from public.shared_latest_prices() where not mine) = 0, 'and without it they are gone';
 
-  -- Com uma nota confirmada (digitada, que não compartilha nada): os preços do atacado, que é mercado dela.
+  -- Com uma nota confirmada (digitada, que não compartilha nada): o mesmo, os preços do atacado, que é mercado dela.
   -- Dos outros mercados, nada: ela não tem nota lida em estado nenhum.
   insert into public.receipts (source) values ('manual') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
     values (r, 'arroz t.joão 5kg', 'un', 26.00, 26.00) returning id into i;
   perform pg_temp.confirm_as_read(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
   assert (select array_agg(store_cnpj || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by unit) from public.shared_latest_prices())
-    = array[ata || ' kg 4.8000 ' || (today - 5) || ' true', ata || ' un 24.1000 ' || (today - 3) || ' true'],
-    'in her own stores: the newest READABLE row per store and unit, never one written today (whatever its purchase day) or dated ahead; nothing from other stores without a state';
+    = array[ata || ' kg 4.8000 ' || (week - 14) || ' true', ata || ' un 24.1000 ' || (week - 7) || ' true'],
+    'in her own stores: the newest READABLE row per store and unit, with the Monday of its week, never one written this week (whatever its purchase day) or dated ahead; nothing from other stores without a state';
   select * into seen from public.shared_latest_prices() where unit = 'un';
   assert seen.product_id = p and seen.store_name = 'ATACADAO MOOCA' and seen.store_uf = '35', 'her product, the store name and state as shared';
   -- O que volta é só isso: nada de casa, pessoa, nota ou hora, nem o dia em que a linha passou a ser lida
   -- (visible_on não sai do banco: diria em que dia a nota foi confirmada).
   assert (select array_agg(k order by k) from jsonb_object_keys(to_jsonb(seen)) as k)
-    = array['mine', 'product_id', 'seen_on', 'store_cnpj', 'store_name', 'store_uf', 'unit', 'unit_price'], 'the answer has only these columns';
+    = array['mine', 'pack_amount', 'pack_of', 'pack_unit', 'product_id', 'seen_on', 'store_cnpj', 'store_name', 'store_uf', 'unit', 'unit_price'], 'the answer has only these columns';
   assert (select proargnames from pg_proc where oid = 'public.shared_latest_prices()'::regprocedure)
-    = array['product_id', 'store_cnpj', 'store_name', 'store_uf', 'unit', 'unit_price', 'seen_on', 'mine'],
+    = array['product_id', 'store_cnpj', 'store_name', 'store_uf', 'unit', 'unit_price', 'seen_on', 'mine', 'pack_unit', 'pack_amount', 'pack_of'],
     'and the function declares no other column';
   perform set_config('test.sp_product_r', p::text, false);
 
@@ -6034,17 +6062,18 @@ begin
   perform pg_temp.confirm_as_read(r, '[]');
   assert (select array_agg(store_name || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by mine desc, unit, unit_price) from public.shared_latest_prices())
     = array[
-      'ATACADAO MOOCA kg 4.8000 ' || (today - 5) || ' true',
-      'PADARIA DA RITA un 14.0000 ' || (today - 90) || ' true',
-      'ATACADAO MOOCA un 24.1000 ' || (today - 3) || ' true',
-      'MERCADO SP 1 kg 5.1000 ' || (today - 4) || ' false',
-      'MERCADO SP 8 un 15.0000 ' || (today - 90) || ' false',
-      'MERCADO SP 1 un 21.0000 ' || (today - 2) || ' false',
-      'MERCADO SP 2 un 22.0000 ' || (today - 2) || ' false',
-      'MERCADO SP 3 un 23.0000 ' || (today - 2) || ' false',
-      'MERCADO SP 4 un 24.0000 ' || (today - 2) || ' false'
+      'ATACADAO MOOCA kg 4.8000 ' || (week - 14) || ' true',
+      'PADARIA DA RITA un 14.0000 ' || (week - 91) || ' true',
+      'ATACADAO MOOCA un 24.1000 ' || (week - 7) || ' true',
+      'MERCADO SP 1 kg 5.1000 ' || (week - 7) || ' false',
+      'MERCADO SP 8 un 15.0000 ' || (week - 91) || ' false',
+      'MERCADO SP 1 un 21.0000 ' || (week - 14) || ' false',
+      'MERCADO SP 2 un 22.0000 ' || (week - 14) || ' false',
+      'MERCADO SP 3 un 23.0000 ' || (week - 14) || ' false',
+      'MERCADO SP 4 un 24.0000 ' || (week - 14) || ' false'
     ],
-    'her own stores first, then the 5 cheapest of her state per product and unit; 90 days still count, 91 do not';
+    'her own stores first, then the 5 cheapest of her state per product and unit; 13 whole weeks count, the Sunday before does not';
+  assert (select bool_and(extract(isodow from seen_on) = 1) from public.shared_latest_prices()), 'the reader gives only Mondays, never a day';
 
   -- Outra descrição do mesmo produto, e o café como outro produto (um membro grava os próprios apelidos; só a
   -- chave exata recebe preço: é informação de mercado, e não há como listar a tabela).
@@ -6056,8 +6085,10 @@ begin
   exception when check_violation then null;
   end;
   -- O café foi comprado HOJE por três casas no atacado, e ONTEM no SUPER OUTRO, numa nota confirmada hoje; e
-  -- há arroz gravado hoje no atacado, de hoje e de dias que já passaram: quem pergunta hoje não vê nenhum.
-  assert (select count(*) from public.shared_latest_prices() where product_id = c or seen_on >= today) = 0, 'nothing bought or written today is visible today';
+  -- há arroz gravado nesta semana no atacado, de hoje e de dias que já passaram: quem pergunta nesta semana não vê
+  -- nenhum.
+  assert (select count(*) from public.shared_latest_prices() where product_id = c or seen_on >= week) = 0,
+    'nothing bought or written this week is visible this week';
   perform set_config('test.sp_product_c', c::text, false);
 
   -- O macarrão que o Saulo gravou hoje com o nome inventado e sem estado: a Rita confirma, no mesmo dia, uma
@@ -6071,26 +6102,27 @@ end $$;
 reset role;
 do $$
 declare
-  today constant date := current_setting('test.sp_today')::date;
+  week constant date := current_setting('test.sp_week')::date;
 begin
-  -- A outra descrição do mesmo produto, mais nova, no MERCADO SP 1: é ela o preço do produto ali.
+  -- A outra descrição do mesmo produto, de uma semana mais nova, no MERCADO SP 1: é ela o preço do produto ali.
   insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
-    values ('60000000000101', '35', 'MERCADO SP 1', 'ARROZ TIO JOAO TP1 5KG', 'un', today - 1, 25.00, today);
+    values ('60000000000101', '35', 'MERCADO SP 1', 'ARROZ TIO JOAO TP1 5KG', 'un', week - 2, 25.00, week);
   -- A linha que ainda não pode ser lida aceita o nome de verdade e o estado no lugar do nome inventado e do
-  -- estado vazio (e o preço mais novo): é a nota de ontem com leitura ruim, consertada no mesmo dia.
+  -- estado vazio (e o preço mais novo): é a nota de ontem com leitura ruim, consertada na mesma semana.
   assert (select unit_price || ' ' || store_name || ' ' || store_uf || ' ' || visible_on from public.shared_prices where item_key = 'MACARRAO RENATA 500G')
-    = '4.2900 Atacadão da Rita 35 ' || (today + 1), 'before it is readable, the real name and the state replace the placeholder';
+    = '4.2900 Atacadão da Rita 35 ' || (week + 7), 'before it is readable, the real name and the state replace the placeholder';
 
-  -- O dia vira para o café. A linha da compra de ontem (SUPER OUTRO), gravada hoje, passa a poder ser lida
-  -- sem mudar em mais nada; a da compra de "hoje" no atacado passa a ser de ontem.
-  update public.shared_prices set visible_on = today where item_key = 'CAFE PILAO 500G' and store_cnpj = '99888777000166';
-  update public.shared_prices set seen_on = today - 1, visible_on = today where item_key = 'CAFE PILAO 500G' and store_cnpj = '11222333000181';
+  -- A semana vira para o café: as duas linhas passam a ser compras de sábado passado, gravadas na semana passada, e
+  -- podem ser lidas sem mudar em mais nada.
+  update public.shared_prices set seen_on = week - 2, visible_on = week where item_key = 'CAFE PILAO 500G' and store_cnpj = '99888777000166';
+  update public.shared_prices set seen_on = week - 2, visible_on = week where item_key = 'CAFE PILAO 500G' and store_cnpj = '11222333000181';
 end $$;
 
 set role authenticated;
 do $$
 declare
   today constant date := current_setting('test.sp_today')::date;
+  week constant date := current_setting('test.sp_week')::date;
   ata constant text := '11222333000181';
   p constant uuid := current_setting('test.sp_product_r')::uuid;
   c constant uuid := current_setting('test.sp_product_c')::uuid;
@@ -6113,44 +6145,47 @@ begin
 
   assert (select array_agg(store_name || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by mine desc, unit, unit_price, seen_on desc) from public.shared_latest_prices())
     = array[
-      'ATACADAO MOOCA kg 4.8000 ' || (today - 5) || ' true',
-      'PADARIA DA RITA un 14.0000 ' || (today - 90) || ' true',
-      -- O café, a partir do dia seguinte: com o preço e o nome da última gravação.
-      'ATACADAO MOOCA LJ 12 un 20.0000 ' || (today - 1) || ' true',
-      'ATACADAO MOOCA un 24.1000 ' || (today - 3) || ' true',
-      'MERCADO SP 1 kg 5.1000 ' || (today - 4) || ' false',
-      'MERCADO SP 8 un 15.0000 ' || (today - 90) || ' false',
-      -- O café comprado ontem no SUPER OUTRO: no dia em que foi confirmado não aparecia; virado o dia, aparece.
-      'SUPER OUTRO un 17.9000 ' || (today - 1) || ' false',
-      'MERCADO SP 2 un 22.0000 ' || (today - 2) || ' false',
-      'MERCADO SP 3 un 23.0000 ' || (today - 2) || ' false',
-      'MERCADO SP 4 un 24.0000 ' || (today - 2) || ' false',
-      -- A descrição mais nova é o preço do produto no MERCADO SP 1; empatado com o MERCADO SP 5, fica o visto por último.
-      'MERCADO SP 1 un 25.0000 ' || (today - 1) || ' false'
+      'ATACADAO MOOCA kg 4.8000 ' || (week - 14) || ' true',
+      'PADARIA DA RITA un 14.0000 ' || (week - 91) || ' true',
+      -- O café, a partir da segunda-feira depois da semana da gravação: com o preço e o nome da última gravação.
+      'ATACADAO MOOCA LJ 12 un 20.0000 ' || (week - 7) || ' true',
+      'ATACADAO MOOCA un 24.1000 ' || (week - 7) || ' true',
+      'MERCADO SP 1 kg 5.1000 ' || (week - 7) || ' false',
+      'MERCADO SP 8 un 15.0000 ' || (week - 91) || ' false',
+      -- O café comprado no SUPER OUTRO: na semana em que foi confirmado não aparecia; virada a semana, aparece.
+      'SUPER OUTRO un 17.9000 ' || (week - 7) || ' false',
+      'MERCADO SP 2 un 22.0000 ' || (week - 14) || ' false',
+      'MERCADO SP 3 un 23.0000 ' || (week - 14) || ' false',
+      'MERCADO SP 4 un 24.0000 ' || (week - 14) || ' false',
+      -- A descrição da semana mais nova é o preço do produto no MERCADO SP 1; empatado com o MERCADO SP 5, fica o da
+      -- semana mais nova.
+      'MERCADO SP 1 un 25.0000 ' || (week - 7) || ' false'
     ],
-    'one row per product, store and unit: the newest among the descriptions of the product; a row shows from the day after it was written';
+    'one row per product, store and unit: the newest week among the descriptions of the product; a row shows from the Monday after the week it was written';
   assert (select bool_and(product_id in (p, c)) from public.shared_latest_prices()), 'always for a product of the caller';
 
   -- O que a casa já sabe fica de fora, aqui mesmo no banco: com preço PRÓPRIO do produto num mercado dela com
-  -- aquele CNPJ, no mesmo dia ou depois, a linha é a compra dela ou notícia mais velha. Uma compra de há 5
-  -- dias (digitada: preço próprio é o de qualquer nota) tira a linha de há 5 dias, em qualquer unidade, e
-  -- deixa a de há 3.
+  -- aquele CNPJ, na mesma semana ou depois, a linha é a compra dela ou notícia mais velha. Pela SEMANA, não pelo dia:
+  -- comparar com o dia exato deixaria um membro descobrir o dia da linha comum. Uma compra na quarta-feira da semana
+  -- retrasada (digitada: preço próprio é o de qualquer nota) tira a linha da sexta-feira daquela semana, em qualquer
+  -- unidade, e deixa a da semana passada.
   insert into public.receipts (store_id, purchased_at, source)
-    values (s_ata, (today - 5 + time '10:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
+    values (s_ata, (week - 12 + time '10:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
     values (r, 'arroz a granel', 'un', 23.00, 23.00) returning id into i;
   perform pg_temp.confirm_as_read(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
   assert (select array_agg(store_name || ' ' || unit || ' ' || unit_price order by unit_price) from public.shared_latest_prices() where mine and product_id = p)
     = array['PADARIA DA RITA un 14.0000', 'ATACADAO MOOCA un 24.1000'],
-    'an own purchase on the same day or later hides the row, in that store only; an older one does not';
-  -- O dia da compra é o de São Paulo: às 23:30 de há 4 dias (em UTC já é o dia seguinte) ainda é mais velha
-  -- que a linha de há 3.
+    'an own purchase in the same week (even on an earlier day) or later hides the row, in that store only; an older one does not';
+  -- O dia da compra é o de São Paulo: às 23:30 do domingo da semana retrasada (em UTC já é segunda-feira) ainda é da
+  -- semana antes da linha da semana passada.
   insert into public.receipts (store_id, purchased_at, source)
-    values (s_ata, (today - 4 + time '23:30') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
+    values (s_ata, (week - 8 + time '23:30') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
     values (r, 'arroz a granel', 'un', 23.00, 23.00) returning id into i;
   perform pg_temp.confirm_as_read(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
   assert (select count(*) from public.shared_latest_prices() where mine and product_id = p and store_cnpj = ata) = 1, 'the day of the own purchase is the São Paulo day';
+  assert (select bool_and(extract(isodow from seen_on) = 1) from public.shared_latest_prices()), 'still only Mondays';
   -- A compra de ontem tira o que sobrava do arroz no atacado. Só daquele produto, naquele mercado: o café
   -- dali (visto ontem também) e os outros mercados continuam.
   insert into public.receipts (store_id, purchased_at, source)
@@ -6336,7 +6371,7 @@ reset role;
 alter table public.shared_prices drop constraint test_refuses_item;
 do $$
 declare
-  d constant date := current_setting('test.sp_today')::date - 10;
+  d constant date := current_setting('test.sp_week')::date - 17;
 begin
   assert (select count(*) from public.shared_prices where item_key in ('ITEM QUE EMPERRA', 'SABAO OMO 1KG')) = 0,
     'nothing of the receipt whose share failed, not even the line that would pass';
@@ -7060,12 +7095,12 @@ begin
     'and so does latest_prices';
   assert (select array_agg(attname::text order by attnum) from pg_attribute
             where attrelid = 'public.price_observations'::regclass and attnum > 0 and not attisdropped)
-         = array['household_id', 'product_id', 'store_id', 'purchased_at', 'unit_price', 'unit', 'receipt_id', 'pack_count'],
-    'the columns of price_observations are the same, in the same order (pack_count, 20261026134101, at the end)';
+         = array['household_id', 'product_id', 'store_id', 'purchased_at', 'unit_price', 'unit', 'receipt_id', 'pack_count', 'raw_description'],
+    'the columns of price_observations are the same, in the same order (pack_count, 20261026134101, and raw_description, 20261124181159, at the end)';
   assert (select array_agg(attname::text order by attnum) from pg_attribute
             where attrelid = 'public.latest_prices'::regclass and attnum > 0 and not attisdropped)
-         = array['household_id', 'product_id', 'store_id', 'unit', 'unit_price', 'purchased_at', 'pack_count'],
-    'the columns of latest_prices are the same, in the same order, with pack_count at the end';
+         = array['household_id', 'product_id', 'store_id', 'unit', 'unit_price', 'purchased_at', 'pack_count', 'raw_description'],
+    'the columns of latest_prices are the same, in the same order, with pack_count and raw_description at the end';
   assert has_table_privilege('authenticated', 'public.price_observations', 'select')
      and has_table_privilege('authenticated', 'public.latest_prices', 'select'), 'members still read both views';
 end $$;
@@ -14144,11 +14179,12 @@ end $$;
 reset role;
 do $$
 declare
-  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  -- A segunda-feira desta semana: a linha da quarta-feira passada já pode ser lida (a leitura é por semana).
+  week constant date := public.shared_week((now() at time zone 'America/Sao_Paulo')::date);
 begin
   insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
-    ('44555666000122', '25', 'SUPERMERCADO OUTRO LTDA', 'LEITE ITALAC 1L', 'un', today - 2, 5.19, today - 1),
-    ('44555666000203', '25', 'MERCADO SEM PADRAO LTDA', 'LEITE ITALAC 1L', 'un', today - 2, 5.29, today - 1);
+    ('44555666000122', '25', 'SUPERMERCADO OUTRO LTDA', 'LEITE ITALAC 1L', 'un', week - 5, 5.19, week),
+    ('44555666000203', '25', 'MERCADO SEM PADRAO LTDA', 'LEITE ITALAC 1L', 'un', week - 5, 5.29, week);
   insert into public.store_names (cnpj, name, source, reviewed_at, receita_status)
     values ('44555666000122', 'Outro Super', 'revisao', now(), 'sem_fantasia');
 end $$;
@@ -14391,32 +14427,34 @@ begin
   perform set_config('test.g_milk_c', milk::text, false);
 end $$;
 
--- A base comum: o mesmo leite (o mesmo código) com outras descrições, em vários mercados.
+-- A base comum: o mesmo leite (o mesmo código) com outras descrições, em vários mercados. As datas contam da
+-- segunda-feira desta semana (week), como na seção de cima: a leitura é por semana.
 reset role;
 do $$
 declare
-  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  week constant date := public.shared_week((now() at time zone 'America/Sao_Paulo')::date);
   g constant text := '07891000100103';
 begin
   insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on, gtin) values
     -- No mercado da Bia, lida por foto (sem estado): só o código leva a ela.
-    ('62000000000202', null, 'MERCADO DA BIA', 'LT INTEG PIRACANJUBA 1L', 'un', today - 2, 5.49, today - 1, g),
-    -- Também no mercado da Bia, pelo código: uma gravada hoje (a mais nova, que ninguém lê ainda) e uma de 91 dias
-    -- (noutra unidade, para não perder para a mais nova).
-    ('62000000000202', null, 'MERCADO DA BIA', 'LEITE PIRAC HOJE', 'un', today - 1, 4.30, today + 1, g),
-    ('62000000000202', null, 'MERCADO DA BIA', 'LEITE PIRAC ANTIGO', 'l', today - 91, 4.40, today - 90, g),
+    ('62000000000202', null, 'MERCADO DA BIA', 'LT INTEG PIRACANJUBA 1L', 'un', week - 5, 5.49, week, g),
+    -- Também no mercado da Bia, pelo código: uma gravada nesta semana (a mais nova, que ninguém lê ainda) e uma de
+    -- antes das 13 semanas (noutra unidade, para não perder para a mais nova).
+    ('62000000000202', null, 'MERCADO DA BIA', 'LEITE PIRAC HOJE', 'un', week - 2, 4.30, week + 7, g),
+    ('62000000000202', null, 'MERCADO DA BIA', 'LEITE PIRAC ANTIGO', 'l', week - 92, 4.40, week - 91, g),
     -- No mercado do Caco, sem estado: só o código ligado por ele leva a ela, nunca o da Bia.
-    ('62000000000606', null, 'MERCADO DO CACO', 'LEITE PIRAC INT 1L', 'un', today - 2, 5.09, today - 1, g),
+    ('62000000000606', null, 'MERCADO DO CACO', 'LEITE PIRAC INT 1L', 'un', week - 5, 5.09, week, g),
     -- Em Z1, pelo código (5,29) e, no mesmo dia, pela descrição da Bia sem código (5,19): sai uma, a mais barata.
-    ('62000000000303', '35', 'OUTRO MERCADO SP', 'LEITE PIRAC INT 1L', 'un', today - 3, 5.29, today - 2, g),
-    ('62000000000303', '35', 'OUTRO MERCADO SP', 'LEITE PIRACANJUBA INTEGRAL', 'un', today - 3, 5.19, today - 2, null),
+    ('62000000000303', '35', 'OUTRO MERCADO SP', 'LEITE PIRAC INT 1L', 'un', week - 6, 5.29, week, g),
+    ('62000000000303', '35', 'OUTRO MERCADO SP', 'LEITE PIRACANJUBA INTEGRAL', 'un', week - 6, 5.19, week, null),
     -- Em Z2, a mesma linha pelos dois caminhos (a descrição da Bia E o código): uma vez só.
-    ('62000000000404', '35', 'MERCADO DOS DOIS', 'LEITE PIRACANJUBA INTEGRAL', 'un', today - 2, 5.39, today - 1, g),
+    ('62000000000404', '35', 'MERCADO DOS DOIS', 'LEITE PIRACANJUBA INTEGRAL', 'un', week - 5, 5.39, week, g),
     -- No Rio: não é do estado de ninguém aqui.
-    ('62000000000505', '33', 'MERCADO RJ', 'LEITE PIRAC INT 1L', 'un', today - 2, 4.00, today - 1, g),
-    -- Gravada hoje (ninguém lê ainda) e velha demais.
-    ('62000000000707', '35', 'MERCADO DE HOJE', 'LEITE PIRAC INT 1L', 'un', today - 1, 4.10, today + 1, g),
-    ('62000000000808', '35', 'MERCADO ANTIGO', 'LEITE PIRAC INT 1L', 'un', today - 91, 4.20, today - 90, g);
+    ('62000000000505', '33', 'MERCADO RJ', 'LEITE PIRAC INT 1L', 'un', week - 5, 4.00, week, g),
+    -- Gravada nesta semana (ninguém lê ainda) e velha demais.
+    ('62000000000707', '35', 'MERCADO DE HOJE', 'LEITE PIRAC INT 1L', 'un', week - 2, 4.10, week + 7, g),
+    ('62000000000808', '35', 'MERCADO ANTIGO', 'LEITE PIRAC INT 1L', 'un', week - 92, 4.20, week - 91, g);
+  perform set_config('test.g_week', week::text, false);
 end $$;
 
 set role authenticated;
@@ -14424,15 +14462,16 @@ select set_config('request.jwt.claim.sub', :'user_g2', false) \gset
 do $$
 declare
   today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  week constant date := current_setting('test.g_week')::date;
   milk constant uuid := current_setting('test.g_milk_b')::uuid;
   r uuid;
   i uuid;
 begin
   assert (select array_agg(store_cnpj || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by mine desc, store_cnpj) from public.shared_latest_prices())
     = array[
-      '62000000000202 5.4900 ' || (today - 2) || ' true',
-      '62000000000303 5.1900 ' || (today - 3) || ' false',
-      '62000000000404 5.3900 ' || (today - 2) || ' false'
+      '62000000000202 5.4900 ' || (week - 7) || ' true',
+      '62000000000303 5.1900 ' || (week - 7) || ' false',
+      '62000000000404 5.3900 ' || (week - 7) || ' false'
     ],
     'by the barcode: her product with another description, in her store and in another store of her state, once per store';
   assert (select bool_and(product_id = milk) from public.shared_latest_prices()), 'always her product';
@@ -14482,6 +14521,816 @@ end $$;
 delete from public.shared_prices where store_cnpj like '6200000000%';
 delete from public.households where name in ('Casa do Gil', 'Casa da Bia', 'Casa do Caco');
 delete from auth.users where id in (:'user_g1', :'user_g2', :'user_g3');
+
+-- ---------------------------------------------------------------------------
+\echo '• preços compartilhados: o tamanho da embalagem que o servidor leu na nota do QR code'
+-- Ernesto confirma notas do QR code; a leitura do servidor traz o tamanho de algumas linhas (como nfce o grava). Fia tem
+-- a caixa de 12 latas com o mesmo nome e uma nota do mesmo estado: lê o tamanho na linha comum.
+\set user_pk1 '00000000-0000-0000-0000-000000000361'
+\set user_pk2 '00000000-0000-0000-0000-000000000362'
+reset role;
+insert into auth.users (id) values (:'user_pk1'), (:'user_pk2');
+-- A leitura da foto (a IA): sem chave, com o mercado e o dia da nota.
+create function pg_temp.photo_read_with_lines(p_receipt uuid, p_lines jsonb) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_id uuid;
+begin
+  insert into public.receipt_reads (household_id, source, access_key, store_cnpj, store_name, purchased_on, lines)
+  select r.household_id, 'ai', null, s.cnpj, s.name, (r.purchased_at at time zone 'America/Sao_Paulo')::date, p_lines
+    from public.receipts r
+    join public.stores s on s.id = r.store_id and s.household_id = r.household_id
+    where r.id = p_receipt
+  returning id into v_id;
+  update public.receipts set read_id = v_id where id = p_receipt;
+end $$;
+-- Ernesto compra de novo no mesmo mercado, ontem, e a leitura traz esta linha. A nota leva também uma linha de
+-- controle com uma descrição só dela ('CONTROLE NOTA <n>'): share_receipt_prices engole todo erro, então uma gravação
+-- que quebrasse o check deixaria a linha comum como estava, igual a "manteve o tamanho"; a de controle só chega quando
+-- a nota inteira compartilhou (ernesto_row confere).
+create function pg_temp.ernesto_buys(p_description text, p_price numeric, p_n int, p_line jsonb) returns void
+language plpgsql as $$
+declare
+  yesterday constant timestamptz := (((now() at time zone 'America/Sao_Paulo')::date - 1) + time '18:00') at time zone 'America/Sao_Paulo';
+  r uuid;
+begin
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (current_setting('test.e_store')::uuid, yesterday, '352610' || '63000000000101' || repeat('0', 22) || lpad(p_n::text, 2, '0'), 'qrcode')
+    returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price) values
+    (r, 0, p_description, 'alcoolicas', 'un', p_price, p_price),
+    (r, 1, 'CONTROLE NOTA ' || p_n, 'alcoolicas', 'un', 1.00, 1.00);
+  perform pg_temp.read_with_lines(r, jsonb_build_array(
+    jsonb_build_object('description', p_description, 'unit', 'un', 'unit_price', p_price) || p_line,
+    jsonb_build_object('description', 'CONTROLE NOTA ' || p_n, 'unit', 'un', 'unit_price', 1.00)));
+  perform public.confirm_receipt(r, '[]');
+end $$;
+-- A lata (sem "de quantos") e a caixa de 12 (com ele).
+create function pg_temp.ernesto_buys_can(p_price numeric, p_n int, p_line jsonb) returns void
+language sql as $$ select pg_temp.ernesto_buys('CERV SKOL LT 350ML', p_price, p_n, p_line) $$;
+create function pg_temp.ernesto_buys_case(p_price numeric, p_n int, p_line jsonb) returns void
+language sql as $$ select pg_temp.ernesto_buys('CERV SKOL LT 350ML C/12', p_price, p_n, p_line) $$;
+-- A linha comum de uma descrição de Ernesto ontem, com as três colunas do tamanho, depois da nota <n>. Falha quando a
+-- linha de controle da nota <n> não chegou: a gravação falhou e o erro foi engolido, e a linha comum, como estava, não
+-- diria isso.
+create function pg_temp.ernesto_row(p_n int, p_item_key text) returns text
+language plpgsql as $$
+begin
+  if not exists (select 1 from public.shared_prices where store_cnpj = '63000000000101' and item_key = 'CONTROLE NOTA ' || p_n) then
+    raise exception 'FAIL: receipt % shared nothing (its control line is missing), so % only looks unchanged', p_n, p_item_key;
+  end if;
+  return (select unit_price || ' ' || coalesce(pack_unit || ' ' || pack_amount || coalesce(' x' || pack_of, ''), '-')
+            from public.shared_prices where store_cnpj = '63000000000101' and item_key = p_item_key);
+end $$;
+do $$
+begin
+  assert (select array_agg(column_name || ' ' || is_nullable || ' ' || coalesce(column_default, '-') order by ordinal_position)
+            from information_schema.columns
+            where table_schema = 'public' and table_name = 'shared_prices' and column_name like 'pack_%')
+    = array['pack_unit YES -', 'pack_amount YES -', 'pack_of YES -'],
+    'the three size columns may be missing, and nothing fills them by itself';
+  assert (select array_agg(a.attname::text order by k.ord) from pg_index i
+            cross join lateral unnest(i.indkey) with ordinality as k (attnum, ord)
+            join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+            where i.indrelid = 'public.shared_prices'::regclass and i.indisprimary)
+    = array['store_cnpj', 'item_key', 'unit', 'seen_on'],
+    'the primary key does not change: the size is a column of the row, not another row';
+  -- O check vale para toda gravação (as linhas de antes, todas sem tamanho, nem precisaram ser lidas).
+  declare
+    bad text[] := array[
+      $q$ 'kg', 'kg', 1, null $q$,      -- tamanho numa linha por kg
+      $q$ 'un', 'g', 1, null $q$,       -- unidade de tamanho que não é kg, l ou un
+      $q$ 'un', 'kg', 0, null $q$,
+      $q$ 'un', 'kg', 100001, null $q$,
+      $q$ 'un', 'un', 1.5, null $q$,    -- itens que não são inteiros
+      $q$ 'un', 'un', 1, null $q$,      -- um item só não é pacote
+      $q$ 'un', 'un', 12, 2 $q$,        -- "de quantos" só em kg e l
+      $q$ 'un', 'l', 4.2, 1 $q$,
+      $q$ 'un', 'l', 4.2, 1001 $q$,
+      $q$ 'un', 'l', null, null $q$,    -- unidade sem quanto
+      $q$ 'un', null, 1, null $q$,      -- quanto sem unidade
+      $q$ 'un', null, null, 12 $q$
+    ];
+    v text;
+  begin
+    foreach v in array bad loop
+      begin
+        execute 'insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on, pack_unit, pack_amount, pack_of)
+                 select ''63000000000909'', ''35'', ''X'', ''X'', u::text, current_date - 1, 1, current_date, pu::text, pa::numeric, po::smallint
+                   from (select ' || v || ') as t (u, pu, pa, po)';
+        raise exception 'FAIL: the size check let through (%)', v;
+      exception when check_violation then null;
+      end;
+    end loop;
+  end;
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on, pack_unit, pack_amount, pack_of) values
+    ('63000000000909', '35', 'X', 'A', 'un', current_date - 1, 1, current_date, 'l', 4.2, 12),
+    ('63000000000909', '35', 'X', 'B', 'un', current_date - 1, 1, current_date, 'un', 30, null),
+    ('63000000000909', '35', 'X', 'C', 'un', current_date - 1, 1, current_date, 'kg', 0.0025, null),
+    ('63000000000909', '35', 'X', 'D', 'kg', current_date - 1, 1, current_date, null, null, null);
+  delete from public.shared_prices where store_cnpj = '63000000000909';
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_pk1', false) \gset
+select public.create_household('Casa do Ernesto', 'Ernesto') \gset
+do $$
+declare
+  e1 constant text := '63000000000101';
+  yesterday constant timestamptz := (((now() at time zone 'America/Sao_Paulo')::date - 1) + time '10:00') at time zone 'America/Sao_Paulo';
+  s uuid;
+  r uuid;
+begin
+  insert into public.stores (name, cnpj) values ('SUPERMERCADO EMBALAGEM', e1) returning id into s;
+  perform set_config('test.e_store', s::text, false);
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s, yesterday, '352610' || e1 || repeat('0', 22) || '11', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price) values
+    (r, 0, 'CERV SKOL LT 350ML C/12', 'alcoolicas', 'un', 39.90, 39.90),
+    (r, 1, 'CERV SKOL LT 350ML', 'alcoolicas', 'un', 3.49, 3.49),
+    (r, 2, 'OVOS BRANCOS C/12', 'ovos', 'un', 11.90, 11.90),
+    (r, 3, 'QUEIJO MUSSARELA', 'laticinios', 'kg', 39.90, 39.90),
+    (r, 4, 'AGUA MIN 1 5L', 'bebidas', 'un', 2.50, 2.50),
+    (r, 5, 'FEIJAO CARIOCA 1KG', 'graos', 'un', 8.00, 8.00),
+    (r, 6, 'ARROZ CINCO 5KG', 'graos', 'un', 22.90, 22.90),
+    (r, 7, 'OLEO OBJETO 900ML', 'oleos', 'un', 7.00, 7.00),
+    (r, 8, 'ACUCAR DEMAIS 1KG', 'graos', 'un', 4.99, 4.99),
+    (r, 9, 'LEITE NUMERO 1L', 'laticinios', 'un', 5.49, 5.49),
+    (r, 10, 'RACAO MIUDA 2,5G', 'pet', 'un', 1.99, 1.99);
+  perform pg_temp.read_with_lines(r, $j$[
+    {"description": "CERV SKOL LT 350ML C/12", "unit": "un", "unit_price": 39.90, "pack_unit": "l", "pack_amount": 4.2, "pack_of": 12},
+    {"description": "CERV SKOL LT 350ML", "unit": "un", "unit_price": 3.49, "pack_unit": "l", "pack_amount": 0.35},
+    {"description": "OVOS BRANCOS C/12", "unit": "un", "unit_price": 11.90, "pack_unit": "un", "pack_amount": 12},
+    {"description": "QUEIJO MUSSARELA", "unit": "kg", "unit_price": 39.90, "pack_unit": "kg", "pack_amount": 0.2},
+    {"description": "AGUA MIN 1 5L", "unit": "un", "unit_price": 2.50},
+    {"description": "FEIJAO CARIOCA 1KG", "unit": "un", "unit_price": 8.00, "pack_unit": "kg", "pack_amount": 1},
+    {"description": "FEIJAO CARIOCA 1KG", "unit": "un", "unit_price": 8.00},
+    {"description": "ARROZ CINCO 5KG", "unit": "un", "unit_price": 22.90, "pack_unit": "kg", "pack_amount": "cinco"},
+    {"description": "OLEO OBJETO 900ML", "unit": "un", "unit_price": 7.00, "pack_unit": "l", "pack_amount": {"x": 1}, "pack_of": "2.5"},
+    {"description": "ACUCAR DEMAIS 1KG", "unit": "un", "unit_price": 4.99, "pack_unit": "kg", "pack_amount": 100001},
+    {"description": "LEITE NUMERO 1L", "unit": "un", "unit_price": 5.49, "pack_unit": "l", "pack_amount": 1},
+    {"description": "RACAO MIUDA 2,5G", "unit": "un", "unit_price": 1.99, "pack_unit": "kg", "pack_amount": 0.0025}
+  ]$j$::jsonb);
+  perform public.confirm_receipt(r, '[]');
+  assert (select status from public.receipts where id = r) = 'confirmed', 'an odd size in the read never stops the confirmation';
+
+  -- A foto (a IA) põe "un" também no fardo: o tamanho dela nunca vai, mesmo que uma função de outra versão o mande.
+  insert into public.receipts (store_id, purchased_at, source) values (s, yesterday, 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'ARROZ FOTO 5KG', 'graos', 'un', 21.90, 21.90);
+  perform pg_temp.photo_read_with_lines(r, $j$[{"description": "ARROZ FOTO 5KG", "unit": "un", "unit_price": 21.90, "pack_unit": "kg", "pack_amount": 5}]$j$::jsonb);
+  perform public.confirm_receipt(r, '[]');
+end $$;
+reset role;
+do $$
+begin
+  assert (select array_agg(item_key || ' ' || coalesce(pack_unit || ' ' || pack_amount || coalesce(' x' || pack_of, ''), '-') order by item_key)
+            from public.shared_prices where store_cnpj = '63000000000101')
+    = array[
+      'ACUCAR DEMAIS 1KG -',
+      'AGUA MIN 1 5L -',
+      'ARROZ CINCO 5KG -',
+      'ARROZ FOTO 5KG -',
+      'CERV SKOL LT 350ML l 0.350000',
+      'CERV SKOL LT 350ML C 12 l 4.200000 x12',
+      'FEIJAO CARIOCA 1KG -',
+      'LEITE NUMERO 1L l 1.000000',
+      'OLEO OBJETO 900ML -',
+      'OVOS BRANCOS C 12 un 12.000000',
+      'QUEIJO MUSSARELA -',
+      'RACAO MIUDA 2 5G kg 0.002500'
+    ],
+    'one row per line, as before; the size comes only from the QR read, only on "un" lines, only when every matching '
+    'read line says the same, and a malformed or out-of-bounds size leaves the line without one';
+end $$;
+
+-- Mais latas do Ernesto no mesmo mercado e dia: a linha comum ainda não pode ser lida. O tamanho vai com o preço.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_pk1', false) \gset
+select pg_temp.ernesto_buys_can(3.49, 12, '{}') \gset
+reset role;
+do $$ begin
+  assert pg_temp.ernesto_row(12, 'CERV SKOL LT 350ML') = '3.4900 l 0.350000',
+    'the same price written without a size keeps the size the row had';
+end $$;
+set role authenticated;
+select pg_temp.ernesto_buys_can(3.49, 13, '{"pack_unit": "l", "pack_amount": 0.473}') \gset
+reset role;
+do $$ begin
+  assert pg_temp.ernesto_row(13, 'CERV SKOL LT 350ML') = '3.4900 -',
+    'the same price with another size: no size';
+end $$;
+set role authenticated;
+select pg_temp.ernesto_buys_can(3.59, 14, '{"pack_unit": "l", "pack_amount": 0.35}') \gset
+reset role;
+do $$ begin
+  assert pg_temp.ernesto_row(14, 'CERV SKOL LT 350ML') = '3.5900 l 0.350000',
+    'another price brings its own size';
+end $$;
+set role authenticated;
+select pg_temp.ernesto_buys_can(39.90, 15, '{}') \gset
+reset role;
+do $$ begin
+  -- O fardo de 12 com a descrição da lata (a Sefaz diz FD, e nfce não manda tamanho): a linha não fica com os 350 ml.
+  assert pg_temp.ernesto_row(15, 'CERV SKOL LT 350ML') = '39.9000 -',
+    'another price without a size: no size (the case priced under the description of one can)';
+  update public.shared_prices set visible_on = (now() at time zone 'America/Sao_Paulo')::date
+    where store_cnpj = '63000000000101' and item_key = 'CERV SKOL LT 350ML';
+end $$;
+-- A caixa de 12 (l 4,2 x12, ainda não lida), as mesmas regras com o "de quantos": as três colunas vão sempre juntas
+-- (uma só que ficasse, sem as outras, quebraria o check, e a nota inteira deixaria de compartilhar, sem erro nenhum;
+-- nos passos que mantêm o tamanho a linha comum ficaria igual, e quem pega é a linha de controle de cada nota).
+set role authenticated;
+select pg_temp.ernesto_buys_case(39.90, 21, '{}') \gset
+reset role;
+do $$ begin
+  assert pg_temp.ernesto_row(21, 'CERV SKOL LT 350ML C 12') = '39.9000 l 4.200000 x12',
+    'the same price without a size keeps the whole size, "of how many" included';
+end $$;
+set role authenticated;
+select pg_temp.ernesto_buys_case(41.90, 22, '{}') \gset
+reset role;
+do $$ begin
+  assert pg_temp.ernesto_row(22, 'CERV SKOL LT 350ML C 12') = '41.9000 -',
+    'another price without a size: none of the three columns stays (and the receipt still shares)';
+end $$;
+set role authenticated;
+select pg_temp.ernesto_buys_case(41.90, 23, '{"pack_unit": "l", "pack_amount": 4.2, "pack_of": 12}') \gset
+reset role;
+do $$ begin
+  assert pg_temp.ernesto_row(23, 'CERV SKOL LT 350ML C 12') = '41.9000 l 4.200000 x12',
+    'the same price on a row without a size takes the whole size of who wrote it';
+end $$;
+set role authenticated;
+select pg_temp.ernesto_buys_case(41.90, 24, '{"pack_unit": "l", "pack_amount": 4.2, "pack_of": 6}') \gset
+reset role;
+do $$ begin
+  assert pg_temp.ernesto_row(24, 'CERV SKOL LT 350ML C 12') = '41.9000 -',
+    'the same price with only "of how many" different is another size: no size';
+end $$;
+set role authenticated;
+select pg_temp.ernesto_buys_case(39.90, 25, '{"pack_unit": "l", "pack_amount": 4.2, "pack_of": 12}') \gset
+reset role;
+do $$ begin
+  assert pg_temp.ernesto_row(25, 'CERV SKOL LT 350ML C 12') = '39.9000 l 4.200000 x12',
+    'another price brings its own size, "of how many" included';
+end $$;
+set role authenticated;
+select pg_temp.ernesto_buys_case(39.90, 26, '{"pack_unit": "l", "pack_amount": 4.2, "pack_of": 12}') \gset
+reset role;
+do $$ begin
+  assert pg_temp.ernesto_row(26, 'CERV SKOL LT 350ML C 12') = '39.9000 l 4.200000 x12',
+    'the same price with the same size keeps it';
+end $$;
+set role authenticated;
+select pg_temp.ernesto_buys_can(3.39, 16, '{"pack_unit": "l", "pack_amount": 0.35}') \gset
+reset role;
+do $$ begin
+  assert pg_temp.ernesto_row(16, 'CERV SKOL LT 350ML') = '39.9000 -',
+    'once readable, the row does not change: neither the price nor the size';
+  update public.shared_prices set visible_on = (now() at time zone 'America/Sao_Paulo')::date where store_cnpj = '63000000000101';
+end $$;
+
+-- Fia, de outra casa, com a caixa de 12 com o mesmo nome e uma nota lida de São Paulo, lê o tamanho na linha comum.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_pk2', false) \gset
+select public.create_household('Casa da Fia', 'Fia') \gset
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  f1 constant text := '63000000000202';
+  s uuid;
+  r uuid;
+  i1 uuid;
+  i2 uuid;
+  beer uuid;
+  seen record;
+begin
+  insert into public.stores (name, cnpj) values ('MERCADO DA FIA', f1) returning id into s;
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s, (today - 20 + time '09:00') at time zone 'America/Sao_Paulo', '352610' || f1 || repeat('0', 23) || '1', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 0, 'CERV SKOL LT 350ML C/12', 'alcoolicas', 'un', 41.90, 41.90) returning id into i1;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 1, 'CERV SKOL LATA 1L', 'alcoolicas', 'un', 9.90, 9.90) returning id into i2;
+  insert into public.products (name, category) values ('Cerveja Skol', 'alcoolicas') returning id into beer;
+  perform pg_temp.confirm_as_read(r, jsonb_build_array(jsonb_build_object('id', i1, 'product_id', beer), jsonb_build_object('id', i2, 'product_id', beer)));
+  -- As duas linhas da mesma nota (o mesmo produto, mercado e unidade): o último preço é sempre o mesmo, o menor.
+  assert (select unit_price || ' ' || raw_description from public.latest_prices where product_id = beer)
+    = '9.9000 CERV SKOL LATA 1L', 'two lines of one receipt tie on the moment: the lower price, always the same, with its description';
+  assert (select count(*) from public.price_observations where product_id = beer and raw_description = 'CERV SKOL LT 350ML C/12') = 1,
+    'the observation carries the description too';
+  -- Pelo apelido que a nota dela ensinou ('CERV SKOL LT 350ML C 12'): a caixa de 12, com o tamanho.
+  select * into seen from public.shared_latest_prices() where store_cnpj = '63000000000101';
+  assert seen.product_id = beer and seen.unit = 'un' and seen.unit_price = 39.90, 'her beer, by the description';
+  assert seen.pack_unit = 'l' and seen.pack_amount = 4.2 and seen.pack_of = 12, 'with the size the server read';
+  -- Uma linha sem tamanho volta com as três colunas vazias.
+  insert into public.products (name, category) values ('Água', 'bebidas') returning id into beer;
+  insert into public.product_aliases (alias, product_id) values ('AGUA MIN 1 5L', beer);
+  select * into seen from public.shared_latest_prices() where product_id = beer;
+  assert seen.unit_price = 2.50 and seen.pack_unit is null and seen.pack_amount is null and seen.pack_of is null,
+    'a row without a size comes back with the three columns empty';
+end $$;
+reset role;
+delete from public.shared_prices where store_cnpj like '6300000000%';
+delete from public.households where name in ('Casa do Ernesto', 'Casa da Fia');
+delete from auth.users where id in (:'user_pk1', :'user_pk2');
+
+-- ---------------------------------------------------------------------------
+\echo '• preços compartilhados: a lista aberta (as descrições e os preços de qualquer item dos estados da casa, pela semana)'
+-- Olga não tem nota nenhuma, só o local da casa em São Paulo; Pedro não tem estado. As linhas da base são postas direto
+-- (como o servidor), com as datas contadas da segunda-feira desta semana (week): o resultado não depende do dia em que
+-- o teste roda. A e B são mercados de outras casas; o 101 é o mercado da Olga.
+\set user_op1 '00000000-0000-0000-0000-000000000371'
+\set user_op2 '00000000-0000-0000-0000-000000000372'
+reset role;
+insert into auth.users (id) values (:'user_op1'), (:'user_op2');
+truncate public.shared_prices;
+set time zone 'UTC';
+select set_config('test.op_today', ((now() at time zone 'America/Sao_Paulo')::date)::text, false) \gset
+select set_config('test.op_week', public.shared_week(current_setting('test.op_today')::date)::text, false) \gset
+
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+  a constant text := '64000000000201';
+  b constant text := '64000000000202';
+  c constant text := '64000000000203';
+begin
+  -- A semana é a da ISO: segunda a domingo.
+  assert public.shared_week(date '2026-11-23') = date '2026-11-23' and public.shared_week(date '2026-11-29') = date '2026-11-23'
+    and public.shared_week(date '2026-11-30') = date '2026-11-30' and public.shared_week(date '2027-01-01') = date '2026-12-28',
+    'shared_week is the Monday of the ISO week';
+  assert to_regclass('public.shared_prices_first_word_idx') is not null and to_regclass('public.shared_prices_second_word_idx') is not null,
+    'the open search has its two indexes';
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
+    -- O mesmo leite em dois mercados e semanas (vista 2 vezes), e outro em três mercados (num deles duas vezes na
+    -- mesma semana: conta uma).
+    (a, '35', 'MERCADO A', 'LEITE DESN ITALAC 1L', 'un', week - 5, 4.59, week),
+    (b, '35', 'MERCADO B', 'LEITE DESN ITALAC 1L', 'un', week - 12, 4.79, week - 7),
+    (a, '35', 'MERCADO A', 'LEITE INT ITALAC 1L', 'un', week - 6, 4.99, week),
+    (a, '35', 'MERCADO A', 'LEITE INT ITALAC 1L', 'un', week - 4, 4.89, week),
+    (b, '35', 'MERCADO B', 'LEITE INT ITALAC 1L', 'un', week - 12, 5.09, week - 7),
+    (c, '35', 'MERCADO C', 'LEITE INT ITALAC 1L', 'un', week - 19, 5.19, week - 14),
+    -- O item na segunda palavra (pela busca "s"), e na terceira (não volta).
+    (a, '35', 'MERCADO A', 'CX LEITE NINHO', 'un', week - 5, 6.00, week),
+    (a, '35', 'MERCADO A', 'BEBIDA LACTEA LEITE', 'un', week - 5, 3.00, week),
+    -- Do Rio (outro estado), gravada nesta semana (ninguém lê ainda), antes das 13 semanas, e no primeiro dia delas.
+    ('64000000000204', '33', 'MERCADO RJ', 'LEITE RJ 1L', 'un', week - 5, 3.50, week),
+    (a, '35', 'MERCADO A', 'LEITE FUTURO 1L', 'un', week - 2, 3.10, week + 7),
+    (a, '35', 'MERCADO A', 'LEITE VELHO 1L', 'un', week - 92, 3.20, week - 91),
+    (a, '35', 'MERCADO A', 'LEITE BORDA 1L', 'un', week - 91, 3.30, week - 84),
+    -- Um número comprido (um CPF, um telefone) na descrição: nunca sai. Um número curto sai.
+    (a, '35', 'MERCADO A', 'LEITE ENCOMENDA 123 456 789 01', 'un', week - 5, 3.40, week),
+    (a, '35', 'MERCADO A', 'PAO 11987654321', 'un', week - 5, 1.00, week),
+    (a, '35', 'MERCADO A', 'ARROZ 5KG 2', 'un', week - 5, 22.00, week),
+    (b, '35', 'MERCADO B', 'ARROZ 5KG 2', 'un', week - 5, 22.50, week),
+    (a, '35', 'MERCADO A', 'ZEBU CARNE 1KG', 'kg', week - 5, 39.90, week);
+  -- Setenta arrozes: a busca do arroz é cortada em 60, a do zebu (que viria depois na ordem alfabética) não perde nada.
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
+    select a, '35', 'MERCADO A', 'ARROZ T' || g || ' 5KG', 'un', week - 5, 20 + g / 10.0, week from generate_series(1, 70) as g;
+end $$;
+
+-- Olga: o local da casa em São Paulo, e nenhuma nota.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_op1', false) \gset
+select public.create_household('Casa da Olga', 'Olga') \gset
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+  answer jsonb;
+  items constant jsonb := $j$[
+    {"f": ["LEITE", "LEITES", "LT", "LTE"], "s": ["LEITE", "LEITES", "LTE"], "x": ["DESNATADO"]},
+    {"f": ["ZEBU"], "s": [], "x": []},
+    {"f": ["ARROZ", "ARROZES"], "s": [], "x": []},
+    {"f": ["PAO", "PAES"], "s": [], "x": []},
+    {"f": ["XYZZY"], "s": [], "x": []}
+  ]$j$;
+begin
+  perform set_config('test.op_house_o', public.current_household_id()::text, false);
+  -- O estado é gravado com o local, e só um código de estado do IBGE entra.
+  insert into public.household_location (label, latitude, longitude, source, state_code) values ('Mooca, São Paulo', -23.55, -46.60, 'cep', '35');
+  assert (select state_code from public.household_location) = '35', 'the house state is saved with the place';
+  begin
+    update public.household_location set state_code = '99';
+    raise exception 'FAIL: a state code that is no state';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.household_location set state_code = 'SP';
+    raise exception 'FAIL: the abbreviation instead of the IBGE code';
+  exception when check_violation then null;
+  end;
+  insert into public.stores (name, cnpj) values ('MERCADO DA OLGA', '64000000000101');
+
+  answer := public.shared_item_keys(items);
+  assert jsonb_array_length(answer) = 5, 'one answer per search entry, in order';
+  assert answer -> 0 = jsonb_build_object('k', jsonb_build_array(
+      jsonb_build_array('LEITE DESN ITALAC 1L', 'un', (week - 7)::text, 2),
+      jsonb_build_array('LEITE INT ITALAC 1L', 'un', (week - 7)::text, 3),
+      jsonb_build_array('CX LEITE NINHO', 'un', (week - 7)::text, 1),
+      jsonb_build_array('LEITE BORDA 1L', 'un', (week - 91)::text, 1)), 'more', false),
+    'by the first word and the second; first the keys that spell the other words of the item ("DESN" for "desnatado"), '
+    'then the most seen in (store, week), the newest week; never the third word, another state, a row not readable yet, '
+    'one before the 13 weeks or one with a long number: ' || (answer -> 0)::text;
+  assert answer -> 1 = ('{"k": [["ZEBU CARNE 1KG", "kg", "' || (week - 7) || '", 1]], "more": false}')::jsonb,
+    'the cut is per entry, never alphabetical over the call: zebu keeps its key';
+  assert jsonb_array_length(answer -> 2 -> 'k') = 60 and (answer -> 2 -> 'more')::boolean
+    and answer -> 2 -> 'k' -> 0 = jsonb_build_array('ARROZ 5KG 2', 'un', (week - 7)::text, 2),
+    'and the rice entry gets its 60 best keys and says there were more (a short number stays in a key)';
+  assert answer -> 3 = '{"k": [], "more": false}' and answer -> 4 = '{"k": [], "more": false}',
+    'a key with 8 digits in a row is never returned, and words that match nothing answer an empty entry';
+  assert (select bool_and(jsonb_array_length(k) = 4 and jsonb_typeof(k -> 0) = 'string' and jsonb_typeof(k -> 1) = 'string'
+                          and jsonb_typeof(k -> 2) = 'string' and jsonb_typeof(k -> 3) = 'number'
+                          and extract(isodow from (k ->> 2)::date) = 1)
+            from jsonb_array_elements(answer) e (v) cross join lateral jsonb_array_elements(e.v -> 'k') k),
+    'each key is exactly [key, unit, Monday of its newest week, store-weeks], never a day';
+  perform set_config('test.op_items', items::text, false);
+end $$;
+
+-- Os preços dos grupos. O mercado A tem nome padrão.
+reset role;
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+  d constant text := '64000000000205';
+begin
+  insert into public.store_names (cnpj, name, source, reviewed_at, receita_status) values ('64000000000201', 'Mercado A Padrão', 'revisao', now(), 'sem_fantasia');
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on, pack_unit, pack_amount, pack_of) values
+    -- No mercado da Olga: é dela (mine), e conta sempre.
+    ('64000000000101', '35', 'MERCADO DA OLGA', 'LEITE INT ITALAC 1L', 'un', week - 5, 5.50, week, null, null, null),
+    -- Duas descrições do mesmo feijão no mesmo mercado e semana: a de terça a 10,00 e a de quinta a 9,00.
+    (d, '35', 'MERCADO D', 'FEIJAO PRETO 1KG', 'un', week - 13, 10.00, week - 7, null, null, null),
+    (d, '35', 'MERCADO D', 'FEIJAO PRETO KICALDO 1KG', 'un', week - 11, 9.00, week - 7, null, null, null),
+    -- A lata (tamanho lido 350 ml), o fardo com a descrição da lata (sem tamanho lido) e a caixa de 12 com a mesma
+    -- descrição (tamanho lido 12 x 350 ml).
+    ('64000000000201', '35', 'MERCADO A', 'CERV SKOL LT 350ML', 'un', week - 5, 3.49, week, 'l', 0.35, null),
+    ('64000000000202', '35', 'MERCADO B', 'CERV SKOL LT 350ML', 'un', week - 5, 39.90, week, null, null, null),
+    ('64000000000203', '35', 'MERCADO C', 'CERV SKOL LT 350ML', 'un', week - 5, 41.90, week, 'l', 4.2, 12),
+    -- O alho a granel (por kg) no mercado A, a cabeça solta com a mesma descrição (por unidade) no B, e a bandeja de
+    -- 200 g no C.
+    ('64000000000201', '35', 'MERCADO A', 'ALHO', 'kg', week - 5, 30.00, week, null, null, null),
+    ('64000000000202', '35', 'MERCADO B', 'ALHO', 'un', week - 5, 2.50, week, null, null, null),
+    ('64000000000203', '35', 'MERCADO C', 'ALHO 200G', 'un', week - 5, 7.90, week, 'kg', 0.2, null);
+  -- Sete mercados com o mesmo macarrão: dos que não são da casa, só os 5 mais baratos.
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
+    select '6400000000030' || g, '35', 'MERCADO E' || g, 'MACARRAO SETE 500G', 'un', week - 5, 3 + g / 10.0, week from generate_series(1, 7) as g;
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_op1', false) \gset
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+  answer jsonb;
+  r uuid;
+  i uuid;
+  p uuid;
+begin
+  answer := public.shared_item_prices($j$[
+    {"k": ["LEITE DESN ITALAC 1L", "LEITE INT ITALAC 1L"]},
+    {"k": ["LEITE INT ITALAC 1L", "LEITE DESN ITALAC 1L"]},
+    {"k": ["MACARRAO SETE 500G"]}
+  ]$j$);
+  assert (select array_agg(format('%s %s %s %s %s %s %s', v ->> 0, v ->> 1, v ->> 2, v ->> 4, v ->> 5, v ->> 6, v ->> 7)
+                             order by o)
+            from jsonb_array_elements(answer) with ordinality e (v, o))
+    = array[
+      '0 64000000000101 MERCADO DA OLGA un 5.5000 ' || (week - 7) || ' true',
+      '0 64000000000201 Mercado A Padrão un 4.5900 ' || (week - 7) || ' false',
+      '0 64000000000202 MERCADO B un 4.7900 ' || (week - 14) || ' false',
+      '0 64000000000203 MERCADO C un 5.1900 ' || (week - 21) || ' false',
+      '1 64000000000101 MERCADO DA OLGA un 5.5000 ' || (week - 7) || ' true',
+      '1 64000000000201 Mercado A Padrão un 4.5900 ' || (week - 7) || ' false',
+      '1 64000000000202 MERCADO B un 4.7900 ' || (week - 14) || ' false',
+      '1 64000000000203 MERCADO C un 5.1900 ' || (week - 21) || ' false',
+      '2 64000000000301 MERCADO E1 un 3.1000 ' || (week - 7) || ' false',
+      '2 64000000000302 MERCADO E2 un 3.2000 ' || (week - 7) || ' false',
+      '2 64000000000303 MERCADO E3 un 3.3000 ' || (week - 7) || ' false',
+      '2 64000000000304 MERCADO E4 un 3.4000 ' || (week - 7) || ' false',
+      '2 64000000000305 MERCADO E5 un 3.5000 ' || (week - 7) || ' false'
+    ],
+    'per group, store and unit: the newest week, the cheapest in it (any key of the group); the household''s stores always, '
+    'the 5 cheapest others; the standard store name; two groups with the same keys both answer: ' || answer::text;
+  assert (select bool_and(jsonb_array_length(v) = 11 and jsonb_typeof(v -> 0) = 'number' and jsonb_typeof(v -> 5) = 'number'
+                          and jsonb_typeof(v -> 7) = 'boolean' and extract(isodow from (v ->> 6)::date) = 1)
+            from jsonb_array_elements(answer) e (v)),
+    'each row is [group, cnpj, name, state, unit, price, Monday, mine, pack_unit, pack_amount, pack_of], never a day';
+
+  -- O dia não escolhe: as duas descrições da mesma semana dão a mais barata, seja ela a de terça ou a de quinta.
+  assert (select array_agg((v ->> 5) || ' ' || (v ->> 6)) from jsonb_array_elements(public.shared_item_prices(
+            '[{"k": ["FEIJAO PRETO 1KG", "FEIJAO PRETO KICALDO 1KG"]}]')) e (v))
+    = array['9.0000 ' || (week - 14)], 'within a week the cheapest wins, never the later day';
+
+  -- O tamanho esperado do grupo: a linha por unidade com outro tamanho lido fica de fora; a sem tamanho lido fica.
+  assert (select array_agg((v ->> 1) || ' ' || (v ->> 5) || ' ' || coalesce(v ->> 8, '-') || ' ' || coalesce(v ->> 9, '-') || ' ' || coalesce(v ->> 10, '-') order by v ->> 1)
+            from jsonb_array_elements(public.shared_item_prices('[{"k": ["CERV SKOL LT 350ML"], "p": {"u": "l", "a": 0.35}}]')) e (v))
+    = array['64000000000201 3.4900 l 0.350000 -', '64000000000202 39.9000 - - -'],
+    'with the expected size, a unit row whose server size is another is left out; one without a server size stays, '
+    'and each row carries its size';
+  assert (select count(*) from jsonb_array_elements(public.shared_item_prices('[{"k": ["CERV SKOL LT 350ML"]}]'))) = 3,
+    'without it, every row';
+  assert (select (v ->> 1) || ' ' || (v ->> 8) || ' ' || (v ->> 9) || ' ' || (v ->> 10)
+            from jsonb_array_elements(public.shared_item_prices('[{"k": ["CERV SKOL LT 350ML"], "p": {"u": "l", "a": 4.2, "o": 12}}]')) e (v)
+            where v ->> 1 = '64000000000203') = '64000000000203 l 4.200000 12',
+    'the expected size with "of how many" matches the case of 12';
+
+  -- As só a peso ("w"): a descrição entra pelo que é vendido a peso, sem trazer a linha por unidade que o app não
+  -- escolheu (a cabeça solta do B levaria o tamanho da bandeja); em "k", toda unidade.
+  assert (select array_agg((v ->> 1) || ' ' || (v ->> 4) || ' ' || (v ->> 5) order by v ->> 1)
+            from jsonb_array_elements(public.shared_item_prices('[{"k": ["ALHO 200G"], "w": ["ALHO"], "p": {"u": "kg", "a": 0.2}}]')) e (v))
+    = array['64000000000201 kg 30.0000', '64000000000203 un 7.9000'],
+    'a weight-only key brings its weight rows and never its unit rows';
+  assert (select array_agg((v ->> 1) || ' ' || (v ->> 4) order by v ->> 1)
+            from jsonb_array_elements(public.shared_item_prices('[{"k": [], "w": ["ALHO"]}]')) e (v))
+    = array['64000000000201 kg'], 'a group of weight-only keys alone';
+  assert (select array_agg((v ->> 1) || ' ' || (v ->> 4) order by v ->> 1)
+            from jsonb_array_elements(public.shared_item_prices('[{"k": ["ALHO", "ALHO 200G"]}]')) e (v))
+    = array['64000000000201 kg', '64000000000202 un', '64000000000203 un'], 'in "k", every unit';
+
+  -- A compra da própria casa, pela SEMANA: o feijão que ela comprou no mercado dela na quarta-feira da semana
+  -- retrasada esconde a linha da sexta-feira daquela semana ali, e não a do mercado A.
+  insert into public.receipts (store_id, purchased_at, source)
+    values ((select id from public.stores where cnpj = '64000000000101'), (week - 12 + time '10:00') at time zone 'America/Sao_Paulo', 'manual')
+    returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
+    values (r, 'FEIJAO CARIOCA 1KG', 'un', 7.50, 7.50) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'new_product', jsonb_build_object('name', 'Feijão', 'category', 'graos'))));
+  assert (select count(*) from public.product_aliases where alias = 'FEIJAO CARIOCA 1KG') = 1, 'the description became an alias of hers';
+  perform set_config('test.op_receipt', r::text, false);
+end $$;
+reset role;
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+begin
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
+    ('64000000000101', '35', 'MERCADO DA OLGA', 'FEIJAO CARIOCA 1KG', 'un', week - 10, 7.00, week - 7),
+    ('64000000000201', '35', 'MERCADO A', 'FEIJAO CARIOCA 1KG', 'un', week - 10, 7.10, week - 7);
+end $$;
+set role authenticated;
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+  items constant jsonb := current_setting('test.op_items')::jsonb;
+begin
+  assert (select array_agg((v ->> 1) || ' ' || (v ->> 5) || ' ' || (v ->> 7)) from jsonb_array_elements(public.shared_item_prices(
+            '[{"k": ["FEIJAO CARIOCA 1KG"]}]')) e (v))
+    = array['64000000000201 7.1000 false'],
+    'an own purchase of that description in that store, in the same week (on an earlier day) or later, hides the row there';
+  -- Uma notícia de depois (a semana passada) volta.
+  reset role;
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
+    values ('64000000000101', '35', 'MERCADO DA OLGA', 'FEIJAO CARIOCA 1KG', 'un', week - 5, 7.20, week);
+  set role authenticated;
+  assert (select array_agg((v ->> 1) || ' ' || (v ->> 5) || ' ' || (v ->> 7) order by v ->> 1) from jsonb_array_elements(public.shared_item_prices(
+            '[{"k": ["FEIJAO CARIOCA 1KG"]}]')) e (v))
+    = array['64000000000101 7.2000 true', '64000000000201 7.1000 false'],
+    'a row of a later week stays';
+
+  -- O caminho do produto também, pela semana: com o apelido do feijão preto, o mesmo mercado e semana dão o mais barato.
+  insert into public.products (name, category) values ('Feijão preto', 'graos');
+  insert into public.product_aliases (alias, product_id) values ('FEIJAO PRETO 1KG', (select id from public.products where name = 'Feijão preto'));
+  reset role;
+  update public.shared_prices set unit_price = 9.00 where item_key = 'FEIJAO PRETO 1KG';
+  update public.shared_prices set unit_price = 10.00, item_key = 'FEIJAO PRETO 1KG', seen_on = week - 11 where item_key = 'FEIJAO PRETO KICALDO 1KG';
+  update public.shared_prices set seen_on = week - 13 where item_key = 'FEIJAO PRETO 1KG' and unit_price = 9.00;
+  set role authenticated;
+  assert (select array_agg(unit_price || ' ' || seen_on) from public.shared_latest_prices() where store_cnpj = '64000000000205')
+    = array['9.0000 ' || (week - 14)], 'the product path: tuesday at 9,00 and thursday at 10,00 give 9,00';
+  reset role;
+  update public.shared_prices set seen_on = week - 9 where item_key = 'FEIJAO PRETO 1KG' and unit_price = 9.00;
+  update public.shared_prices set seen_on = week - 12 where item_key = 'FEIJAO PRETO 1KG' and unit_price = 10.00;
+  set role authenticated;
+  assert (select array_agg(unit_price || ' ' || seen_on) from public.shared_latest_prices() where store_cnpj = '64000000000205')
+    = array['9.0000 ' || (week - 14)], 'and swapping their days gives 9,00 again';
+  assert (select bool_and(extract(isodow from seen_on) = 1) from public.shared_latest_prices()), 'the product path gives only Mondays';
+
+  -- O cabeçalho com a casa de outra pessoa: nenhuma casa, nada.
+  perform set_config('request.headers', json_build_object('x-household-id', '00000000-0000-0000-0000-000000000000')::text, true);
+  assert public.current_household_id() is null, 'a forged household header gives no household';
+  assert public.shared_item_keys(items) = '[{"k": [], "more": false}, {"k": [], "more": false}, {"k": [], "more": false}, {"k": [], "more": false}, {"k": [], "more": false}]',
+    'with no household, an empty answer per entry';
+  assert public.shared_item_prices('[{"k": ["LEITE INT ITALAC 1L"]}]') = '[]', 'and no prices';
+end $$;
+
+-- Pedro: sem nota e sem local, sem estado nenhum. Não lê nada da lista aberta, nem muda o local da Olga.
+select set_config('request.jwt.claim.sub', :'user_op2', false) \gset
+select public.create_household('Casa do Pedro', 'Pedro') \gset
+do $$
+declare
+  items constant jsonb := current_setting('test.op_items')::jsonb;
+  n integer;
+begin
+  assert public.shared_item_keys(items) = '[{"k": [], "more": false}, {"k": [], "more": false}, {"k": [], "more": false}, {"k": [], "more": false}, {"k": [], "more": false}]',
+    'no state: an empty answer per entry';
+  assert public.shared_item_prices('[{"k": ["LEITE INT ITALAC 1L"]}]') = '[]', 'no state: no prices';
+  update public.household_location set state_code = '33' where household_id = current_setting('test.op_house_o')::uuid;
+  get diagnostics n = row_count;
+  assert n = 0, 'another household''s place cannot be changed';
+
+  -- A forma: tudo o que não é a forma certa é 22023, antes de ler qualquer coisa.
+  declare
+    bad jsonb;
+  begin
+    foreach bad in array array[
+      '{}'::jsonb, '[]', (select jsonb_agg(jsonb_build_object('f', jsonb_build_array('A'), 's', '[]'::jsonb, 'x', '[]'::jsonb)) from generate_series(1, 41)),
+      '[{"f": ["A"], "s": []}]', '[{"f": [], "s": [], "x": []}]',
+      (select jsonb_build_array(jsonb_build_object('f', jsonb_agg('A' || g), 's', '[]'::jsonb, 'x', '[]'::jsonb)) from generate_series(1, 25) g),
+      '[{"f": ["leite"], "s": [], "x": []}]', '[{"f": ["LEITE INTEGRAL"], "s": [], "x": []}]', '[{"f": [null], "s": [], "x": []}]',
+      '[{"f": ["A"], "s": [], "x": ["B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N"]}]', '["A"]'
+    ] loop
+      begin
+        perform public.shared_item_keys(bad);
+        raise exception 'FAIL: shared_item_keys took %', bad;
+      exception when invalid_parameter_value then null;
+      end;
+    end loop;
+    foreach bad in array array[
+      '{}'::jsonb, '[]', (select jsonb_agg(jsonb_build_object('k', jsonb_build_array('A'))) from generate_series(1, 41)),
+      '[{"x": 1}]', (select jsonb_build_array(jsonb_build_object('k', jsonb_agg('A' || g))) from generate_series(1, 61) g),
+      '[{"k": ["arroz"]}]', jsonb_build_array(jsonb_build_object('k', jsonb_build_array(repeat('A', 201)))), '[{"k": []}]',
+      '[{"k": ["A"], "p": "5kg"}]', '[{"k": ["A"], "p": {"u": "g", "a": 500}}]', '[{"k": ["A"], "p": {"u": "kg", "a": 0}}]',
+      '[{"k": ["A"], "p": {"u": "kg", "a": "5"}}]', '[{"k": ["A"], "p": {"u": "un", "a": 12, "o": 2}}]',
+      '[{"k": ["A"], "p": {"u": "un", "a": 1}}]', '[{"k": ["A"], "p": {"u": "l", "a": 4.2, "o": 1}}]',
+      '[{"k": ["A"], "p": {"u": "l", "a": 700, "o": 2000}}]', '[{"k": ["A"], "p": {"u": "kg", "a": 100001}}]',
+      -- As só a peso ("w"): uma lista de chaves normalizadas, fora de "k", com as de "k" no máximo 60 e no mínimo 1.
+      '[{"k": [], "w": []}]', '[{"k": ["A"], "w": "B"}]', '[{"k": ["A"], "w": null}]', '[{"k": ["A"], "w": [1]}]',
+      '[{"k": ["A"], "w": ["b"]}]', '[{"k": ["A"], "w": ["A"]}]', '[{"w": ["A"]}]',
+      (select jsonb_build_array(jsonb_build_object('k', jsonb_agg('A' || g) filter (where g <= 30), 'w', jsonb_agg('A' || g) filter (where g > 30)))
+         from generate_series(1, 61) g)
+    ] loop
+      begin
+        perform public.shared_item_prices(bad);
+        raise exception 'FAIL: shared_item_prices took %', bad;
+      exception when invalid_parameter_value then null;
+      end;
+    end loop;
+  end;
+end $$;
+
+-- Sem entrar, nenhuma das duas.
+set role anon;
+do $$
+begin
+  perform public.shared_item_keys('[{"f": ["LEITE"], "s": [], "x": []}]');
+  raise exception 'FAIL: anon searched the keys';
+exception when insufficient_privilege then null;
+end $$;
+do $$
+begin
+  perform public.shared_item_prices('[{"k": ["LEITE"]}]');
+  raise exception 'FAIL: anon read the open prices';
+exception when insufficient_privilege then null;
+end $$;
+reset role;
+do $$
+declare
+  who text;
+  fn text;
+begin
+  foreach fn in array array['public.shared_item_keys(jsonb)', 'public.shared_item_prices(jsonb)'] loop
+    assert not has_function_privilege('public', fn, 'execute'), format('%s is not open to everyone', fn);
+    assert not has_function_privilege('anon', fn, 'execute'), format('anon cannot execute %s', fn);
+    assert has_function_privilege('authenticated', fn, 'execute'), format('a signed-in person can execute %s', fn);
+    assert (select prosecdef from pg_proc where oid = fn::regprocedure), format('%s is security definer', fn);
+    assert (select provolatile from pg_proc where oid = fn::regprocedure) = 's', format('%s is stable', fn);
+    assert (select proconfig from pg_proc where oid = fn::regprocedure) @> array['search_path=""'], format('%s has its search_path set', fn);
+  end loop;
+  foreach fn in array array['public.shared_household_states(uuid)', 'public.shared_week(date)'] loop
+    foreach who in array array['public', 'anon', 'authenticated'] loop
+      assert not has_function_privilege(who, fn, 'execute'), format('%s cannot execute %s', who, fn);
+    end loop;
+  end loop;
+  assert not (select prosecdef from pg_proc where oid = 'public.shared_household_states(uuid)'::regprocedure),
+    'the states of a household are read as the caller (only the definer readers call it)';
+  -- Com o search_path, como toda função; as leituras escrevem a semana de cada linha com date_trunc, e as duas dão a
+  -- mesma segunda-feira (três anos de dias, com as viradas de ano da semana ISO).
+  assert (select proconfig @> array['search_path=""'] and provolatile = 'i' from pg_proc where oid = 'public.shared_week(date)'::regprocedure),
+    'shared_week is immutable and has its search_path set';
+  assert (select bool_and(public.shared_week(d::date) = date_trunc('week', d::date::timestamp)::date)
+            from generate_series(date '2025-12-01', date '2028-12-31', interval '1 day') d),
+    'shared_week and the per-row date_trunc of the readers give the same Monday';
+end $$;
+
+-- A limpeza diária (forget_old_shared_prices): sai o que fica antes da primeira semana da janela das leituras
+-- (shared_week(hoje) - 91), que nenhuma leitura devolve mais; a primeira semana inteira fica. Num bloco desfeito no
+-- fim, sobre linhas postas direto, para não mexer no que os blocos abaixo leem.
+do $$
+declare
+  who text;
+  fn constant text := 'public.forget_old_shared_prices()';
+begin
+  -- Cada papel por si: nenhum cliente executa a limpeza (o pg_cron roda como dono).
+  foreach who in array array['public', 'anon', 'authenticated'] loop
+    assert not has_function_privilege(who, fn, 'execute'), format('%s cannot execute %s', who, fn);
+  end loop;
+  assert (select prosecdef from pg_proc where oid = fn::regprocedure), 'the cleanup is security definer';
+  assert (select proconfig from pg_proc where oid = fn::regprocedure) @> array['search_path=""'], 'the cleanup has its search_path set';
+end $$;
+begin;
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+  since constant date := week - 91;
+begin
+  truncate public.shared_prices;
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
+    -- Fora da janela: o domingo antes da primeira semana, uma semana antes, e uma compra velha gravada nesta semana
+    -- (uma nota antiga confirmada agora, que ainda nem é legível).
+    ('64000000000901', '35', 'X', 'DOMINGO ANTES', 'un', since - 1, 1.00, since + 6),
+    ('64000000000901', '35', 'X', 'SEMANA ANTES', 'un', since - 7, 1.00, since),
+    ('64000000000901', '35', 'X', 'VELHA GRAVADA AGORA', 'un', since - 30, 1.00, week + 7),
+    -- Dentro: a segunda-feira e o domingo da primeira semana da janela, e a semana passada.
+    ('64000000000901', '35', 'X', 'BORDA SEGUNDA', 'un', since, 1.00, since + 7),
+    ('64000000000901', '35', 'X', 'BORDA DOMINGO', 'un', since + 6, 1.00, since + 7),
+    ('64000000000901', '35', 'X', 'SEMANA PASSADA', 'un', week - 3, 1.00, week);
+  assert public.forget_old_shared_prices() = 3, 'the three rows before the window go';
+  assert (select array_agg(item_key order by item_key) from public.shared_prices)
+    = array['BORDA DOMINGO', 'BORDA SEGUNDA', 'SEMANA PASSADA'], 'the first week of the window and what is after it stay';
+  assert public.forget_old_shared_prices() = 0, 'run again, nothing else goes';
+end $$;
+-- A borda é a mesma das leituras: a linha da segunda-feira da primeira semana ainda é lida, a do domingo antes não.
+do $$
+declare
+  since constant date := current_setting('test.op_week')::date - 91;
+begin
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
+    ('64000000000901', '35', 'X', 'LEITE LIMPEZA DENTRO 1L', 'un', since, 1.00, since + 7),
+    ('64000000000901', '35', 'X', 'LEITE LIMPEZA FORA 1L', 'un', since - 1, 1.00, since + 6);
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_op1', false) \gset
+do $$
+declare
+  answer jsonb := public.shared_item_keys('[{"f": ["LEITE"], "s": [], "x": []}]');
+begin
+  assert exists (select 1 from jsonb_array_elements(answer -> 0 -> 'k') k where k ->> 0 = 'LEITE LIMPEZA DENTRO 1L'),
+    'the reads still return the first Monday of the window: ' || answer::text;
+  assert not exists (select 1 from jsonb_array_elements(answer -> 0 -> 'k') k where k ->> 0 = 'LEITE LIMPEZA FORA 1L'),
+    'and never the Sunday before it';
+  -- Um cliente não roda a limpeza.
+  begin
+    perform public.forget_old_shared_prices();
+    raise exception 'FAIL: a member ran the cleanup';
+  exception when insufficient_privilege then
+    null;
+  end;
+end $$;
+reset role;
+do $$
+begin
+  assert public.forget_old_shared_prices() = 1, 'the cleanup takes the row the reads no longer return';
+  assert exists (select 1 from public.shared_prices where item_key = 'LEITE LIMPEZA DENTRO 1L')
+    and not exists (select 1 from public.shared_prices where item_key = 'LEITE LIMPEZA FORA 1L'),
+    'and keeps the one they still do';
+end $$;
+rollback;
+
+-- A mudança única da migração: o que foi gravado nesta semana (o visible_on de antes é o dia da gravação + 1) espera a
+-- próxima segunda-feira, já legível ou não; o gravado em semanas anteriores fica como está. Aplicada de novo aqui,
+-- sobre linhas postas direto, e tudo desfeito no fim; aplicada mais uma vez, não muda nada.
+begin;
+-- Os avisos de "já existe" do if not exists, na segunda aplicação, não interessam aqui.
+set local client_min_messages = warning;
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+begin
+  truncate public.shared_prices;
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
+    ('64000000000901', '35', 'X', 'GRAVADA NESTA SEGUNDA', 'un', week - 10, 1.00, week + 1),
+    ('64000000000901', '35', 'X', 'GRAVADA NO DOMINGO', 'un', week - 10, 1.00, week),
+    ('64000000000901', '35', 'X', 'GRAVADA ANTES', 'un', week - 10, 1.00, week - 3);
+end $$;
+\ir ../../supabase/migrations/20261124181819_shared_prices_open.sql
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+begin
+  assert (select array_agg(item_key || ' ' || visible_on order by item_key) from public.shared_prices)
+    = array['GRAVADA ANTES ' || (week - 3), 'GRAVADA NESTA SEGUNDA ' || (week + 7), 'GRAVADA NO DOMINGO ' || week],
+    'what was written this week waits for next Monday; what was written before stays readable';
+end $$;
+\ir ../../supabase/migrations/20261124181819_shared_prices_open.sql
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+begin
+  assert (select array_agg(item_key || ' ' || visible_on order by item_key) from public.shared_prices)
+    = array['GRAVADA ANTES ' || (week - 3), 'GRAVADA NESTA SEGUNDA ' || (week + 7), 'GRAVADA NO DOMINGO ' || week],
+    'applied again, it changes nothing';
+  assert (select prosecdef from pg_proc where oid = 'public.share_receipt_prices()'::regprocedure)
+    and (select proconfig from pg_proc where oid = 'public.share_receipt_prices()'::regprocedure) @> array['search_path=""', 'lock_timeout=200ms'],
+    'the trigger function keeps its attributes';
+end $$;
+rollback;
+
+delete from public.shared_prices where store_cnpj like '6400000000%';
+delete from public.store_names where cnpj = '64000000000201';
+delete from public.households where name in ('Casa da Olga', 'Casa do Pedro');
+delete from auth.users where id in (:'user_op1', :'user_op2');
+reset time zone;
 
 -- ---------------------------------------------------------------------------
 \echo '• Recados: a pessoa manda (pelo Nuke ou em Configurações), só quem mantém o app lê, e a conta apagada leva os recados dela'

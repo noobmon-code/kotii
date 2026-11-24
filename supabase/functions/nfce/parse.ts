@@ -86,7 +86,9 @@ export function parseNfceHtml(html: string): NfcePage {
     // "(Código: 250474 )" -> "250474", pela chave do banco (store_code_key): com as letras, que alguns mercados
     // usam, para "A123" e "B123" não virarem o mesmo código.
     const code = storeCodeKey(afterLabel(field(chunk, 'RCod')));
-    items.push({ description, code, quantity, unit: afterLabel(field(chunk, 'RUN')) || 'UN', unitPrice, totalPrice });
+    // A página que não imprime a unidade deixa o campo vazio, e não "UN": o rascunho lê os dois como "un", mas só a
+    // unidade impressa diz que o preço é de um item só (o tamanho da embalagem na leitura, readLines.ts).
+    items.push({ description, code, quantity, unit: afterLabel(field(chunk, 'RUN')) || '', unitPrice, totalPrice });
   }
 
   const name = html.match(/class="txtTopo"[^>]*>([\s\S]*?)<\/div>/i);

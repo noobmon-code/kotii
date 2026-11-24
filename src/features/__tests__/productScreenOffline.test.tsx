@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import ProductScreen from '@/app/produto/[id]';
+import { formatShortDate } from '@/domain/dates';
 import { productCategoryNote } from '@/domain/productCategory';
 import { NO_SAVED_PRICES_OFFLINE, SAVED_PRICES_ERROR, SAVED_PRICES_OFFLINE } from '@/domain/storePrices';
 import { PriceHistorySection } from '@/features/market/PriceHistorySection';
@@ -173,6 +174,20 @@ describe('tela do produto sem internet', () => {
     // Com a conexão de volta, a lista sai do histórico: no banco, só o Assaí.
     expect(storesListed()).toEqual(['Assaí']);
     expect(page()).toEqual(expect.arrayContaining(['Último preço por mercado', 'Histórico de preço', 'R$ 25,90/un · Assaí · 10 out', '2 compras em 6 meses']));
+  });
+
+  it('com a descrição guardada, o arroz de 5 kg e o de 1 kg se comparam por kg, como online', async () => {
+    savedOnDevice([
+      { product_id: 'arroz', store_id: 'assai', unit: 'un', unit_price: 24.9, purchased_at: at('2026-10-10'), raw_description: 'ARROZ T1 5KG' },
+      { product_id: 'arroz', store_id: 'atacadao', unit: 'un', unit_price: 5.49, purchased_at: at('2026-09-02'), raw_description: 'ARROZ T1 1KG' },
+    ]);
+    onlineManager.setOnline(false);
+    open();
+    await settle();
+    const text = page().join('');
+    expect(text).toContain(`Assaí5 kg por R$ 24,90 · em ${formatShortDate('2026-10-10')}Mais baratoR$ 4,98/kg`);
+    expect(text).toContain(`Atacadão1 kg por R$ 5,49 · em ${formatShortDate('2026-09-02')}R$ 5,49/kg`);
+    expect(mockDb.asked).toEqual([]);
   });
 
   it('o seletor de categoria diz que a categoria vale também para as compras dos meses passados', async () => {

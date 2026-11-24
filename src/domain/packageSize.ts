@@ -9,6 +9,10 @@
 // dois produtos são o mesmo (cada tamanho à parte, "350ml" e "12un"); aqui o
 // que interessa é quanto vem no pacote (12 x 350 ml = 4,2 L), por isso a
 // leitura é outra.
+// O servidor lê o tamanho que vai para a base comum de preços com um espelho
+// deste arquivo (supabase/functions/_shared/packageSize.ts, sem import): mudar
+// a leitura aqui é mudar lá no mesmo PR; um teste (packageSize.test.ts)
+// compara os dois.
 
 import { normalizeSearch } from './search';
 
@@ -18,8 +22,10 @@ export interface PackageSize {
   unit: 'kg' | 'l' | 'un';
   /** Quanto vem na embalagem, em `unit` (500 g são 0,5; 12 latas de 350 ml são 4,2). */
   amount: number;
-  /** Como a pessoa lê: "5 kg", "500 g", "1,5 L", "12 x 350 ml", "12 un". */
+  /** Como a pessoa lê: "5 kg", "500 g", "1,5 L", "12 x 350 ml", "12 un". É packageLabel({ unit, amount, of }). */
   label: string;
+  /** Em kg e l, quantas embalagens iguais somam `amount`, quando o rótulo é "N x …" ("12 x 350 ml": 12); ausente com uma só e em un. */
+  of?: number;
 }
 
 // Peso e volume, com quanto cada um vale em kg ou litro.
@@ -53,6 +59,9 @@ const PACK_MARKS = new Set(['cmark', 'cx', 'fd', 'fardo', 'pack', 'pct', 'emb', 
 // Depois destas, o número é a versão do item ("TIPO 1", "T1", "Nº 5"), não um tamanho.
 const VERSION_WORDS = new Set(['tipo', 'tp', 't', 'n', 'no', 'num', 'nr', 'numero', 'tam']);
 const SHORT_MARKS = new Set(['t', 'n', 'no']);
+// Palavras de pacote com vários itens que, sem número logo depois, não dizem quantos: o preço pode ser do pacote todo
+// e o tamanho escrito, o de cada um ("CERV 330ML SIXPACK", "CERV 350ML FD", "KIT SHAMPOO 350ML"). Só para a base comum.
+const MULTI_WORDS = new Set(['sixpack', 'six', 'multipack', 'pack', 'kit', 'combo', 'fardo', 'fd', 'cx', 'caixa', 'leve', 'pague']);
 
 const NUMBER = /^\d+(?:\.\d+)?$/;
 const INTEGER = /^\d+$/;
@@ -96,6 +105,8 @@ interface Reading {
     label: string;
     /** true quando o tamanho veio com a própria contagem ("12 x 350 ml"): o número do pacote não o multiplica de novo. */
     counted: boolean;
+    /** Essa contagem (12 em "12 x 350 ml"), quando há. */
+    count?: number;
   }[];
   /** Quantos vêm no pacote, ditos com "C/12", "CX12" ou "FD 6": multiplicam o tamanho, a não ser que ele já traga a sua contagem (ver counted). */
   packs: number[];
@@ -103,16 +114,26 @@ interface Reading {
   counts: number[];
   /** Algo deixou a leitura em dúvida ("1 5L" pode ser 1,5 L). */
   doubtful: boolean;
+  /**
+   * Sobrou um número inteiro de 2 ou mais que a leitura não explicou ("C12", "PC 12", "LATAO 12", "3 CORACOES"), ou uma
+   * palavra de pacote sem número ("SIXPACK", "KIT", "FD"): o tamanho lido pode ser o de cada um, e não o do preço.
+   * Só sharedPackageSize olha isto.
+   */
+  loose: boolean;
 }
 
 function read(description: string): Reading {
   const raw = tokens(description);
-  const reading: Reading = { measures: [], packs: [], counts: [], doubtful: false };
+  const reading: Reading = { measures: [], packs: [], counts: [], doubtful: false, loose: false };
   // Os índices já lidos como parte de um tamanho.
   const used = new Set<number>();
+  // Os inteiros de 2 ou mais que nada explicou até aqui (um "12 x 350 ml" ainda pode usá-los adiante).
+  const unexplained: number[] = [];
   for (let i = 0; i < raw.length; i++) {
     const token = raw[i];
     if (used.has(i)) continue;
+    // "FD 6", "CX 12X350ML": o número logo depois diz quantos. "FD 350ML", "CX 1L": não diz.
+    if (MULTI_WORDS.has(token) && !(raw[i + 1] && INTEGER.test(raw[i + 1]) && !(raw[i + 2] && MEASURES[raw[i + 2]]))) reading.loose = true;
     if (DOZEN.has(token)) {
       // "DZ" sozinha é uma dúzia; "2 DUZIAS" já foi lida no número.
       reading.counts.push(12);
@@ -136,7 +157,7 @@ function read(description: string): Reading {
       if (count != null) {
         if (times != null) used.add(i - 2);
         else used.add(i + 3);
-        reading.measures.push({ unit: measure.unit, amount: amount * count, label: `${count} x ${measureLabel(amount, measure.unit)}`, counted: true });
+        reading.measures.push({ unit: measure.unit, amount: amount * count, label: `${count} x ${measureLabel(amount, measure.unit)}`, counted: true, count });
         continue;
       }
       // Um algarismo solto logo antes ("AGUA 1 5L"): pode ser 1,5 L com a vírgula perdida.
@@ -158,8 +179,11 @@ function read(description: string): Reading {
       reading.counts.push(value * 12);
     } else if (prev && PACK_MARKS.has(prev)) {
       reading.packs.push(value);
+    } else if (value >= 2) {
+      unexplained.push(i);
     }
   }
+  if (unexplained.some((index) => !used.has(index))) reading.loose = true;
   return reading;
 }
 
@@ -192,9 +216,9 @@ export function packageSize(description: string): PackageSize | null {
     // "CX 12X350ML" e "2X200G C/2" já trazem a contagem no tamanho: não
     // multiplicam de novo pelo número da caixa ou do "C/", como no servidor.
     if (pack && pack > 1 && !measure.counted) {
-      return { unit: measure.unit, amount: measure.amount * pack, label: `${pack} x ${measure.label}` };
+      return { unit: measure.unit, amount: measure.amount * pack, label: `${pack} x ${measure.label}`, of: pack };
     }
-    return { unit: measure.unit, amount: measure.amount, label: measure.label };
+    return { unit: measure.unit, amount: measure.amount, label: measure.label, ...(measure.count != null ? { of: measure.count } : {}) };
   }
   const count = itemCounts[0] ?? packCounts[0];
   if (itemCounts.length && packCounts.length && itemCounts[0] !== packCounts[0]) return null;
@@ -205,4 +229,26 @@ export function packageSize(description: string): PackageSize | null {
 /** Os dois tamanhos são a mesma quantidade (5 kg e 5000 g). */
 export function samePackageSize(a: PackageSize, b: PackageSize): boolean {
   return a.unit === b.unit && Math.abs(a.amount - b.amount) < 1e-9 * Math.max(1, a.amount);
+}
+
+/**
+ * O rótulo de um tamanho já lido ("5 kg", "12 x 350 ml", "12 un"): o mesmo que packageSize dá, refeito do que a
+ * linha de outra casa guarda (shared_prices.pack_unit, pack_amount, pack_of).
+ */
+export function packageLabel(size: Pick<PackageSize, 'unit' | 'amount' | 'of'>): string {
+  if (size.unit === 'un') return `${size.amount} un`;
+  if (size.of != null) return `${size.of} x ${measureLabel(Math.round((size.amount / size.of) * 1e6) / 1e6, size.unit)}`;
+  return measureLabel(size.amount, size.unit);
+}
+
+/**
+ * O tamanho que vai para a base comum de preços (o servidor usa o espelho, supabase/functions/_shared/packageSize.ts)
+ * e com que o app compara os preços de lá: o de packageSize, só quando nada na descrição o põe em dúvida. Mais
+ * estrita que packageSize, porque um tamanho errado na base comum vira um preço por litro errado para toda casa:
+ * "CERV 350ML LT C12", "AGUA 500ML PC 12", "CERV 473ML LATAO 12" (um número que a leitura não explicou), "CERV 330ML
+ * SIXPACK" e "CERV 350ML FD" (pacote sem dizer quantos) e até "CAFE 3 CORACOES 500G" (o 3 do nome) dão null.
+ */
+export function sharedPackageSize(description: string): PackageSize | null {
+  const size = packageSize(description);
+  return size && !read(description).loose ? size : null;
 }

@@ -1,6 +1,16 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { asksPackCount, PACK_LINE_CHANGED, packCountOf, packLabel, packLine, perItemLabel, readPackCount } from '../packCount';
+import {
+  asksPackCount,
+  eachPriceLabel,
+  PACK_LINE_CHANGED,
+  packCountOf,
+  packLabel,
+  packLine,
+  packSizeText,
+  perItemLabel,
+  readPackCount,
+} from '../packCount';
 import { WEIGHT_LINE_CHANGED } from '../receiptWeight';
 
 const eggs = (raw_description: string, over: Partial<{ unit: string; total_price: number; pack_count: number | null | undefined }> = {}) => ({
@@ -65,5 +75,21 @@ describe('textos', () => {
       message: 'Este item já mudou antes deste toque. Confira a nota e, se ainda precisar, responda de novo.',
     });
     for (const notice of [PACK_LINE_CHANGED, WEIGHT_LINE_CHANGED]) expect(notice.message).not.toMatch(/aparelho/);
+  });
+});
+
+describe('textos de Preços (eachPriceLabel, packSizeText)', () => {
+  it('o preço de um item do pacote: "o ovo" nos ovos, "cada" no resto', () => {
+    expect(eachPriceLabel(0.83, 'ovos')).toBe('R$ 0,83 o ovo');
+    expect(eachPriceLabel(0.83, 'laticinios')).toBe('R$ 0,83 cada');
+    expect(eachPriceLabel(0.83)).toBe('R$ 0,83 cada');
+  });
+
+  it('o rótulo de um tamanho com a palavra do produto: só a contagem dos ovos muda', () => {
+    expect(packSizeText('30 un', 'ovos')).toBe('30 ovos');
+    expect(packSizeText('30 un', 'laticinios')).toBe('30 un');
+    expect(packSizeText('30 un')).toBe('30 un');
+    expect(packSizeText('5 kg', 'ovos')).toBe('5 kg');
+    expect(packSizeText('12 x 350 ml', 'ovos')).toBe('12 x 350 ml');
   });
 });

@@ -37,7 +37,7 @@ import { PRODUCT_MERGED_AWAY, PRODUCT_NAME_TAKEN } from '@/domain/productMerge';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
 import type { ProductName } from '@/domain/similarNames';
-import { storePricesFromPurchases } from '@/domain/storePrices';
+import { compactSavedPrice, storePricesFromPurchases } from '@/domain/storePrices';
 import { EXPECTS_ROWS_META } from '@/lib/accessErrors';
 import { isTransientFailure, withStatus } from '@/lib/networkErrors';
 import { supabase, unwrap } from '@/lib/supabase';
@@ -1509,6 +1509,9 @@ export function useFollowStoreStandard() {
 const PRICE_PAGE = 1000;
 /** 20 mil preços: bem além de qualquer casa. Passando disso (com um preço a mais que seja) a busca falha, em vez de devolver uma lista cortada. */
 const PRICE_MAX_PAGES = 20;
+/** As colunas de latest_prices que o app lê; as duas do fim chegaram depois (o banco de antes lê sem elas). */
+const LATEST_COLUMNS = 'product_id, store_id, unit, unit_price, purchased_at, pack_count, raw_description';
+const LATEST_LATER_COLUMNS = ['raw_description', 'pack_count'] as const;
 
 /**
  * Os últimos preços da casa, todos: página por página, até vir uma
@@ -1525,8 +1528,10 @@ const PRICE_MAX_PAGES = 20;
  */
 export async function fetchLatestPrices(): Promise<LatestPrice[]> {
   const prices: LatestPrice[] = [];
-  // Quantos vinham na embalagem (pack_count) chegou depois: o banco de antes da coluna lê sem ela.
-  let columns = 'product_id, store_id, unit, unit_price, purchased_at, pack_count';
+  // Quantos vinham na embalagem (pack_count) e a descrição da nota (raw_description, de onde sai o tamanho do pacote)
+  // chegaram depois: o banco de antes de cada coluna lê sem ela, na ordem em que o erro as nomear.
+  let later: string[] = [...LATEST_LATER_COLUMNS];
+  let columns = LATEST_COLUMNS;
   for (let page = 0; ; page++) {
     const from = page * PRICE_PAGE;
     // Lidas todas as páginas do teto, cheias: uma linha a mais é o que separa "exatamente o teto" de "preços demais".
@@ -1538,8 +1543,10 @@ export async function fetchLatestPrices(): Promise<LatestPrice[]> {
       .order('store_id')
       .order('unit')
       .range(from, beyond ? from : from + PRICE_PAGE - 1);
-    if (result.error && page === 0 && columns.endsWith(', pack_count') && isMissingColumn(result.error, 'pack_count')) {
-      columns = columns.replace(', pack_count', '');
+    const missing = result.error && page === 0 ? later.find((column) => isMissingColumn(result.error, column)) : undefined;
+    if (missing) {
+      later = later.filter((column) => column !== missing);
+      columns = columns.replace(`, ${missing}`, '');
       page = -1;
       continue;
     }
@@ -1548,8 +1555,9 @@ export async function fetchLatestPrices(): Promise<LatestPrice[]> {
       if (rows.length) throw new Error('Não foi possível carregar todos os preços da casa: são mais do que o app consegue ler de uma vez.');
       return prices;
     }
-    // A conta das páginas é com as linhas como vieram; o zero sai só do resultado.
-    prices.push(...rows.filter((row) => row.unit_price > 0));
+    // A conta das páginas é com as linhas como vieram; o zero sai só do resultado. A descrição fica só onde diz um
+    // tamanho (compactSavedPrice): a busca fica guardada no aparelho.
+    prices.push(...rows.filter((row) => row.unit_price > 0).map(compactSavedPrice));
     if (rows.length < PRICE_PAGE) return prices;
   }
 }

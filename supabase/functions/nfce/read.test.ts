@@ -26,7 +26,7 @@ Deno.test('nfceRead: a chave do link igual à da página fica, e o CNPJ sai dela
     store_cnpj: '11222333000181',
     store_name: 'ATACADAO MOOCA',
     purchased_on: '2026-10-09',
-    lines: [{ description: 'LEITE INTEGRAL 1L', unit: 'un', unit_price: 4.5 }],
+    lines: [{ description: 'LEITE INTEGRAL 1L', unit: 'un', unit_price: 4.5, pack_unit: 'l', pack_amount: 1 }],
   });
 });
 
@@ -76,13 +76,41 @@ Deno.test('nfceRead: a linha leva o código de barras de 13 ou 14 dígitos; o c�
     ],
   };
   assertEquals(nfceRead(ok(KEY, [QR, PAGE_URL], PAGE_URL, page), QR, 'h1')?.lines, [
-    { description: 'LEITE ITALAC 1L', unit: 'un', unit_price: 4.59, gtin: '07891000100103' },
+    { description: 'LEITE ITALAC 1L', unit: 'un', unit_price: 4.59, gtin: '07891000100103', pack_unit: 'l', pack_amount: 1 },
     { description: 'BANANA PRATA', unit: 'kg', unit_price: 6.99 },
     { description: 'PATINHO KG', unit: 'kg', unit_price: 49.9 },
     { description: 'LEITE COM DIGITO ERRADO', unit: 'un', unit_price: 4.59 },
     { description: 'SACOLA', unit: 'un', unit_price: 0.1 },
     { description: 'QUEIJO DA CASA', unit: 'kg', unit_price: 39.9 },
     { description: 'CAFE IMPORTADO', unit: 'un', unit_price: 29.9 },
-    { description: 'SUCO CAIXA 12', unit: 'un', unit_price: 59.9, gtin: '17891000100100' },
+    { description: 'SUCO CAIXA 12', unit: 'un', unit_price: 59.9, gtin: '17891000100100', pack_unit: 'un', pack_amount: 12 },
+  ]);
+});
+
+Deno.test('nfceRead: o tamanho da embalagem só na linha que a Sefaz vendeu como um item só (o fardo, a caixa e o pacote, não)', () => {
+  const page: NfcePage = {
+    ...PAGE,
+    items: [
+      { description: 'CERV SKOL LT 350ML C/12', code: null, quantity: 1, unit: 'UN', unitPrice: 39.9, totalPrice: 39.9 },
+      // O fardo com a descrição da lata: o preço é o do fardo, e 350 ml seria o tamanho de cada uma.
+      { description: 'CERV SKOL LT 350ML', code: null, quantity: 1, unit: 'FD', unitPrice: 39.9, totalPrice: 39.9 },
+      { description: 'REFRIG 2L C/6', code: null, quantity: 1, unit: 'CX', unitPrice: 49.9, totalPrice: 49.9 },
+      { description: 'ARROZ T1 5KG', code: null, quantity: 1, unit: 'PCT', unitPrice: 24.9, totalPrice: 24.9 },
+      // A página que não imprime a unidade (parse.ts a deixa vazia): não passa por UN.
+      { description: 'FEIJAO 1KG', code: null, quantity: 1, unit: '', unitPrice: 8, totalPrice: 8 },
+      { description: 'MOLHO TOMATE 340G', code: null, quantity: 1, unit: 'PÇ', unitPrice: 3.9, totalPrice: 3.9 },
+      { description: 'OVOS C/12', code: null, quantity: 1, unit: 'UNID.', unitPrice: 11.9, totalPrice: 11.9 },
+      { description: 'BANANA PRATA 1KG', code: null, quantity: 1.2, unit: 'KG', unitPrice: 6.99, totalPrice: 8.39 },
+    ],
+  };
+  assertEquals(nfceRead(ok(KEY, [QR, PAGE_URL], PAGE_URL, page), QR, 'h1')?.lines, [
+    { description: 'CERV SKOL LT 350ML C/12', unit: 'un', unit_price: 39.9, pack_unit: 'l', pack_amount: 4.2, pack_of: 12 },
+    { description: 'CERV SKOL LT 350ML', unit: 'un', unit_price: 39.9 },
+    { description: 'REFRIG 2L C/6', unit: 'un', unit_price: 49.9 },
+    { description: 'ARROZ T1 5KG', unit: 'un', unit_price: 24.9 },
+    { description: 'FEIJAO 1KG', unit: 'un', unit_price: 8 },
+    { description: 'MOLHO TOMATE 340G', unit: 'un', unit_price: 3.9, pack_unit: 'kg', pack_amount: 0.34 },
+    { description: 'OVOS C/12', unit: 'un', unit_price: 11.9, pack_unit: 'un', pack_amount: 12 },
+    { description: 'BANANA PRATA 1KG', unit: 'kg', unit_price: 6.99 },
   ]);
 });

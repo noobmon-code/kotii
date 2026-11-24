@@ -56,6 +56,20 @@ export function perItemLabel(packPrice: number, count: number, category?: string
   return isEggs(category) ? `${each} o ovo` : `${each} cada`;
 }
 
+/** O preço de um item do pacote: "R$ 0,83 o ovo" nos ovos, "R$ 0,83 cada" no resto. */
+export function eachPriceLabel(price: number, category?: string | null): string {
+  return isEggs(category) ? `${formatBRL(price)} o ovo` : `${formatBRL(price)} cada`;
+}
+
+/**
+ * O rótulo de um tamanho (PackageSize.label) com a palavra do produto: nos ovos, "30 un" é "30 ovos"; o resto fica.
+ * Todo tamanho por contagem tem o rótulo "N un" (packageSize, answeredPack, packageLabel; um teste fixa isso).
+ */
+export function packSizeText(label: string, category?: string | null): string {
+  const count = isEggs(category) ? /^(\d+) un$/.exec(label) : null;
+  return count ? packLabel(Number(count[1]), category) : label;
+}
+
 /** O número digitado em "Outro": inteiro de 2 a 1000. */
 export function readPackCount(text: string): number | null {
   const value = text.trim();

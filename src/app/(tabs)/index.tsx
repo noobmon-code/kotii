@@ -11,7 +11,7 @@ import { useDocuments, useEquipmentList } from '@/data/house';
 import { useOpenMarketList, usePurchaseRecords, useShoppingLists } from '@/data/market';
 import { useRefreshMarketTrips } from '@/data/marketTrips';
 import { useMenu } from '@/data/menu';
-import { useForecast, useHouseholdLocation, useRefreshWeather } from '@/data/weather';
+import { useFillHouseState, useForecast, useHouseholdLocation, useRefreshWeather } from '@/data/weather';
 import { usePendingReceipts } from '@/data/pendingReceipts';
 import { useDraftReceipts } from '@/data/receipts';
 import { useSupplies } from '@/data/supplies';
@@ -254,6 +254,8 @@ export default function TodayScreen() {
   const colors = useColors();
   const location = useHouseholdLocation();
   const forecast = useForecast(location.data);
+  // O local salvo antes do estado existir ganha o estado, uma vez e em silêncio: a lista acha preços do estado da casa.
+  useFillHouseState(household.data?.household.id);
   const sky = currentSky(forecast.data, now) ?? defaultSky(now);
   // Com mais de uma casa, o topo diz qual está aberta e troca com um toque (no computador, a barra lateral faz isso).
   const houses = household.data?.households ?? [];

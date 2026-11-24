@@ -121,7 +121,11 @@ jest.mock('@/data/market', () => {
 });
 jest.mock('@/data/learnedAbbreviations', () => {
   const { NO_LEARNED } = jest.requireActual<typeof import('@/domain/learnedAbbreviations')>('@/domain/learnedAbbreviations');
-  return { useLearnedAbbreviations: () => NO_LEARNED, loadLearnedAbbreviations: async () => NO_LEARNED };
+  return {
+    useLearnedAbbreviations: () => NO_LEARNED,
+    loadLearnedAbbreviations: async () => NO_LEARNED,
+    useProductAliases: () => ({ data: [], isPending: false, fetchStatus: 'idle' }),
+  };
 });
 jest.mock('@/lib/supabase', () => {
   const tables = () => mockDb as unknown as Record<string, Row[]>;

@@ -7,6 +7,11 @@
 // código de barras do produto (gtin), quando o código dela é um de 13 ou 14
 // dígitos (sharedGtin): ele vai junto
 // para a base comum e acha o mesmo produto escrito de outro jeito em outra rede.
+// Na nota do QR code, a linha que a Sefaz vendeu como um item só (single_unit,
+// de nfceReadLines) leva ainda o tamanho da embalagem lido na descrição
+// (readPack, com sharedPackageSize, a leitura estrita): é com ele que o
+// preço de outra casa se compara pelo tamanho do pacote. Na foto nunca: a IA
+// escreve "un" também no fardo e na caixa.
 //
 // Gravar a leitura nunca atrapalha a leitura da nota: qualquer erro (o banco
 // ainda sem a tabela, a chave secreta faltando) só deixa a nota sem leitura, e
@@ -16,6 +21,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { isValidAccessKey, isValidCnpj } from './fiscalIds.ts';
 import { sharedGtin } from './gtin.ts';
+import { sharedPackageSize } from './packageSize.ts';
 
 export interface ReadLine {
   /** Descrição como impressa, sem espaços nas pontas nem repetidos. */
@@ -30,6 +36,40 @@ export interface ReadLine {
    * mercado. Sem ele, o campo não vai.
    */
   gtin?: string;
+  /**
+   * O tamanho da embalagem lido pelo servidor na descrição (sharedPackageSize, o espelho de
+   * src/domain/packageSize.ts), só na nota do QR code, na linha em "un" que a Sefaz vendeu como um item só: kg, l ou
+   * un, quanto vem na embalagem toda (nessa unidade, 6 casas) e, em kg e l, quantas embalagens iguais ("12 x 350 ml":
+   * 12). Sem tamanho, os campos não vão.
+   */
+  pack_unit?: 'kg' | 'l' | 'un';
+  pack_amount?: number;
+  pack_of?: number;
+}
+
+/**
+ * Uma linha como quem lê a nota a entrega: a de ReadLine, mais se a unidade da Sefaz é de um item só (nfceReadLines).
+ * single_unit é só entrada (diz se a linha pode levar o tamanho) e nunca vai para o banco; tamanho dado aqui não conta.
+ */
+export type ReadLineInput = Pick<ReadLine, 'description' | 'unit' | 'unit_price' | 'gtin'> & { single_unit?: boolean };
+
+/** Os limites de shared_prices_pack_check (supabase/migrations/20261124181159_package_sizes.sql). */
+export const MAX_PACK_AMOUNT = 100000;
+export const MAX_PACK_OF = 1000;
+
+/**
+ * O tamanho da embalagem que a linha leva, já dentro do check do banco: só em "un", só quando a leitura estrita
+ * (sharedPackageSize) lê um. Fora dos limites, nada; um "N x" fora deles tira só o pack_of.
+ */
+export function readPack(description: string, unit: string): Pick<ReadLine, 'pack_unit' | 'pack_amount' | 'pack_of'> {
+  if (unit !== 'un') return {};
+  const size = sharedPackageSize(description);
+  if (!size) return {};
+  const amount = Math.round(size.amount * 1e6) / 1e6;
+  if (!(amount > 0 && amount <= MAX_PACK_AMOUNT)) return {};
+  if (size.unit === 'un') return Number.isInteger(amount) && amount >= 2 ? { pack_unit: 'un', pack_amount: amount } : {};
+  const of = size.of != null && Number.isInteger(size.of) && size.of >= 2 && size.of <= MAX_PACK_OF ? size.of : null;
+  return { pack_unit: size.unit, pack_amount: amount, ...(of != null ? { pack_of: of } : {}) };
 }
 
 export interface ReceiptRead {
@@ -75,7 +115,7 @@ export function receiptRead(input: {
   cnpj: string | null;
   storeName: string | null;
   purchasedOn: string | null;
-  lines: ReadLine[];
+  lines: ReadLineInput[];
 }): ReceiptRead {
   const name = input.storeName?.trim().replace(/\s+/g, ' ').slice(0, 300) || null;
   return {
@@ -86,14 +126,20 @@ export function receiptRead(input: {
     store_name: name,
     purchased_on: input.purchasedOn && /^\d{4}-\d{2}-\d{2}$/.test(input.purchasedOn) ? input.purchasedOn : null,
     lines: input.lines
-      .map((line) => ({
-        description: line.description.trim().replace(/\s+/g, ' ').slice(0, MAX_DESCRIPTION).trim(),
-        unit: line.unit,
-        unit_price: line.unit_price,
-        // Só os 14 dígitos que já passam em sharedGtin. Outra coisa (o código interno, o de 8 ou 12 dígitos, o
-        // verificador errado, o código sem os zeros à frente) deixa a linha sem ele, e ela vale do mesmo jeito.
-        ...(typeof line.gtin === 'string' && sharedGtin(line.gtin) === line.gtin ? { gtin: line.gtin } : {}),
-      }))
+      .map((line): ReadLine => {
+        const description = line.description.trim().replace(/\s+/g, ' ').slice(0, MAX_DESCRIPTION).trim();
+        return {
+          description,
+          unit: line.unit,
+          unit_price: line.unit_price,
+          // Só os 14 dígitos que já passam em sharedGtin. Outra coisa (o código interno, o de 8 ou 12 dígitos, o
+          // verificador errado, o código sem os zeros à frente) deixa a linha sem ele, e ela vale do mesmo jeito.
+          ...(typeof line.gtin === 'string' && sharedGtin(line.gtin) === line.gtin ? { gtin: line.gtin } : {}),
+          // O tamanho, só do QR code e da linha que a Sefaz vendeu como um item só: no fardo, na caixa e no pacote o
+          // preço é o do pacote todo, e a descrição muitas vezes diz só o tamanho de cada um.
+          ...(input.source === 'qrcode' && line.single_unit === true ? readPack(description, line.unit) : {}),
+        };
+      })
       .filter((line) => line.description && Number.isFinite(line.unit_price))
       .slice(0, MAX_READ_LINES),
   };

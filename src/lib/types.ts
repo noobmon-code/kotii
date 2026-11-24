@@ -110,6 +110,11 @@ export interface LatestPrice {
   purchased_at: string;
   /** Quantos vinham na embalagem desse último preço (receipt_items.pack_count); ausente no banco de antes da coluna. */
   pack_count?: number | null;
+  /**
+   * A descrição da linha da nota desse último preço, de onde sai o tamanho da embalagem; só nas linhas por unidade
+   * que dizem um (compactSavedPrice); ausente no banco de antes da coluna.
+   */
+  raw_description?: string | null;
 }
 
 export interface PriceObservation extends LatestPrice {

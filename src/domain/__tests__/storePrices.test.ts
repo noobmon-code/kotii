@@ -2,8 +2,12 @@ import { describe, expect, it } from '@jest/globals';
 
 import { formatShortDate } from '../dates';
 import { PACK_ITEM, type PurchaseLine } from '../priceHistory';
+import { sharedPackageSize } from '../packageSize';
+import { ownSharedPack } from '../sharedPrices';
 import {
+  compactSavedPrice,
   latestByStore,
+  savedPricesByProduct,
   storePriceDetail,
   storePriceGroups,
   storePriceLabel,
@@ -118,6 +122,89 @@ describe('o último preço de cada mercado', () => {
   it('dos guardados no aparelho: g e kg na mesma conta, por kg (sem quantos vêm guardados, o tamanho do pacote não se sabe)', () => {
     const rows = [saved('queijo', 'assai', 0.0399, '2026-10-10', 'g'), saved('queijo', 'dia', 42.9, '2026-10-01', 'kg')];
     expect(storePricesFromSaved(rows, 'queijo')).toEqual([price('assai', 39.9, '2026-10-10', 'kg'), price('dia', 42.9, '2026-10-01', 'kg')]);
+  });
+});
+
+describe('a descrição guardada (latest_prices.raw_description)', () => {
+  const described = (product_id: string, store_id: string, unit_price: number, day: string, raw_description: string, unit = 'un'): SavedPrice => ({
+    ...saved(product_id, store_id, unit_price, day, unit),
+    raw_description,
+  });
+
+  it('sem internet, o arroz de 5 kg e o de 1 kg se comparam por kg, como online', () => {
+    const rows = [described('arroz', 'assai', 24.9, '2026-11-10', 'ARROZ CAMIL T1 5KG'), described('arroz', 'dia', 5.49, '2026-11-08', 'ARROZ CAMIL T1 1KG')];
+    const offline = storePricesFromSaved(rows, 'arroz');
+    const groups = storePriceGroups(offline);
+    expect(groups.map((group) => group.title)).toEqual(['Por kg']);
+    expect(offline.map((p) => [p.storeId, p.unitPrice, p.packLabel, p.packagePrice])).toEqual([
+      ['assai', 4.98, '5 kg', 24.9],
+      ['dia', 5.49, '1 kg', 5.49],
+    ]);
+    expect(storePriceDetail(offline[0])).toBe(`5 kg por R$ 24,90 · em ${formatShortDate('2026-11-10')}`);
+    expect(offline).toEqual(
+      storePricesFromPurchases([
+        line('assai', 24.9, '2026-11-10', { description: 'ARROZ CAMIL T1 5KG' }),
+        line('dia', 5.49, '2026-11-08', { description: 'ARROZ CAMIL T1 1KG' }),
+      ]),
+    );
+  });
+
+  /** Sorteio com semente (mulberry32): os mesmos preços a cada rodada. */
+  function seeded(seed: number) {
+    let state = seed;
+    const random = () => {
+      state = (state + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(state ^ (state >>> 15), state | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const int = (min: number, max: number) => min + Math.floor(random() * (max - min + 1));
+    const pick = <T,>(values: readonly T[]) => values[int(0, values.length - 1)];
+    return { random, int, pick };
+  }
+
+  const DESCRIPTIONS = ['ARROZ 5KG', 'ARROZ 1KG', 'ARROZ TIO JOAO', 'OVOS C/12', 'OVOS 30UN', 'CERV 350ML LT C12', 'CERV SKOL LT 350ML C/12', 'LEITE 1L', 'QUEIJO', 'CAFE 3 CORACOES 500G'];
+  const sweep = (() => {
+    const { int, pick, random } = seeded(20261122);
+    return Array.from({ length: 600 }, (_, n): SavedPrice => {
+      const unit = pick(['un', 'un', 'un', 'kg', 'g', 'l', 'ml']);
+      return {
+        product_id: `p${int(0, 29)}`,
+        store_id: `s${int(0, 5)}`,
+        unit,
+        unit_price: Math.round(random() * 4000 + 1) / 100,
+        purchased_at: at(`2026-10-${String(1 + (n % 28)).padStart(2, '0')}`, `${String(8 + int(0, 10)).padStart(2, '0')}:00`),
+        ...(random() < 0.8 ? { raw_description: pick(DESCRIPTIONS) } : {}),
+        ...(random() < 0.2 ? { pack_count: pick([6, 10, 12, 30]) } : {}),
+      };
+    });
+  })();
+
+  it('Preços agrupa uma vez só e dá, para cada produto, o mesmo da tela do produto sem internet (30 produtos sorteados)', () => {
+    const byProduct = savedPricesByProduct(sweep);
+    for (let n = 0; n < 30; n++) {
+      const productId = `p${n}`;
+      expect([productId, byProduct.get(productId) ?? []]).toEqual([productId, storePricesFromSaved(sweep, productId)]);
+    }
+  });
+
+  it('o cache guarda só a descrição que diz um tamanho na linha por unidade', () => {
+    expect(compactSavedPrice(described('arroz', 'a', 24.9, '2026-11-10', 'ARROZ 5KG'))).toHaveProperty('raw_description', 'ARROZ 5KG');
+    expect(compactSavedPrice(described('arroz', 'a', 24.9, '2026-11-10', 'ARROZ TIO JOAO'))).not.toHaveProperty('raw_description');
+    expect(compactSavedPrice(described('queijo', 'a', 39.9, '2026-11-10', 'QUEIJO 1KG', 'kg'))).not.toHaveProperty('raw_description');
+    expect(compactSavedPrice({ ...saved('arroz', 'a', 24.9, '2026-11-10'), raw_description: null })).not.toHaveProperty('raw_description');
+    const bare = saved('arroz', 'a', 24.9, '2026-11-10');
+    expect(compactSavedPrice(bare)).toBe(bare);
+  });
+
+  it('com as linhas enxutas, as mesmas contas: os mesmos preços por mercado e o mesmo tamanho contra a base comum', () => {
+    const compact = sweep.map(compactSavedPrice);
+    expect(savedPricesByProduct(compact)).toEqual(savedPricesByProduct(sweep));
+    // ownSharedPack só se usa na linha por unidade (o tamanho contra a base comum).
+    const perUnit = (rows: SavedPrice[]) => rows.filter((row) => row.unit === 'un').map((row) => ownSharedPack(row));
+    expect(perUnit(compact)).toEqual(perUnit(sweep));
+    // A leitura estrita nunca lê o que a normal não lê: é por isso que a descrição sem tamanho pode sair.
+    for (const description of DESCRIPTIONS) if (sharedPackageSize(description)) expect(compactSavedPrice(described('x', 'a', 1, '2026-11-10', description)).raw_description).toBe(description);
   });
 });
 

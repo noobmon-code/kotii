@@ -153,6 +153,7 @@ jest.mock('@/data/weather', () => ({
   useHouseholdLocation: () => ({ data: null }),
   useForecast: () => ({ data: undefined }),
   useRefreshWeather: () => () => undefined,
+  useFillHouseState: () => undefined,
 }));
 jest.mock('@/data/home', () => ({
   ...jest.requireActual<typeof import('@/data/home')>('@/data/home'),

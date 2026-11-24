@@ -289,7 +289,7 @@ export default function ProductScreen() {
         )}
       </Section>
 
-      <SharedPricesSection productId={product.id} />
+      <SharedPricesSection productId={product.id} ownUnit={groups?.[0]?.unit} />
 
       <PriceHistorySection productId={product.id} productName={product.name} />
 
