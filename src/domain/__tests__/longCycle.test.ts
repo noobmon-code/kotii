@@ -668,7 +668,7 @@ describe('o banco', () => {
   const sql = readFileSync(join(dir, file!), 'utf8');
 
   it('os limites são os do app', () => {
-    expect(file).toBe('20261122130000_long_cycle_settings.sql');
+    expect(file).toBe('20261124180644_long_cycle_settings.sql');
     expect(sql).toContain(`check (every_months between ${LONG_CYCLE_MIN_MONTHS} and ${LONG_CYCLE_MAX_MONTHS})`);
     expect(sql).toContain(`check (item_key ~ '${LONG_CYCLE_KEY_PATTERN.source}')`);
     expect(sql).toContain(`check (replaced_on between date '${APP_MIN_DATE}' and date '${APP_MAX_DATE}')`);

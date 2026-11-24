@@ -160,7 +160,7 @@ export const LONG_CYCLE_ITEMS: readonly LongCycleItem[] = [
   },
 ];
 
-/** O mesmo check de item_key no banco (20261122130000_long_cycle_settings.sql; um teste compara). */
+/** O mesmo check de item_key no banco (20261124180644_long_cycle_settings.sql; um teste compara). */
 export const LONG_CYCLE_KEY_PATTERN = /^[a-z][a-z0-9_]{0,39}$/;
 /** Os limites do prazo da casa (o mesmo check de every_months no banco). */
 export const LONG_CYCLE_MIN_MONTHS = 1;

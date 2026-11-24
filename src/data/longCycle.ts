@@ -1,7 +1,7 @@
 // Prazos de troca (domain/longCycle): o que a casa mudou (long_cycle_settings) e a última compra de cada item, até 4
 // anos (long_cycle_purchases). Este é o único lugar que lê e grava os dois.
 //
-// A tabela e a função chegam na migração 20261122130000_long_cycle_settings.sql, e o app pode ser publicado antes
+// A tabela e a função chegam na migração 20261124180644_long_cycle_settings.sql, e o app pode ser publicado antes
 // dela: sem a tabela, os ajustes vêm como null (valem os prazos do app, e nada se grava); sem a função, a leitura
 // longa vem como null (o Hoje usa só as compras dos 180 dias).
 
