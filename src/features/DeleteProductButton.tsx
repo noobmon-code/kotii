@@ -71,9 +71,9 @@ export function DeleteProductButton({ productId, onDeleted }: { productId: strin
     const step = deleteStep(facts);
     if (step.kind === 'gone') {
       // Outro aparelho excluiu ou juntou: sai da memória na hora, como depois de excluir aqui, com os pares que
-      // passam (só na memória: quem excluiu gravou os dele; a busca nova dos pares confirma).
+      // passam, e eles são gravados (quem excluiu pode não ter gravado os dele; a busca nova dos pares vem depois).
       forgetDeletedProduct(queryClient, productId, carry);
-      refreshDeletedProduct(queryClient);
+      refreshDeletedProduct(queryClient, { carry });
       notify(step.title, step.message);
       onDeleted();
     } else if (step.kind === 'refuse' && step.reason === 'purchased') {
