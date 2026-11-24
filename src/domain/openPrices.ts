@@ -330,9 +330,12 @@ export const OTHER_PRODUCT_WORDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * A marca de cada palavra é a forma de base: o feminino é o masculino ("QUEBRADA" e "QUEBRADO" são uma marca, e a
- * "Carne seca" da lista leva o "CARNE SEC" da nota), e a conserva e a calda são a lata (a forma em conserva do item:
- * "Milho em conserva" na lista leva "MILHO VERDE LATA").
+ * A marca de cada palavra é a forma de base: o feminino é o masculino ("QUEBRADA" e "QUEBRADO" são uma marca, e o
+ * "Arroz quebrado" da lista leva o "ARROZ QUEBRADA" da nota, como o "ARROZ QUEBR" de ABBREVIATED_MARKS), e a conserva
+ * e a calda são a lata (a forma em conserva do item: "Milho em conserva" na lista leva "MILHO VERDE LATA"). A marca só
+ * decide entre nomes que o leitor já lê como o mesmo item: o "CARNE SEC" da nota tem a marca de "seca", mas o leitor o
+ * lê como a carne fresca, outro item que a carne seca, então nem a "Carne seca" da lista o leva (é outro item) nem a
+ * "Carne" (é outra marca).
  */
 const MARK_OF: ReadonlyMap<string, string> = new Map([
   ['quebrada', 'quebrado'],
@@ -419,12 +422,28 @@ const ABBREVIATED_AFTER: ReadonlyMap<string, { mark: string; after: ReadonlySet<
   ['amend', { mark: 'amendoa', after: new Set(['leite', 'lt']) }],
 ]);
 
+/**
+ * As abreviações de ABBREVIATED_MARKS que, logo depois de certas palavras, são o feminino, que por extenso não marca
+ * nada: o "VERM" de "FRUTAS VERM" ("IOG NESTLE FRUTAS VERM", "CHA LEAO FRUT VERM"), de "CEBOLA VERM" e de "MACA VERM"
+ * é o "vermelhas" ou o "vermelha", e "IOGURTE NESTLE FRUTAS VERMELHAS" não tem marca nenhuma. Com o "VERM" marcando ali,
+ * o mesmo iogurte de frutas vermelhas entrava no grupo de "Iogurte" por extenso e saía dele abreviado. Depois de
+ * qualquer outra palavra ele continua o vermelho ("FEIJAO VERM", "FEIJAO CAMIL VERM", "PIMENTAO VERM").
+ */
+const FEMININE_AFTER: ReadonlyMap<string, ReadonlySet<string>> = (() => {
+  const red = new Set(['fruta', 'frut', 'frt', 'cebola', 'maca']);
+  return new Map([
+    ['verm', red],
+    ['vermel', red],
+    ['vermelh', red],
+  ]);
+})();
+
 /** A marca de uma palavra do nome (lida por extenso, com a do singular e a palavra de antes, no singular), ou null. */
 function wordMark(word: string, one: string, prev: string | null): string | null {
   const whole = OTHER_PRODUCT_WORDS.has(word) ? word : OTHER_PRODUCT_WORDS.has(one) ? one : null;
   if (whole) return MARK_OF.get(whole) ?? whole;
   const short = ABBREVIATED_MARKS.get(word);
-  if (short) return short;
+  if (short) return prev != null && FEMININE_AFTER.get(word)?.has(prev) ? null : short;
   const after = ABBREVIATED_AFTER.get(word);
   return after && prev != null && after.after.has(prev) ? after.mark : null;
 }
@@ -464,14 +483,15 @@ const VERDICTS_LIMIT = 20000;
 /**
  * Os itens que quase sempre vêm em lata ou em conserva, onde ela é só a embalagem: a cerveja, o refrigerante, o suco,
  * a água tônica, o atum, a sardinha, o leite condensado, o creme de leite, o doce de leite, o leite em pó, o
- * achocolatado, o fermento, o óleo, o azeite e o extrato, o molho e a polpa de tomate. Para eles a lata, a conserva e
- * a calda não marcam nada. Para todo outro item são outro produto ("FRANGO DESFIADO LATA", "SALSICHA VIENA LATA",
- * "CARNE BOVINA CONSERVA", "GOIABA EM CALDA", "CHA MATE LEAO LATA" para "Chá"), e a descrição só fica quando a lista
- * também diz a lata ou a conserva: na dúvida, fica de fora.
+ * achocolatado, o fermento, o óleo, o azeite e o extrato, o molho, a polpa e o tomate pelado ("TOMATE PELADO LATA",
+ * "TOMATE PELADO LT" e o sem lata dão o mesmo veredito). Para eles a lata, a conserva e a calda não marcam nada. Para
+ * todo outro item são outro produto ("FRANGO DESFIADO LATA", "SALSICHA VIENA LATA", "CARNE BOVINA CONSERVA", "GOIABA
+ * EM CALDA", "CHA MATE LEAO LATA" para "Chá"), e a descrição só fica quando a lista também diz a lata ou a conserva: na
+ * dúvida, fica de fora.
  */
 export const CAN_IS_THE_PACKAGE: ReadonlySet<string> = new Set([
   'cerveja', 'refrigerante', 'suco', 'agua+tonica', 'atum', 'sardinha', 'leite_condensado', 'creme_leite', 'doce_leite',
-  'leite+po', 'achocolatado', 'fermento', 'oleo', 'azeite', 'extrato_tomate', 'molho_tomate', 'polpa_tomate',
+  'leite+po', 'achocolatado', 'fermento', 'oleo', 'azeite', 'extrato_tomate', 'molho_tomate', 'polpa_tomate', 'tomate_pelado',
 ]);
 
 /**
