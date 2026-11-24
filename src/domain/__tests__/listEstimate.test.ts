@@ -1,6 +1,11 @@
 import { describe, expect, it } from '@jest/globals';
 
+import { BRAND_OPT_OUT, brandFreeKey, candidateFits, KEY_BRAND_FACT, quoteSize, type BrandKeyQuote } from '../cheaperBrand';
+import { genericItem } from '../genericItem';
 import {
+  brandSearchItems,
+  brandSpoken,
+  brandTileText,
   CHOSEN_STORE_MS,
   cartSplitLine,
   chosenItemQuantity,
@@ -18,6 +23,7 @@ import {
   listSharedOnly,
   listStorePrices,
   pantryHits,
+  planPriceCounts,
   sharedOnlyNote,
   storeOptionNote,
   storePriceNote,
@@ -29,6 +35,7 @@ import {
   type EstimatePrice,
   type ItemEstimate,
   type PantryStock,
+  type StorePrice,
   type UsualAmounts,
   uncheckedPricesNote,
 } from '../listEstimate';
@@ -39,7 +46,10 @@ import { storePriceIndex } from '../priceLevel';
 import type { PurchaseRecord } from '../recentPurchases';
 import { recommendStores } from '../recommendation';
 import { ranOutItems, restockSuggestions } from '../restock';
-import type { SharedQuote } from '../sharedPrices';
+import { OPEN_PRICE_FACT } from '../openPrices';
+import { comparablePrice } from '../packagePrice';
+import { pricePerBase } from '../units';
+import { SHARED_PRICES_NOTICE, seenLabel, type SharedQuote } from '../sharedPrices';
 
 const item = (id: string, name: string, productId: string | null, quantity = 1, unit = 'un', inCart = false): EstimateItem => ({
   id,
@@ -1058,9 +1068,12 @@ describe('listStorePrices', () => {
 describe('a lista e "Onde comprar" dão o mesmo total', () => {
   type Sources = {
     links?: LinkIndex;
-    products?: { id: string; name: string }[];
+    products?: { id: string; name: string; category?: string | null }[];
     usual?: UsualAmounts;
+    shared?: readonly SharedQuote[];
     open?: ReadonlyMap<string, readonly SharedQuote[]>;
+    brandKeys?: ReadonlyMap<string, readonly BrandKeyQuote[]>;
+    cheaperBrands?: boolean;
   };
 
   /**
@@ -1431,6 +1444,219 @@ describe('a lista e "Onde comprar" dão o mesmo total', () => {
     // O sorteio passou por todos os caminhos da conta, muitas vezes.
     expect(seen.plans).toBeGreaterThan(800);
     for (const count of Object.values(seen)) expect(count).toBeGreaterThan(40);
+  });
+
+  it('em listas sorteadas com marcas, tamanhos e preços de outras casas: a mesma conta, e a troca de marca nunca erra o item', () => {
+    const { int, pick, chance, random } = seeded(20261121);
+    // Cada item: o nome sem marca, a categoria, a medida, os tamanhos de pacote, o preço de base por kg ou litro, as
+    // marcas (a última com a marca de outro produto, que nunca pode entrar) e como a nota as descreve.
+    const FAMILIES = [
+      { generic: 'Arroz', category: 'graos', base: 'kg', sizes: [1, 2, 5], perBase: 5, brands: ['Tio João', 'Prato Fino', 'Camil', 'Kicaldo'], marked: 'Arroz Quebrado Kicaldo', word: 'ARROZ T1' },
+      { generic: 'Feijão carioca', category: 'graos', base: 'kg', sizes: [1, 2], perBase: 8, brands: ['Camil', 'Kicaldo', 'Broto Legal', 'Tio João'], marked: 'Feijão Carioca Tipo 2 Bom Grão', word: 'FEIJAO CARIOCA' },
+      { generic: 'Leite integral', category: 'laticinios', base: 'l', sizes: [1], perBase: 5, brands: ['Italac', 'Piracanjuba', 'Parmalat', 'Elegê'], marked: 'Leite Integral Cabra Caprilat', word: 'LEITE UHT INT' },
+      { generic: 'Óleo de soja', category: 'oleos', base: 'l', sizes: [0.9], perBase: 8, brands: ['Liza', 'Soya', 'Cocamar', 'Primor'], marked: 'Óleo Composto de Soja Maria', word: 'OLEO SOJA' },
+      { generic: 'Queijo mussarela', category: 'frios', base: 'kg', sizes: [], perBase: 45, brands: ['Tirolez', 'Quatá', 'Polenghi', 'Scala'], marked: 'Queijo Tipo Mussarela Bom', word: 'QUEIJO MUSSARELA' },
+    ] as const;
+    const sizeLabel = (base: string, amount: number) => (amount < 1 ? `${Math.round(amount * 1000)}${base === 'kg' ? 'g' : 'ml'}` : `${amount}${base === 'kg' ? 'kg' : 'L'}`);
+    const seen = { houseBrand: 0, sharedHouseBrand: 0, openBrand: 0, recosted: 0, biggerPack: 0, bandExcluded: 0, markExcluded: 0, brandPreferredKept: 0, noContest: 0 };
+    for (let round = 0; round < 300; round++) {
+      const stores = ['a', 'b', 'c', 'd'].slice(0, int(2, 4));
+      const products: { id: string; name: string; category: string; family: number; marked: boolean; size: number | null; factor: number }[] = [];
+      FAMILIES.forEach((family, f) => {
+        const names = [...family.brands.map((brand) => ({ brand, marked: false })), { brand: '', marked: true }];
+        names.forEach(({ brand, marked }, b) => {
+          const size = family.sizes.length ? pick(family.sizes) : null;
+          const name = `${marked ? family.marked : `${family.generic.split(' ')[0]} ${family.generic.split(' ').slice(1).join(' ')} ${brand}`.replace(/\s+/g, ' ')}${size != null ? ` ${sizeLabel(family.base, size)}` : family.base === 'kg' ? ' kg' : ''}`.trim();
+          // Às vezes um preço bem fora da faixa (outro produto, ou um tamanho mal lido): nunca pode entrar.
+          const factor = chance(0.12) ? pick([0.3, 3.5]) : 0.75 + random() * 0.6;
+          products.push({ id: `f${f}b${b}`, name, category: family.category, family: f, marked, size, factor });
+        });
+      });
+      const quotes: EstimatePrice[] = [];
+      for (const product of products) {
+        const family = FAMILIES[product.family];
+        for (const storeId of stores) {
+          if (chance(0.45)) continue;
+          const perBase = Math.round(family.perBase * product.factor * (0.9 + random() * 0.2) * 100) / 100;
+          const day = `2026-${pick(['09', '10', '11'])}-${String(int(1, 28)).padStart(2, '0')}T12:00:00Z`;
+          if (product.size == null) {
+            quotes.push({ productId: product.id, storeId, unit: 'kg', unitPrice: perBase, purchasedAt: day });
+            continue;
+          }
+          // A descrição diz o tamanho 70% das vezes (antes da coluna, ou na linha que não diz, nada).
+          const description = chance(0.7) ? `${family.word} ${product.name.split(' ').slice(-2, -1)[0].toUpperCase()} ${sizeLabel(family.base, product.size).toUpperCase()}` : null;
+          quotes.push({ productId: product.id, storeId, unit: 'un', unitPrice: Math.round(perBase * product.size * 100) / 100, purchasedAt: day, description });
+        }
+      }
+      // Preços de outras casas pelo produto: nos mercados da casa e num de fora, com o tamanho lido 70% das vezes.
+      const shared: SharedQuote[] = [];
+      for (const product of products) {
+        if (!chance(0.3)) continue;
+        const family = FAMILIES[product.family];
+        for (const storeId of [...stores.filter(() => chance(0.4)), null]) {
+          const perBase = Math.round(family.perBase * product.factor * (0.85 + random() * 0.3) * 100) / 100;
+          const pack = product.size != null && chance(0.7) ? { unit: family.base, amount: product.size, label: sizeLabel(family.base, product.size) } : null;
+          shared.push({
+            productId: product.id,
+            storeId,
+            storeCnpj: storeId ? `cnpj-${storeId}` : 'cnpj-fora',
+            storeName: storeId ?? 'FORA',
+            state: storeId ? null : 'SP',
+            mine: storeId != null,
+            unit: product.size == null ? 'kg' : 'un',
+            unitPrice: product.size == null ? perBase : Math.round(perBase * product.size * 100) / 100,
+            seenWeek: pick(['2026-10-26', '2026-11-02', '2026-11-09']),
+            pack,
+          });
+        }
+      }
+      const unmarked = (f: number) => products.filter((product) => product.family === f && !product.marked);
+      const links = new LinkIndex(
+        FAMILIES.flatMap((family, f) => (chance(0.3) ? [{ name_key: listNameKey(family.generic), product_id: pick(unmarked(f)).id }] : [])),
+      );
+      const list: EstimateItem[] = Array.from({ length: int(2, 6) }, (_, n) => {
+        const f = int(0, FAMILIES.length - 1);
+        const family = FAMILIES[f];
+        const branded = chance(0.1);
+        const sized = family.sizes.length > 0 && chance(0.2);
+        const name = branded
+          ? `${family.generic} ${pick(family.brands)}`
+          : sized
+            ? `${family.generic} ${sizeLabel(family.base, pick(family.sizes))}`
+            : family.generic;
+        const unit = sized ? 'un' : pick(['un', 'un', 'un', family.base, family.base === 'kg' ? 'g' : 'ml']);
+        const quantity = unit === 'g' || unit === 'ml' ? int(1, 10) * 100 : unit === 'un' ? int(1, 3) : int(1, 6) / 2;
+        return {
+          ...item(`i${n}`, name, chance(0.7) ? pick(unmarked(f)).id : null, quantity, unit, chance(0.15)),
+          category: chance(0.1) ? 'outros' : family.category,
+          ...(chance(0.2) ? { brandPreferred: true } : {}),
+        };
+      });
+      const usual: UsualAmounts = new Map(products.filter((product) => product.size == null && chance(0.6)).map(({ id }) => [id, { kg: int(150, 600) / 1000 }]));
+      const base = { links, products: products.map(({ id, name, category }) => ({ id, name, category })), shared, usual };
+      // As marcas que só outras casas compraram, para os itens que procuram (o de sempre e os tamanhos que servem a eles).
+      const searched = brandSearchItems(list, quotes, base, []);
+      const brandKeys = new Map<string, BrandKeyQuote[]>();
+      searched.forEach((one, n) => {
+        const family = FAMILIES.find((candidate) => one.referenceKey === genericItem(`${candidate.generic} X`, candidate.category).key) ?? FAMILIES[0];
+        const keyQuotes: BrandKeyQuote[] = [];
+        for (const storeId of stores) {
+          if (!chance(0.4)) continue;
+          const amount = one.amounts.length ? pick(one.amounts) : 1;
+          const perBase = family.perBase * (chance(0.15) ? pick([0.3, 3.5]) : 0.7 + random() * 0.5);
+          const pack = family.sizes.length ? { unit: one.base, amount, label: sizeLabel(one.base, amount) } : null;
+          const unitPrice = Math.round(perBase * (pack ? amount : 1) * 100) / 100;
+          const quote: SharedQuote = {
+            productId: null,
+            storeId,
+            storeCnpj: `cnpj-${storeId}`,
+            storeName: storeId,
+            state: null,
+            mine: true,
+            unit: pack ? 'un' : one.base,
+            unitPrice,
+            seenWeek: '2026-11-09',
+            pack,
+          };
+          keyQuotes.push({ storeId, quote, price: comparablePrice(quote.unit, unitPrice, pack)!, group: `k${n}${storeId}`, referenceKey: one.referenceKey });
+        }
+        brandKeys.set(one.id, keyQuotes);
+      });
+      const sources = { ...base, brandKeys };
+
+      expectSameAccount(list, quotes, sources, stores);
+      const priceAt = listStorePrices(list, quotes, sources);
+      const before = listStorePrices(list, quotes, { ...sources, cheaperBrands: false });
+      const everyStore = [...new Set(quotes.filter((quote) => quote.unitPrice > 0).map((quote) => quote.storeId))];
+      const sharedOnly = listSharedOnly(list, quotes, sources);
+      const estimates = new Map(stores.map((storeId) => [storeId, estimateList(list, quotes, { ...sources, storeId })]));
+      for (const one of list) {
+        // Resposta em todo mercado ou em nenhum (o item só com preço de outras casas fica à parte, como sempre).
+        const answered = everyStore.filter((storeId) => priceAt(one.id, storeId) != null);
+        if (!sharedOnly.has(one.id)) expect([one.id, answered.length === 0 || answered.length === everyStore.length]).toEqual([one.id, true]);
+        const reference = searched.find((candidate) => candidate.id === one.id);
+        for (const storeId of stores) {
+          const answer = priceAt(one.id, storeId);
+          const usualAnswer = before(one.id, storeId);
+          const estimate = estimates.get(storeId)!.byItem.get(one.id);
+          // A lista com o mercado escolhido e o "Onde comprar": a mesma resposta.
+          const facts = (one?: ItemEstimate | StorePrice | null) =>
+            one
+              ? {
+                  cost: one.cost,
+                  kind: one.kind,
+                  approximate: one.approximateQuantity,
+                  brand: one.brand ? [one.brand.name, one.brand.productId] : null,
+                  shared: one.shared != null,
+                  packages: one.perBase?.packages ?? null,
+                }
+              : null;
+          expect(facts(estimate)).toEqual(facts(answer));
+          if (!answer) continue;
+          // O que não pode trocar de marca (e não é o item digitado sem produto) é exatamente a conta de antes.
+          if (!brandFreeKey(one) && !answer.sameItem) {
+            expect(answer).toEqual(usualAnswer);
+            if (one.brandPreferred) seen.brandPreferredKept += 1;
+          }
+          if (answer.perBase && !answer.brand) seen.recosted += 1;
+          if (answer.biggerPack) {
+            seen.biggerPack += 1;
+            // O pacote maior nunca entra na conta: sai mais barato por kg que a resposta, e a resposta é outro.
+            const answerPerBase = answer.perBase?.perBase ?? answer.brand?.usual.perBase;
+            if (answerPerBase != null) expect(answer.biggerPack.price.perBase).toBeLessThan(answerPerBase);
+          }
+          if (reference && usualAnswer?.used?.unit === 'un' && !quoteSize(usualAnswer.used.description)) {
+            // O de sempre sem tamanho: sem comparação, a resposta de antes.
+            seen.noContest += 1;
+            expect(answer.brand).toBeUndefined();
+          }
+          // A banda e as marcas: os produtos da mesma família nesse mercado.
+          if (reference && usualAnswer) {
+            const centre = quotes
+              .filter((quote) => quote.productId === answer.productId)
+              .map((quote) => ({ quote, price: comparablePrice(pricePerBase(1, quote.unit).unit === 'un' ? 'un' : quote.unit, pricePerBase(quote.unitPrice, quote.unit).unitPrice, quoteSize(quote.description)) }))
+              .filter((entry) => entry.price)
+              .sort((a, b) => Date.parse(b.quote.purchasedAt) - Date.parse(a.quote.purchasedAt) || a.price!.perBase - b.price!.perBase)[0]?.price?.perBase;
+            for (const product of products) {
+              if (product.id === answer.productId) continue;
+              const here = quotes.find((quote) => quote.productId === product.id && quote.storeId === storeId);
+              const price = here && comparablePrice(here.unit, here.unitPrice, quoteSize(here.description));
+              if (!price || centre == null || genericItem(product.name, product.category).key !== reference.referenceKey) continue;
+              if (product.marked) {
+                seen.markExcluded += 1;
+                expect(answer.brand?.productId).not.toBe(product.id);
+              } else if (price.perBase < centre / 2 || price.perBase > centre * 2) {
+                seen.bandExcluded += 1;
+                expect(answer.brand?.productId).not.toBe(product.id);
+              }
+            }
+          }
+          if (!answer.brand) continue;
+          if (answer.source === 'cheaperBrand') seen.houseBrand += 1;
+          else if (answer.brand.productId) seen.sharedHouseBrand += 1;
+          else seen.openBrand += 1;
+          // Outra marca: menos que o de sempre na mesma quantidade, em pacotes inteiros, do mesmo item e dentro da faixa.
+          const { perBase } = answer;
+          // O de sempre existe (na conta de antes, a não ser no item digitado sem produto, que ela não tinha).
+          if (!answer.sameItem) expect(usualAnswer).not.toBeNull();
+          expect(perBase).toBeDefined();
+          expect(answer.cost).toBeLessThan(answer.brand.usual.perBase * perBase!.amount + 0.006);
+          expect(answer.kind).toBe('known');
+          expect(formatItemCost(answer).startsWith('~')).toBe(true);
+          if (perBase!.pack) {
+            expect(perBase!.packages).not.toBeNull();
+            expect(Math.abs(perBase!.packages! * perBase!.pack.amount - perBase!.amount)).toBeLessThan(1e-6);
+          }
+          expect(reference).toBeDefined();
+          if (answer.brand.productId) {
+            const product = products.find((candidate) => candidate.id === answer.brand!.productId)!;
+            expect(product.marked).toBe(false);
+            expect(candidateFits(one, { key: reference!.referenceKey, name: reference!.referenceName }, product)).toBe(true);
+          }
+        }
+      }
+    }
+    for (const [name, count] of Object.entries(seen)) expect([name, count > 30]).toEqual([name, true]);
   });
 });
 
@@ -2122,5 +2348,402 @@ describe('seePricesProduct', () => {
     expect(seePricesProduct({ name: 'Bolo da vó', productId: null }, undefined, links)).toBeNull();
     expect(seePricesProduct({ name: 'Café', productId: null }, undefined, null)).toBeNull();
     expect(seePricesProduct({ name: 'Café', productId: null }, undefined)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A marca mais barata no mercado escolhido (domain/cheaperBrand)
+
+describe('outra marca no mercado escolhido', () => {
+  const KG = (amount: number) => ({ unit: 'kg' as const, amount, label: amount < 1 ? `${amount * 1000} g` : `${amount} kg` });
+  const PRODUCTS = [
+    { id: 'tj', name: 'Arroz Tio João 5kg', category: 'graos' },
+    { id: 'pf', name: 'Arroz Prato Fino 5kg', category: 'graos' },
+    { id: 'cm', name: 'Arroz Camil 1kg', category: 'graos' },
+  ];
+  const STORE_NAMES: Record<string, string> = { assai: 'Assaí', dia: 'Dia' };
+  const own = (productId: string, storeId: string, unitPrice: number, description: string | null, day: string, unit = 'un'): EstimatePrice => ({
+    productId,
+    storeId,
+    unit,
+    unitPrice,
+    purchasedAt: `2026-11-${day}T12:00:00Z`,
+    description,
+  });
+  const PRICES = [
+    own('tj', 'assai', 24.9, 'ARROZ T1 TIO JOAO 5KG', '10'),
+    own('tj', 'dia', 5.49, 'ARROZ T1 TIO JOAO 1KG', '03'),
+    own('pf', 'assai', 22.9, 'ARROZ PRATO FINO T1 5KG', '12'),
+    own('cm', 'dia', 4.49, 'ARROZ CAMIL T1 1KG', '15'),
+  ];
+  const seen = (productId: string | null, storeId: string, unitPrice: number, pack: ReturnType<typeof KG> | null, week = '2026-11-09'): SharedQuote => ({
+    productId,
+    storeId,
+    storeCnpj: storeId === 'assai' ? '11111111000111' : '22222222000122',
+    storeName: STORE_NAMES[storeId],
+    state: null,
+    mine: true,
+    unit: 'un',
+    unitPrice,
+    seenWeek: week,
+    pack,
+  });
+  const SHARED = [seen('pf', 'dia', 21.5, KG(5))];
+  /** Uma marca que só outras casas compraram (brandKeyQuotes), num mercado da casa. */
+  const keyQuote = (storeId: string, price: number, amount: number, group: string): BrandKeyQuote => ({
+    storeId,
+    group,
+    referenceKey: 'i:arroz',
+    quote: seen(null, storeId, price, KG(amount)),
+    price: comparablePrice('un', price, KG(amount))!,
+  });
+  const KEYS = [
+    keyQuote('assai', 19.9, 5, 'ARROZ BRANCO T1 KICALDO 5KG\n#kg|5|'),
+    // Fora da faixa (de R$ 2,49 a R$ 9,96 o kg, em volta dos R$ 4,98 que a casa pagou): nunca entram, nem sem as marcas.
+    keyQuote('assai', 9.9, 5, 'ARROZ QUEBRADO 5KG\n#kg|5|'),
+    keyQuote('dia', 4.79, 1, 'ARROZ T1 KICALDO 1KG\n#kg|1|'),
+    keyQuote('dia', 21.9, 1, 'ARROZ ARBORIO 1KG\n#kg|1|'),
+  ];
+  /** As marcas de fora que a busca traria para "Arroz 5kg": só os pacotes de 5 kg (brandKeyGroups confere o tamanho da lista). */
+  const KEYS_5KG = KEYS.slice(0, 2);
+  const arroz = (name = 'Arroz', extra: Partial<EstimateItem> = {}): EstimateItem => ({
+    ...item('a', name, 'tj'),
+    category: 'graos',
+    ...extra,
+  });
+  const sources = (keys: readonly BrandKeyQuote[] = KEYS, shared: readonly SharedQuote[] = SHARED) => ({
+    products: PRODUCTS,
+    shared,
+    brandKeys: new Map([['a', keys]]),
+  });
+  const at = (list: EstimateItem, storeId: string, from = sources(), prices = PRICES) =>
+    estimateList([list], prices, { ...from, storeId }).byItem.get(list.id)!;
+  const cell = (estimate: ItemEstimate) => ({
+    cost: formatItemCost(estimate),
+    brand: estimate.brand ? (estimate.brand.name ?? 'outra marca') : null,
+    packages: estimate.perBase?.packages ?? null,
+  });
+
+  it('"Arroz", 1 un: em cada mercado, o pacote de sempre de lá; outra marca só quando sai mais barata nele', () => {
+    expect(cell(at(arroz(), 'assai'))).toEqual({ cost: '~R$ 19,90', brand: 'outra marca', packages: 1 });
+    expect(cell(at(arroz(), 'dia'))).toEqual({ cost: '~R$ 4,49', brand: 'Arroz Camil 1kg', packages: 1 });
+    const priceAt = listStorePrices([arroz()], PRICES, sources());
+    expect(priceAt('a', 'assai')).toMatchObject({ source: 'shared', kind: 'known', productId: 'tj', used: null, brand: { name: null, productId: null } });
+    expect(priceAt('a', 'dia')).toMatchObject({ source: 'cheaperBrand', kind: 'known', productId: 'tj', brand: { name: 'Arroz Camil 1kg', productId: 'cm' } });
+    expect(priceAt('a', 'dia')!.used).toMatchObject({ productId: 'cm', storeId: 'dia' });
+    // O Prato Fino de 5 kg sai mais barato por kg no Dia, mas não cabe em um pacote de 1 kg: só nos detalhes.
+    expect(priceAt('a', 'dia')!.biggerPack).toMatchObject({ name: 'Arroz Prato Fino 5kg', stated: false, own: null });
+    expect(priceAt('a', 'dia')!.biggerPack!.price.perBase).toBe(4.3);
+    // Sem a outra marca de 5 kg, o Prato Fino da casa vence no Assaí; sem o Camil, a de 1 kg que só outras casas compraram.
+    expect(cell(at(arroz(), 'assai', sources(KEYS.slice(1))))).toEqual({ cost: '~R$ 22,90', brand: 'Arroz Prato Fino 5kg', packages: 1 });
+    const withoutCamil = PRICES.filter((quote) => quote.productId !== 'cm');
+    expect(cell(at(arroz(), 'dia', sources(), withoutCamil))).toEqual({ cost: '~R$ 4,79', brand: 'outra marca', packages: 1 });
+    // "Marca preferida", ou a marca no nome: o de sempre.
+    for (const list of [arroz('Arroz', { brandPreferred: true }), arroz('Arroz Tio João')]) {
+      expect([at(list, 'assai').cost, at(list, 'dia').cost, at(list, 'dia').brand]).toEqual([24.9, 5.49, undefined]);
+    }
+    // Sem mercado escolhido: o último preço pago, como sempre.
+    const lastPaid = estimateList([arroz()], PRICES, sources()).byItem.get('a')!;
+    expect([formatItemCost(lastPaid), lastPaid.brand]).toEqual(['R$ 24,90', undefined]);
+  });
+
+  it('"Arroz 5kg": 5 kg em todo mercado; o de sempre de 1 kg vira 5 pacotes, e outra marca de 5 kg vence nele', () => {
+    const list = arroz('Arroz 5kg');
+    expect(cell(at(list, 'assai', sources(KEYS_5KG)))).toEqual({ cost: '~R$ 19,90', brand: 'outra marca', packages: 1 });
+    // Contra o de sempre em 5 kg (5 x R$ 5,49 = R$ 27,45), o Prato Fino visto em outras casas: R$ 21,50.
+    expect(cell(at(list, 'dia', sources(KEYS_5KG)))).toEqual({ cost: '~R$ 21,50', brand: 'Arroz Prato Fino 5kg', packages: 1 });
+    expect(at(list, 'dia', sources(KEYS_5KG))).toMatchObject({
+      kind: 'known',
+      brand: { usual: { productId: 'tj', perBase: 5.49, source: 'product' } },
+    });
+    // Sem o Prato Fino de outras casas e sem a outra marca de 5 kg: o Prato Fino da casa no Assaí; no Dia, os 5 pacotes do
+    // de sempre, exatos (sem "~"), e o Camil de 1 kg não entra (a lista diz 5 kg).
+    const bare = sources([KEYS[1]], []);
+    expect(cell(at(list, 'assai', bare))).toEqual({ cost: '~R$ 22,90', brand: 'Arroz Prato Fino 5kg', packages: 1 });
+    const recosted = at(list, 'dia', bare);
+    expect(cell(recosted)).toEqual({ cost: 'R$ 27,45', brand: null, packages: 5 });
+    expect(recosted).toMatchObject({ approximateQuantity: false, perBase: { amount: 5, packages: 5, sayQuantity: true, perBase: 5.49 } });
+    // Na conta de antes, R$ 5,49 (um pacote de 1 kg por "5 kg").
+    expect(estimateList([list], PRICES, { ...bare, cheaperBrands: false, storeId: 'dia' }).byItem.get('a')!.cost).toBe(5.49);
+  });
+
+  it('"Onde comprar" com a mesma resposta: o Dia antes do Assaí em "1 un"; em "5 kg", o Assaí antes do Dia', () => {
+    const plans = (list: EstimateItem, keys = KEYS) =>
+      recommendStores([{ key: 'a', productId: 'tj', quantity: 1, unit: 'un' }], PRICES, 1, {
+        storeIndex: storePriceIndex(PRICES),
+        priceAt: listStorePrices([list], PRICES, sources(keys)),
+      }).plans.map((plan) => [plan.storeIds[0], plan.total]);
+    expect(plans(arroz())).toEqual([
+      ['dia', 4.49],
+      ['assai', 19.9],
+    ]);
+    expect(plans(arroz('Arroz 5kg'), KEYS_5KG)).toEqual([
+      ['assai', 19.9],
+      ['dia', 21.5],
+    ]);
+  });
+
+  it('um centavo a menos: a outra marca que sai com os mesmos centavos não troca', () => {
+    const products = [
+      { id: 'q1', name: 'Queijo Mussarela Tirolez kg', category: 'frios' },
+      { id: 'q2', name: 'Queijo Mussarela Quatá kg', category: 'frios' },
+    ];
+    const cheese = (q2: number) => [own('q1', 's', 49.9, null, '10', 'kg'), own('q2', 's', q2, null, '11', 'kg')];
+    const usual: UsualAmounts = new Map([['q1', { kg: 0.2 }]]);
+    const list = { ...item('q', 'Queijo mussarela', 'q1'), category: 'frios' };
+    // 200 g: R$ 49,90/kg e R$ 49,89/kg dão os mesmos R$ 9,98.
+    const same = estimateList([list], cheese(49.89), { products, usual, storeId: 's' }).byItem.get('q')!;
+    expect([same.cost, same.brand]).toEqual([9.98, undefined]);
+    const cheaper = estimateList([list], cheese(49.8), { products, usual, storeId: 's' }).byItem.get('q')!;
+    expect(cheaper).toMatchObject({ cost: 9.96, approximateQuantity: true, perPiece: { unit: 'kg', amount: 0.2 }, brand: { name: 'Queijo Mussarela Quatá kg' } });
+    expect(storePriceNote(listStorePrices([list], cheese(49.8), { products, usual })('q', 's')!)).toBe(
+      'Mais barato aqui: Queijo Mussarela Quatá kg, ~200 g (o que a casa costuma levar)',
+    );
+  });
+
+  it('o preço da casa de um produto vence o de outras casas do mesmo produto', () => {
+    const cheaperOutside = [...SHARED, seen('pf', 'assai', 19.9, KG(5))];
+    const answer = at(arroz(), 'assai', sources([], cheaperOutside));
+    expect(answer).toMatchObject({ cost: 22.9, brand: { name: 'Arroz Prato Fino 5kg' } });
+    expect(answer.shared).toBeUndefined();
+  });
+
+  it('outro produto da mesma chave com marca de outro produto nunca entra, nem dentro da faixa', () => {
+    const products = [...PRODUCTS, { id: 'qb', name: 'Arroz Quebrado Kicaldo 5kg', category: 'graos' }];
+    const prices = [...PRICES, own('qb', 'assai', 14.9, 'ARROZ QUEBRADO KICALDO 5KG', '14')];
+    const answer = estimateList([arroz()], prices, { products, storeId: 'assai' }).byItem.get('a')!;
+    expect(answer.brand?.productId).toBe('pf');
+  });
+
+  it('pacotes inteiros: o de 2 kg nunca entra numa conta de 5 kg; o mais barato por kg que não cabe fica nos detalhes', () => {
+    const products = [...PRODUCTS, { id: 'c2', name: 'Arroz Camil 2kg', category: 'graos' }];
+    const prices = [...PRICES, own('c2', 'assai', 7.9, 'ARROZ CAMIL T1 2KG', '14')];
+    const list = arroz('Arroz', { quantity: 5, unit: 'kg' });
+    const answer = estimateList([list], prices, { products, storeId: 'assai' }).byItem.get('a')!;
+    expect(answer).toMatchObject({ cost: 22.9, brand: { productId: 'pf' }, perBase: { packages: 1, amount: 5 } });
+    expect(answer.biggerPack).toMatchObject({ name: 'Arroz Camil 2kg', stated: true });
+    // 4 kg: dois pacotes de 2 kg cabem inteiros.
+    const four = estimateList([{ ...list, quantity: 4 }], prices, { products, storeId: 'assai' }).byItem.get('a')!;
+    expect(four).toMatchObject({ cost: 15.8, brand: { productId: 'c2' }, perBase: { packages: 2, sayQuantity: true } });
+    expect(brandTileText(four)).toBe('Camil 2kg ×2');
+  });
+
+  it('o item que não tem resposta num mercado continua sem ela, com outra marca lá', () => {
+    // Só preço de outras casas, no Assaí: sem preço da casa não há de sempre nem troca.
+    const list = { ...item('n', 'Arroz', 'tj'), category: 'graos' };
+    const shared = [seen('tj', 'assai', 24.9, KG(5))];
+    const prices = PRICES.filter((quote) => quote.productId !== 'tj');
+    const priceAt = listStorePrices([list], prices, { products: PRODUCTS, shared, brandKeys: new Map([['n', KEYS]]) });
+    expect(priceAt('n', 'assai')).toMatchObject({ source: 'shared', cost: 24.9 });
+    expect(priceAt('n', 'dia')).toBeNull();
+  });
+
+  it('o que não pode trocar de marca é exatamente a conta de antes', () => {
+    const same = (list: EstimateItem, prices: EstimatePrice[], extra: Record<string, unknown> = {}) => {
+      for (const storeId of ['assai', 'dia', null]) {
+        const from = { ...sources(), ...extra, storeId };
+        expect(estimateList([list], prices, from)).toEqual(estimateList([list], prices, { ...from, cheaperBrands: false }));
+      }
+    };
+    same(arroz('Arroz', { brandPreferred: true }), PRICES);
+    same(arroz('Arroz Tio João'), PRICES);
+    // Ovos, higiene e carnes: fora da troca.
+    same(arroz('Arroz', { category: 'ovos' }), PRICES);
+    same(arroz('Arroz', { category: 'higiene' }), PRICES);
+    same(arroz('Arroz', { category: 'carnes' }), PRICES);
+    // O de sempre sem tamanho (antes de claude/embalagens-precos, sem a descrição): não há centro, e a conta é a de antes,
+    // mesmo com outras marcas mais baratas por kg.
+    same(arroz(), PRICES.map((quote) => ({ ...quote, description: null })));
+    // Sem os produtos carregados, nada muda; com eles, a troca.
+    const list = arroz();
+    const before = estimateList([list], PRICES, { shared: SHARED, brandKeys: new Map([['a', KEYS]]), storeId: 'dia' }).byItem.get('a')!;
+    expect([before.cost, before.brand]).toEqual([5.49, undefined]);
+    expect(at(list, 'dia').brand?.name).toBe('Arroz Camil 1kg');
+  });
+
+  it('o mercado onde só outra marca tem preço de verdade conta para o item (a escolha de "Onde você está comprando?")', () => {
+    const prices = [own('tj', 'assai', 24.9, 'ARROZ T1 TIO JOAO 5KG', '10'), own('cm', 'dia', 4.49, 'ARROZ CAMIL T1 1KG', '15')];
+    const known = (from: Record<string, unknown>) =>
+      Object.fromEntries(estimateList([arroz()], prices, from).stores.map((store) => [store.storeId, store.knownCount]));
+    expect(known({ products: PRODUCTS })).toEqual({ assai: 1, dia: 1 });
+    expect(known({ products: PRODUCTS, cheaperBrands: false })).toEqual({ assai: 1, dia: 0 });
+    expect(storeOptionNote(1)).toBe('1 item da lista com preço');
+  });
+
+  it('a estimativa conta os itens que saem pela marca mais barata, só com o mercado escolhido', () => {
+    const list = [arroz(), { ...arroz('Arroz Tio João'), id: 'b' }];
+    const chosen = estimateList(list, PRICES, { ...sources(), storeId: 'dia' });
+    expect(chosen.brandCount).toBe(1);
+    expect(estimateList(list, PRICES, sources()).brandCount).toBe(0);
+    expect(describeEstimate({ ...chosen, brandCount: 1 }, 'Dia')).toBe('Lugar escolhido: Dia. Todos os itens têm preço; 1 sai pela marca mais barata de lá.');
+    expect(describeEstimate({ ...chosen, brandCount: 2 }, 'Dia')).toBe('Lugar escolhido: Dia. Todos os itens têm preço; 2 saem pela marca mais barata de lá.');
+    expect(describeEstimate({ ...chosen, brandCount: 1 }, null)).not.toContain('marca');
+    const assai = estimateList([arroz()], PRICES, { ...sources(), storeId: 'assai' });
+    expect(describeEstimate(assai, 'Assaí')).toBe(
+      'Lugar escolhido: Assaí. Todos os itens têm preço; 1 sai pela marca mais barata de lá; R$ 19,90 do total é de 1 item com preço de outras casas.',
+    );
+    expect(estimateMarker(assai, 'Assaí')).toBe('Lugar escolhido: Assaí · 1 item pela marca mais barata · inclui preços de outras casas');
+    expect(estimateMarker({ brandCount: 2 }, 'Dia')).toBe('Lugar escolhido: Dia · 2 itens pela marca mais barata');
+    expect(estimateMarker({ brandCount: 2 }, null)).toBeNull();
+  });
+
+  describe('os detalhes do item e a linha do "Onde comprar"', () => {
+    const facts = (estimate: ItemEstimate, chosenStore: string, canPreferBrand = true) =>
+      itemFacts(estimate, undefined, {
+        storeName: (storeId) => STORE_NAMES[storeId],
+        chosenStore,
+        today: '2026-11-22',
+        productName: (productId) => [...PRODUCTS, { id: 'c2', name: 'Arroz Camil 2kg' }].find((product) => product.id === productId)?.name,
+        category: 'graos',
+        canPreferBrand,
+      });
+    const note = (list: EstimateItem, storeId: string, from = sources(), prices = PRICES) =>
+      storePriceNote(listStorePrices([list], prices, from)('a', storeId)!, (productId) => PRODUCTS.find((product) => product.id === productId)?.name, 2026);
+    const week = seenLabel({ seenWeek: '2026-11-09' }, 2026);
+
+    it('a marca da casa: qual, por kg, o pacote, de onde; quanto sai o de sempre; os pacotes maiores; como ficar com o de sempre', () => {
+      expect(facts(at(arroz(), 'dia'), 'dia')).toEqual([
+        'Último preço: R$ 24,90/un (Assaí, 10 nov).',
+        'Menor preço: R$ 5,49/un (Dia, 3 nov).',
+        'Mais barato aqui: Arroz Camil 1kg, R$ 4,49/kg, 1 kg por R$ 4,49 (Dia, 15 nov).',
+        'O de sempre (Arroz Tio João 5kg) sai R$ 5,49/kg aqui.',
+        BRAND_OPT_OUT,
+        `Por kg, o mais barato aqui é Arroz Prato Fino 5kg, R$ 4,30/kg, 5 kg por R$ 21,50 (de outras casas, ${week}), mas a conta fica com o tamanho de sempre.`,
+      ]);
+      // Sem a "Marca preferida" para escolher (o item sem produto já diz "Qualquer marca serve."), sem o como.
+      expect(facts(at(arroz(), 'dia'), 'dia', false)).not.toContain(BRAND_OPT_OUT);
+      expect(note(arroz(), 'dia')).toBe('Mais barato aqui: Arroz Camil 1kg');
+    });
+
+    it('a marca da casa vista em outras casas, e a que só outras casas compraram ("outra marca", sem a descrição)', () => {
+      expect(facts(at(arroz('Arroz 5kg'), 'dia', sources(KEYS_5KG)), 'dia')).toEqual([
+        'Último preço: R$ 24,90/un (Assaí, 10 nov).',
+        'Menor preço: R$ 5,49/un (Dia, 3 nov).',
+        `Mais barato aqui: Arroz Prato Fino 5kg, R$ 4,30/kg, 5 kg por R$ 21,50 (de outras casas, ${week}).`,
+        'O de sempre (Arroz Tio João 5kg) sai R$ 5,49/kg aqui.',
+        BRAND_OPT_OUT,
+        SHARED_PRICES_NOTICE,
+      ]);
+      expect(note(arroz('Arroz 5kg'), 'dia', sources(KEYS_5KG))).toBe(`Mais barato aqui: Arroz Prato Fino 5kg, de outras casas, ${week}`);
+      const open = facts(at(arroz(), 'assai'), 'assai');
+      expect(open.slice(2)).toEqual([
+        `Mais barato aqui: outra marca, R$ 3,98/kg, 5 kg por R$ 19,90 (de outras casas, ${week}).`,
+        KEY_BRAND_FACT,
+        'O de sempre (Arroz Tio João 5kg) sai R$ 4,98/kg aqui.',
+        BRAND_OPT_OUT,
+        SHARED_PRICES_NOTICE,
+      ]);
+      // Nada da base aberta do item sem preço: este não é o preço de "qualquer marca".
+      expect(open).not.toContain(OPEN_PRICE_FACT);
+      expect(note(arroz(), 'assai')).toBe(`Mais barato aqui: outra marca, de outras casas, ${week}`);
+      expect(brandTileText(at(arroz(), 'assai'))).toBe('outra marca');
+      expect(brandSpoken(at(arroz(), 'assai'))).toBe('pela marca mais barata: outra marca, de outras casas');
+      expect(brandSpoken(at(arroz('Arroz 5kg'), 'dia', sources(KEYS_5KG)))).toBe('pela marca mais barata: Arroz Prato Fino 5kg, de outras casas');
+      expect(brandTileText(at(arroz(), 'dia'))).toBe('Camil 1kg');
+      expect(brandSpoken(at(arroz(), 'dia'))).toBe('pela marca mais barata: Arroz Camil 1kg');
+    });
+
+    it('o de sempre que sairia pelo nível de preço, e os 5 pacotes do de sempre quando ninguém vence', () => {
+      const prices = [own('tj', 'assai', 24.9, 'ARROZ T1 TIO JOAO 5KG', '10'), own('cm', 'dia', 4.49, 'ARROZ CAMIL T1 1KG', '15')];
+      const estimated = estimateList([arroz()], prices, { products: PRODUCTS, storeId: 'dia' }).byItem.get('a')!;
+      // 5 kg: o pacote do de sempre, mesmo estimado.
+      expect(estimated).toMatchObject({ cost: 22.45, brand: { usual: { source: 'estimated' } }, perBase: { packages: 5, sayQuantity: true } });
+      expect(facts(estimated, 'dia')).toContain('O de sempre (Arroz Tio João 5kg) sairia cerca de R$ 4,98/kg aqui, pelo nível de preço de lá.');
+      expect(facts(estimated, 'dia')).toContain('A conta usa 5 kg: 5 pacotes de 1 kg.');
+      expect(brandTileText(estimated)).toBe('Camil 1kg ×5');
+      expect(brandSpoken(estimated)).toBe('pela marca mais barata: Arroz Camil 1kg, 5 pacotes');
+      const bare = sources([KEYS[1]], []);
+      const recosted = at(arroz('Arroz 5kg'), 'dia', bare);
+      expect(facts(recosted, 'dia')).toEqual([
+        'Último preço: R$ 24,90/un (Assaí, 10 nov).',
+        'Menor preço: R$ 5,49/un (Dia, 3 nov).',
+        'Preço usado na conta: R$ 5,49/un (Dia, 3 nov).',
+        'A conta usa 5 kg: 5 pacotes de 1 kg.',
+      ]);
+      expect(note(arroz('Arroz 5kg'), 'dia', bare)).toBe('5 pacotes de 1 kg');
+      expect(brandTileText(recosted)).toBeNull();
+    });
+
+    it('o item digitado sem produto: o produto da casa do mesmo item, dito e com "~"', () => {
+      const typed = { ...item('a', 'Arroz', null), category: 'graos' };
+      const lastPaid = estimateList([typed], PRICES, { products: PRODUCTS }).byItem.get('a')!;
+      // O comprado por último entre os da mesma chave: o Camil, de 15 nov.
+      expect(lastPaid).toMatchObject({ productId: 'cm', sameItem: true, cost: 4.49 });
+      expect(formatItemCost(lastPaid)).toBe('~R$ 4,49');
+      expect(facts(lastPaid, 'dia')).toContain('A lista não diz o produto: a conta usa Arroz Camil 1kg, o mesmo item que a casa comprou por último.');
+      expect(storePriceNote(listStorePrices([typed], PRICES, { products: PRODUCTS, cheaperBrands: true })('a', 'dia')!, (id) => PRODUCTS.find((p) => p.id === id)?.name)).toBe(
+        'Preço de Arroz Camil 1kg, o mesmo item',
+      );
+      // Com ligação, ou com um produto de mesmo nome, vale o de sempre; "Leite" não é o "Leite integral" da casa.
+      expect(estimateList([typed], PRICES, { products: PRODUCTS, links: new LinkIndex([{ name_key: 'arroz', product_id: 'tj' }]) }).byItem.get('a')).toMatchObject({ productId: 'tj' });
+      expect(
+        estimateList([{ ...item('l', 'Leite', null), category: 'laticinios' }], [own('li', 's', 4.5, null, '10')], {
+          products: [{ id: 'li', name: 'Leite Integral Italac 1L', category: 'laticinios' }],
+        }).byItem.has('l'),
+      ).toBe(false);
+    });
+  });
+
+  it('planPriceCounts: as quatro partes somam os conhecidos, e outra marca nunca é "preço real"', () => {
+    const list = [arroz(), { ...item('b', 'Feijão', 'fj'), category: 'graos' }];
+    const prices = [...PRICES, own('fj', 'dia', 8, null, '10'), own('fj', 'assai', 8.5, null, '10')];
+    const priceAt = listStorePrices(list, prices, sources());
+    const [plan] = recommendStores(
+      list.map((one) => ({ key: one.id, productId: one.productId, quantity: one.quantity, unit: one.unit })),
+      prices,
+      1,
+      { storeIndex: storePriceIndex(prices), priceAt },
+    ).plans;
+    const counts = planPriceCounts(plan.assignments, priceAt);
+    expect(counts).toEqual({ real: 1, otherProduct: 0, cheaperBrand: 1, shared: 0, anyShared: false });
+    expect(counts.real + counts.otherProduct + counts.cheaperBrand + counts.shared).toBe(plan.knownCount);
+    expect(planPriceCounts([{ itemKey: 'a', storeId: 'assai', kind: 'known' }], priceAt)).toEqual({
+      real: 0,
+      otherProduct: 0,
+      cheaperBrand: 1,
+      shared: 0,
+      anyShared: true,
+    });
+  });
+
+  it('brandSearchItems: os itens que procuram outras marcas, com as quantidades, as descrições e as marcas da casa', () => {
+    const aliases = [
+      { alias: 'ARROZ T1 TIO JOAO 5KG', product_id: 'tj' },
+      { alias: 'ARROZ PRATO FINO T1 5KG', product_id: 'pf' },
+      { alias: 'FEIJAO CARIOCA KICALDO 1KG', product_id: 'fj' },
+    ];
+    const products = [...PRODUCTS, { id: 'fj', name: 'Feijão Carioca Kicaldo 1kg', category: 'graos' }];
+    const list = [arroz(), { ...arroz('Arroz 5kg'), id: 'b' }, { ...arroz('Arroz', { brandPreferred: true }), id: 'c' }, { ...item('d', 'Pão', null), category: 'padaria' }];
+    const found = brandSearchItems(list, PRICES, { products, shared: SHARED }, aliases);
+    expect(found.map((one) => one.id)).toEqual(['a', 'b']);
+    expect(found[0]).toMatchObject({
+      referenceKey: 'i:arroz',
+      referenceName: 'Arroz Tio João 5kg',
+      base: 'kg',
+      // Os pacotes do de sempre (5 kg no Assaí, 1 kg no Dia).
+      amounts: [1, 5],
+      excludedKeys: ['ARROZ PRATO FINO T1 5KG', 'ARROZ T1 TIO JOAO 5KG'],
+      houseHeads: ['camil', 'prato', 'tio'],
+      brandPreferred: false,
+    });
+    // A lista diz 5 kg.
+    expect(found[1].amounts).toEqual([5]);
+    // Sem os produtos, ninguém procura.
+    expect(brandSearchItems(list, PRICES, { shared: SHARED }, aliases)).toEqual([]);
+  });
+
+  it('a estimativa com o mercado escolhido e o "Onde comprar" dão a mesma resposta de outra marca', () => {
+    const list = [arroz(), { ...arroz('Arroz 5kg'), id: 'b' }];
+    const from = { ...sources(), brandKeys: new Map([['a', KEYS], ['b', KEYS_5KG]]) };
+    const priceAt = listStorePrices(list, PRICES, from);
+    for (const storeId of ['assai', 'dia']) {
+      const estimate = estimateList(list, PRICES, { ...from, storeId });
+      for (const one of list) {
+        const answer = priceAt(one.id, storeId)!;
+        const cost = estimate.byItem.get(one.id)!;
+        expect({ ...answer, last: cost.last, lowest: cost.lowest }).toEqual({ ...cost, source: answer.source });
+        expect(answer.brand).toBeDefined();
+      }
+    }
   });
 });

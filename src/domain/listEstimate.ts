@@ -57,6 +57,7 @@ import { MAX_WEIGHT_KG } from './receiptWeight';
 import { SAME_TRIP_DAYS } from './restock';
 import {
   brandFreeItemKey,
+  itemFits,
   OPEN_PRICE_FACT,
   openPriceItem,
   openSizeFact,
@@ -452,8 +453,9 @@ function comparablePrices(prices: readonly EstimatePrice[]): EstimatePrice[] {
  * item sem marca que não diz produto nenhum (sem produto, sem ligação e sem
  * produto de mesmo nome: "Arroz" digitado) fica com o produto da casa do mesmo
  * item (a mesma chave de genericItem, com os tipos: "Leite" não é o "Leite
- * integral" da casa) comprado mais recentemente, e só com os preços dele
- * (`sameItem`). Item sem preço nenhum não tem produto.
+ * integral" da casa; e o `mesmo` da revisão da nota, sem marca de outro
+ * produto: não o "Arroz Quebrado") comprado mais recentemente, e só com os
+ * preços dele (`sameItem`). Item sem preço nenhum não tem produto.
  */
 function itemResolver(prices: readonly EstimatePrice[], { links, products, cheaperBrands }: PriceSources) {
   const productList = products ?? [];
@@ -480,6 +482,7 @@ function itemResolver(prices: readonly EstimatePrice[], { links, products, cheap
     return pricedByKey.get(key) ?? [];
   };
   const sameItemOn = cheaperBrands !== false && products !== undefined;
+  const productById = new Map(productList.map((product) => [product.id, product]));
 
   /** Os produtos que podem cumprir o item quando o dele não tem preço: os que já cumpriram esse nome nas notas e o de mesmo nome. */
   const candidates = (item: Pick<EstimateItem, 'name'>): string[] => {
@@ -493,8 +496,17 @@ function itemResolver(prices: readonly EstimatePrice[], { links, products, cheap
     if (!all.length) all = candidates(item).flatMap((productId) => byProduct.get(productId) ?? []);
     if (!all.length) {
       // O item digitado sem marca que não diz produto nenhum: o produto da casa do mesmo item comprado por último, só ele.
+      // Só o mesmo item de verdade: a chave igual e o `mesmo` da revisão da nota, sem marca de outro produto que a lista
+      // não diga (o "Arroz Quebrado" da casa tem a chave do arroz, e não é o "Arroz" da lista).
       const key = sameItemOn && !item.productId && !candidates(item).length ? brandFreeItemKey(item) : null;
-      const same = key ? sameItemProducts(key).flatMap((productId) => byProduct.get(productId) ?? []) : [];
+      const same = key
+        ? sameItemProducts(key)
+            .filter((productId) => {
+              const product = productById.get(productId);
+              return product != null && itemFits(item, { name: product.name, category: product.category ?? null });
+            })
+            .flatMap((productId) => byProduct.get(productId) ?? [])
+        : [];
       if (!same.length) return null;
       const { productId } = newest(same);
       const own = same.filter((quote) => quote.productId === productId);

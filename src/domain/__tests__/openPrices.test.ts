@@ -9,6 +9,8 @@ import {
   CAN_IS_THE_PACKAGE,
   COOKED_IS_THE_USUAL,
   CURED_HAM_WORDS,
+  EXTRA_SEARCH_CALLS,
+  itemFits,
   keyFit,
   keyPackageSize,
   LT_IS_THE_CAN,
@@ -165,6 +167,29 @@ describe('a busca (passo 1)', () => {
     expect(plan.entryOf.size).toBe(OPEN_MAX_ENTRIES * OPEN_MAX_CALLS);
     const shuffled = openSearchPlan([...items].reverse());
     expect(shuffled.calls.map((call) => call.map((entry) => entry.signature))).toEqual(plan.calls.map((call) => call.map((entry) => entry.signature)));
+  });
+
+  it('as buscas da troca de marca (extra) vêm depois, sem mudar as da base aberta, e a mesma busca é uma só', () => {
+    const open = [item('a', 'Leite', 'laticinios'), item('b', 'Feijão preto', 'graos')];
+    const alone = openSearchPlan(open);
+    const extra = [item('x', 'Leite', 'laticinios'), item('y', 'Arroz', 'graos'), item('z', 'Café', 'cafe_cha')];
+    const plan = openSearchPlan(open, extra);
+    expect(plan.calls.slice(0, alone.calls.length)).toEqual(alone.calls);
+    // A busca igual a uma da base aberta é a mesma; as outras, numa chamada só delas.
+    expect(plan.entryOf.get('x')).toBe(alone.entryOf.get('a'));
+    expect(plan.calls).toHaveLength(alone.calls.length + 1);
+    expect(plan.calls.at(-1)!.map((entry) => plan.entryOf.get('y') === entry.signature || plan.entryOf.get('z') === entry.signature)).toEqual([true, true]);
+    for (const [id, signature] of alone.entryOf) expect(plan.entryOf.get(id)).toBe(signature);
+    // Sem itens da base aberta, só as de fora.
+    expect(openSearchPlan([], extra).calls).toHaveLength(1);
+  });
+
+  it('as buscas da troca de marca: no máximo EXTRA_SEARCH_CALLS chamadas; o item além disso fica sem busca', () => {
+    const names = Array.from({ length: OPEN_MAX_ENTRIES * (EXTRA_SEARCH_CALLS + 1) }, (_, n) => `Leite ${'abcdefghij'[n % 10]}${'abcdefghijklmnopq'[Math.floor(n / 10)]}`);
+    const extra = names.map((name, n) => item(`e${n}`, name, 'laticinios'));
+    const plan = openSearchPlan([item('a', 'Arroz', 'graos')], extra);
+    expect(plan.calls).toHaveLength(1 + EXTRA_SEARCH_CALLS);
+    expect(plan.entryOf.size).toBe(1 + OPEN_MAX_ENTRIES * EXTRA_SEARCH_CALLS);
   });
 
   it('a assinatura dos itens não muda com o carrinho, e muda com o que a busca usa', () => {
@@ -445,6 +470,23 @@ describe('o mesmo item: as descrições que ficam', () => {
     ] as const) {
       expect([name, description, keyFit({ name, category }, description)]).toEqual([name, description, true]);
     }
+  });
+});
+
+describe('o nome de um produto como o mesmo item (itemFits, a troca de marca)', () => {
+  it('é o mesmo de keyFit para o nome lido, e as marcas do produto de sempre também valem, todas', () => {
+    const leite = { name: 'Leite', category: 'laticinios' };
+    expect(itemFits(leite, { name: 'LEITE UHT SEMI 1L', category: 'laticinios' })).toBe(true);
+    expect(itemFits(leite, { name: 'LEITE CABRA 1L', category: 'laticinios' })).toBe(false);
+    // A casa compra o de cabra: o de cabra vale, e só ele.
+    expect(itemFits(leite, { name: 'LEITE CABRA 1L', category: 'laticinios' }, 'Leite Cabra Caprilat 1L')).toBe(true);
+    expect(itemFits(leite, { name: 'LEITE UHT SEMI 1L', category: 'laticinios' }, 'Leite Cabra Caprilat 1L')).toBe(false);
+    // O de sempre sem marca de outro produto não abre nenhuma.
+    expect(itemFits({ name: 'Arroz', category: 'graos' }, { name: 'Arroz Quebrado Kicaldo 5kg', category: 'graos' }, 'Arroz Tio João 5kg')).toBe(false);
+    // O cru do presunto vale nos dois sentidos, também vindo do de sempre.
+    const presunto = { name: 'Presunto', category: 'frios' };
+    expect(itemFits(presunto, { name: 'PRESUNTO PARMA FATIADO 100G', category: 'frios' }, 'Presunto Parma Sadia 100g')).toBe(true);
+    expect(itemFits(presunto, { name: 'PRESUNTO COZIDO SADIA KG', category: 'frios' }, 'Presunto Parma Sadia 100g')).toBe(false);
   });
 });
 

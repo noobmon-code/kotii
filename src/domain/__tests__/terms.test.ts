@@ -72,6 +72,14 @@ describe('termos de uso', () => {
     expect(prices).toContain('quantos vêm na embalagem, quando você responde');
   });
 
+  it('a marca mais barata: a base também compara as marcas do item sem marca, por kg ou litro, e a de fora é "outra marca"', () => {
+    expect(TERMS_VERSION).toBe('2026-11-22');
+    const prices = section('Preços compartilhados');
+    expect(prices).toContain('No item sem marca da lista, com o mercado escolhido e no "Onde comprar"');
+    expect(prices).toContain('por kg ou por litro');
+    expect(prices).toContain('aparece como "outra marca"');
+  });
+
   it('não promete o que não cumpre: na semana em que só uma casa comprou num mercado, os preços contam o que ela comprou', () => {
     const prices = section('Preços compartilhados');
     expect(prices).toContain('Ninguém vê de qual casa veio um preço');

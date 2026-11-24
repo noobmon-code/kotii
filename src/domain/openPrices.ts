@@ -764,8 +764,8 @@ export function openGroupCalls(groups: readonly OpenGroup[]): OpenGroup[][] {
  * esperado das linhas por unidade (`p`), sempre dentro do que o banco aceita (basePackSize: um "1 x" ou um tamanho
  * fora dos limites faria o banco recusar a chamada inteira, de até 40 grupos).
  */
-export function openGroupArgument(
-  group: Pick<OpenGroup, 'keys' | 'weightOnly' | 'expected'> & Partial<OpenGroup>,
+export function openGroupArgument<G extends Pick<OpenGroup, 'keys' | 'weightOnly' | 'expected'>>(
+  group: G,
 ): { k: string[]; w?: string[]; p?: { u: string; a: number; o?: number } } {
   const size = group.keys.length ? basePackSize(group.expected) : null;
   return {

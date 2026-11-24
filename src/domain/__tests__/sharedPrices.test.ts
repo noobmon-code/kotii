@@ -547,11 +547,28 @@ describe('o preço por unidade de fora na lista e no "Onde comprar" (fitsHouseho
     expect(quotes.map((quote) => quote.storeName)).toEqual(['Caixa']);
   });
 
-  it('sem tamanho e dentro da faixa, sharedQuotes dá o mesmo de antes', () => {
-    const seen = [shared(SUPER, 21.5, '2026-11-15'), shared(ATACADAO, 22.9, '2026-11-15', { mine: true })];
+  it('sem tamanho e dentro da faixa, sharedQuotes dá o mesmo de antes, mais o tamanho (`pack`) quando a linha o diz', () => {
+    const seen = [shared(SUPER, 21.5, '2026-11-15', { pack_unit: 'kg', pack_amount: 5 }), shared(ATACADAO, 22.9, '2026-11-15', { mine: true })];
     const mine = [own('mercadinho', 24.9, at)];
-    expect(sharedQuotes(seen, mine, STORES)).toEqual(sharedQuotes(seen.map((row) => ({ ...row, pack_unit: null, pack_amount: null, pack_of: null })), mine, STORES));
-    expect(sharedQuotes(seen, mine, STORES).map((quote) => quote.unitPrice)).toEqual([21.5, 22.9]);
+    const bare = sharedQuotes(seen.map((row) => ({ ...row, pack_unit: null, pack_amount: null, pack_of: null })), mine, STORES);
+    const quotes = sharedQuotes(seen, mine, STORES);
+    expect(quotes.map(({ pack: _pack, ...rest }) => rest)).toEqual(bare.map(({ pack: _pack, ...rest }) => rest));
+    expect(quotes.map((quote) => quote.pack?.label ?? null)).toEqual(['5 kg', null]);
+    expect(bare.every((quote) => quote.pack === null)).toBe(true);
+    expect(quotes.map((quote) => quote.unitPrice)).toEqual([21.5, 22.9]);
+  });
+
+  it('dois tamanhos do mesmo produto no mesmo mercado são dois preços (a troca de marca compara os dois)', () => {
+    const seen = [
+      shared(SUPER, 21.5, '2026-11-15', { pack_unit: 'kg', pack_amount: 5 }),
+      shared(SUPER, 4.79, '2026-11-15', { pack_unit: 'kg', pack_amount: 1 }),
+      // O mesmo tamanho, de uma semana mais velha: sai, como antes.
+      shared(SUPER, 4.5, '2026-11-08', { pack_unit: 'kg', pack_amount: 1 }),
+    ];
+    expect(sharedQuotes(seen, [], STORES).map((quote) => [quote.unitPrice, quote.pack?.label])).toEqual([
+      [4.79, '1 kg'],
+      [21.5, '5 kg'],
+    ]);
   });
 });
 

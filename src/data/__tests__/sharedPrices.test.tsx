@@ -4,6 +4,7 @@ import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react
 import { useState } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
+import type { BrandSearchItem } from '@/domain/cheaperBrand';
 import { openSearchPlan, type OpenGroup, type OpenSearchItem } from '@/domain/openPrices';
 import { SHARING_ABOUT, SHARING_SUMMARY, SHARING_TITLE, type SharedPrice } from '@/domain/sharedPrices';
 import { SharedPricesAbout } from '@/features/SharedPrices';
@@ -588,6 +589,85 @@ describe('a base aberta (shared_item_keys e shared_item_prices)', () => {
     await act(async () => paused.renderer.unmount());
     pausedClient.clear();
     offlineNow.mockRestore();
+  });
+
+  describe('as marcas que só outras casas compraram (a troca de marca)', () => {
+    const brandArroz: BrandSearchItem = {
+      id: 'b',
+      name: 'Arroz',
+      category: 'graos',
+      quantity: 1,
+      unit: 'un',
+      brandPreferred: false,
+      referenceKey: 'i:arroz',
+      referenceName: 'Arroz Tio João 5kg',
+      base: 'kg',
+      amounts: [5],
+      excludedKeys: [],
+      houseHeads: ['tio'],
+    };
+    /** O gancho com os itens da base aberta e os da troca de marca. */
+    async function brandHook(queryClient: QueryClient, items: OpenSearchItem[] | null, brandItems: BrandSearchItem[] | null) {
+      const seen: OpenSharedPrices[] = [];
+      function Probe() {
+        seen.push(useOpenSharedPrices(items, STORES, brandItems));
+        return null;
+      }
+      const renderer = await mount(Probe, queryClient, () => false);
+      for (let turn = 0; turn < 20; turn++) await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+      return { seen, renderer };
+    }
+
+    it('as buscas e os grupos das marcas vêm depois dos da base aberta, e dão os preços por kg nos mercados da casa', async () => {
+      mockRpc.answer = answering;
+      mockRpc.called = [];
+      mockRpc.args = [];
+      const queryClient = newClient();
+      const { seen, renderer } = await brandHook(queryClient, [leite], [brandArroz]);
+      expect(mockRpc.called).toEqual(['shared_item_keys', 'shared_item_keys', 'shared_item_prices', 'shared_item_prices']);
+      // A primeira chamada de cada passo é a da base aberta, sozinha (a mesma de sem as marcas).
+      const [openKeys, brandKeys, openPrices, brandPrices] = mockRpc.args as { p_items?: { f: string[] }[]; p_groups?: { k: string[] }[] }[];
+      expect(openKeys.p_items!.map((entry) => entry.f.includes('LEITE'))).toEqual([true]);
+      expect(brandKeys.p_items!.map((entry) => entry.f.includes('ARROZ'))).toEqual([true]);
+      expect(openPrices.p_groups!.map((group) => group.k)).toEqual([['LEITE INT ITALAC 1L']]);
+      expect(brandPrices.p_groups).toEqual([{ k: ['ARROZ CAMIL 5KG'], p: { u: 'kg', a: 5 } }]);
+      const last = seen.at(-1)!;
+      expect([...last.quotes.keys()]).toEqual(['l']);
+      expect(last.brandQuotes.get('b')).toEqual([
+        expect.objectContaining({ storeId: 'meu', referenceKey: 'i:arroz', price: expect.objectContaining({ base: 'kg', perBase: 4 }) }),
+      ]);
+      expect(last.brandQuotes.get('b')![0].quote.open).toBeUndefined();
+      expect(last.waiting).toBe(false);
+      await act(async () => renderer.unmount());
+      // O "Onde comprar", com os mesmos itens: nada de novo.
+      const calls = [...mockRpc.called];
+      const again = await brandHook(queryClient, [leite], [brandArroz]);
+      expect(mockRpc.called).toEqual(calls);
+      expect(again.seen.at(-1)!.brandQuotes.get('b')).toHaveLength(1);
+      await act(async () => again.renderer.unmount());
+      queryClient.clear();
+    });
+
+    it('`waiting` espera também as chamadas das marcas; sem as funções no banco, nenhuma marca e nada espera', async () => {
+      let release: (value: { data: unknown; error: unknown }) => void = () => undefined;
+      mockRpc.answer = () => new Promise((resolve) => (release = resolve));
+      const queryClient = newClient();
+      const { seen, renderer } = await brandHook(queryClient, null, [brandArroz]);
+      expect(seen.at(-1)?.waiting).toBe(true);
+      await act(async () => release({ data: null, error: offline }));
+      for (let turn = 0; turn < 10; turn++) await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+      expect(seen.at(-1)?.waiting).toBe(false);
+      await act(async () => renderer.unmount());
+      queryClient.clear();
+
+      mockRpc.answer = () => ({ data: null, error: { code: 'PGRST202', message: 'Could not find the function public.shared_item_keys' } });
+      const missingClient = newClient();
+      const missing = await brandHook(missingClient, [leite], [brandArroz]);
+      expect(missing.seen.at(-1)).toMatchObject({ waiting: false });
+      expect(missing.seen.at(-1)!.brandQuotes.size).toBe(0);
+      await act(async () => missing.renderer.unmount());
+      missingClient.clear();
+    });
   });
 
   it('fora do cache guardado no aparelho, e nas invalidações dos preços de outras casas (o prefixo)', async () => {

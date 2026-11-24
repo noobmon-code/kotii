@@ -94,14 +94,25 @@ export type StorePriceSourceName =
   /** O mercado não tem o item nas notas: sai do nível de preço dele. */
   | 'estimated';
 
+const SIZES = new Map<string, PackageSize | null>();
+const SIZES_LIMIT = 5000;
+
 /**
  * O tamanho de um preço da casa, pela descrição da nota (latest_prices.raw_description): a leitura estrita
  * (sharedPackageSize, a mesma de quando o tamanho vai para a base) e só peso ou volume de um pacote (plainSize).
  * null sem descrição ou na dúvida ("CERV 350ML C/12", "OVOS C/12").
  */
 export function quoteSize(description: string | null | undefined): PackageSize | null {
-  return description ? plainSize(sharedPackageSize(description)) : null;
+  if (!description) return null;
+  // A conta lê as mesmas descrições a cada mercado e a cada item: a leitura fica guardada.
+  const known = SIZES.get(description);
+  if (known !== undefined) return known;
+  const size = plainSize(sharedPackageSize(description));
+  if (SIZES.size >= SIZES_LIMIT) SIZES.clear();
+  SIZES.set(description, size);
+  return size;
 }
+
 
 /**
  * A chave sem marca do item da lista que pode sair por outra marca (genericItem: "i:arroz"), ou null: "Marca

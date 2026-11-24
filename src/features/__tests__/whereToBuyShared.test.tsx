@@ -400,3 +400,84 @@ describe('"Onde comprar" com a base aberta (o item que a casa nunca comprou)', (
     expect(page).not.toContain('Só há preços de outras casas');
   });
 });
+
+describe('"Onde comprar" com a marca mais barata de cada mercado', () => {
+  const grain = (id: string, name: string) => ({ id, name, category: 'graos', shelf_life_days: null }) as Product;
+  const bought = (product_id: string, store_id: string, unit_price: number, raw_description: string | null = null): LatestPrice => ({
+    product_id,
+    store_id,
+    unit: 'un',
+    unit_price,
+    purchased_at: `${day(10)}T12:00:00-03:00`,
+    ...(raw_description ? { raw_description } : {}),
+  });
+  const kicaldo = (storeId: string, price: number) => ({
+    storeId,
+    group: 'ARROZ BRANCO T1 KICALDO 5KG\n#kg|5|',
+    referenceKey: 'i:arroz',
+    price: { base: 'kg' as const, perBase: Math.round((price / 5) * 1e8) / 1e8, pack: { unit: 'kg' as const, amount: 5, label: '5 kg' }, packagePrice: price },
+    quote: {
+      productId: null,
+      storeId,
+      storeCnpj: storeId === 'assai' ? ASSAI : DIA,
+      storeName: storeId === 'assai' ? 'Assaí' : 'Dia',
+      state: null,
+      mine: true,
+      unit: 'un',
+      unitPrice: price,
+      seenWeek: sharedWeekStart(day(3)),
+      pack: { unit: 'kg' as const, amount: 5, label: '5 kg' },
+    },
+  });
+
+  beforeEach(() => {
+    mockQueries.products = loaded([...PRODUCTS, grain('tj', 'Arroz Tio João 5kg'), grain('pf', 'Arroz Prato Fino 5kg'), grain('cm', 'Arroz Camil 1kg'), grain('mac', 'Macarrão')]);
+    mockQueries.prices = loaded([
+      bought('tj', 'assai', 24.9, 'ARROZ T1 TIO JOAO 5KG'),
+      bought('tj', 'dia', 5.49, 'ARROZ T1 TIO JOAO 1KG'),
+      bought('pf', 'assai', 22.9, 'ARROZ PRATO FINO T1 5KG'),
+      bought('cm', 'dia', 4.49, 'ARROZ CAMIL T1 1KG'),
+      bought('feijao', 'assai', 8),
+      bought('mac', 'assai', 5),
+      bought('mac', 'dia', 5),
+    ]);
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'tj'), listItem('f', 'Feijão', 'feijao'), listItem('m', 'Macarrão', 'mac')]);
+    mockQueries.aliases = loaded([{ alias: 'ARROZ T1 TIO JOAO 5KG', product_id: 'tj' }]);
+  });
+
+  it('a linha diz a marca, os selos somam os preços do plano e o ranking diz quantos saíram pela marca mais barata', async () => {
+    mockQueries.shared = loaded([seen('feijao', DIA, 7.5, 3, { mine: true }), seen('tj', FORA, 21, 2)]);
+    mockOpen.brandQuotes = new Map([['a', [kicaldo('assai', 19.9)]]]);
+    const page = await mount();
+    // Dia: Camil R$ 4,49 + feijão de outras casas R$ 7,50 + macarrão R$ 5,00 = R$ 16,99.
+    expect(page).toContain('Melhor opção\nDia\nR$ 16,99');
+    expect(page).toContain('Arroz\nMais barato aqui: Arroz Camil 1kg\n~R$ 4,49');
+    // Os selos somam os 3 preços conhecidos do plano: 1 real, 1 de outras casas, 1 pela marca mais barata.
+    expect(page).toContain('1 preços reais\n1 de outras casas\n1 pela marca mais barata');
+    expect(page).toMatch(/· 1 com preço real · 1 de outras casas · 1 pela marca mais barata\nR\$ 16,99/);
+    // No Assaí, a outra marca que só outras casas compraram: R$ 19,90 + 8 + 5.
+    expect(page).toMatch(/· 2 com preço real · 1 pela marca mais barata\nR\$ 32,90/);
+    expect(page).toContain(SHARED_PRICES_NOTICE);
+    // "Em outros mercados" como antes: o preço de lá, e o do plano (o da marca mais barata).
+    expect(page).toContain('1 item da lista por ~R$ 21,00; no plano acima, R$ 4,49');
+    // A busca das marcas saiu, com o de sempre e as descrições da casa.
+    expect(mockOpen.brandAsked.at(-1)?.map((entry) => [entry.id, entry.referenceKey, entry.excludedKeys])).toEqual([['a', 'i:arroz', ['ARROZ T1 TIO JOAO 5KG']]]);
+  });
+
+  it('a outra marca que só outras casas compraram: "outra marca", de outras casas, com a semana, e o aviso', async () => {
+    mockQueries.items = loaded([listItem('a', 'Arroz 5kg', 'tj')]);
+    mockOpen.brandQuotes = new Map([['a', [kicaldo('assai', 19.9)]]]);
+    const page = await mount();
+    // 5 kg em todo mercado: no Dia, 5 pacotes de 1 kg do de sempre (R$ 27,45) ou do Camil não entram (a lista diz 5 kg).
+    expect(page).toContain('Melhor opção\nAssaí\nR$ 19,90');
+    expect(page).toContain(`Mais barato aqui: outra marca, de outras casas, visto na semana de ${week(3)}`);
+    expect(page).toContain('0 preços reais\n1 pela marca mais barata');
+    expect(page).toContain('R$ 27,45');
+    expect(page).toContain(SHARED_PRICES_NOTICE);
+  });
+
+  it('a primeira leitura das descrições da casa ainda anda: espera, para o total não mudar logo depois', async () => {
+    mockQueries.aliases = onTheWay();
+    expect(await mount()).toContain('Comparando preços…');
+  });
+});
