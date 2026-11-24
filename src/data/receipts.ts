@@ -773,14 +773,17 @@ export const PACK_COUNT_NOT_READY = 'Ainda não dá para guardar quantos vêm na
 
 /**
  * Quantos vêm na embalagem do item (domain/packCount), a resposta da revisão. Vale também na nota confirmada:
- * não muda o valor, a quantidade nem a despensa, só o que o preço diz (cada ovo). `saved` falso é o item que
- * saiu da nota em outro aparelho.
+ * não muda o valor, a quantidade nem a despensa, só o que o preço diz (cada ovo). Vai o produto que a tela mostrava
+ * na linha (`productId`, null sem produto): na nota confirmada a linha pode ter passado para outro produto em outro
+ * aparelho ("Trocar produto", que tira a contagem do que não é ovo), e a contagem dos ovos dividiria o preço dele no
+ * histórico e na lista. `saved` falso é o item que saiu da nota, ou mudou de produto, em outro aparelho.
  */
 export function useSetReceiptItemPack(receiptId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, count }: { id: string; count: number }): Promise<{ saved: boolean }> => {
-      const result = await supabase.from('receipt_items').update({ pack_count: count }).eq('id', id).eq('receipt_id', receiptId).select('id');
+    mutationFn: async ({ id, productId, count }: { id: string; productId: string | null; count: number }): Promise<{ saved: boolean }> => {
+      const line = supabase.from('receipt_items').update({ pack_count: count }).eq('id', id).eq('receipt_id', receiptId);
+      const result = await (productId ? line.eq('product_id', productId) : line.is('product_id', null)).select('id');
       if (result.error && isMissingColumn(result.error, 'pack_count')) throw new Error(PACK_COUNT_NOT_READY);
       const rows = unwrap(result) as { id: string }[] | null;
       return { saved: Boolean(rows?.length) };

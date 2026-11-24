@@ -1080,7 +1080,8 @@ export default function ReceiptScreen() {
     if (refuseStale()) return false;
     if (refuseWhileSaving(item.id)) return false;
     void settleValue(
-      setPack.mutateAsync({ id: item.id, count }),
+      // Com o produto que a tela mostrava: a linha que passou para outro produto em outro aparelho não leva a contagem.
+      setPack.mutateAsync({ id: item.id, productId: item.product_id ?? null, count }),
       ({ saved }) => {
         // Sem a linha de volta, a resposta não gravou nada (a linha saiu ou mudou em outro aparelho): a pessoa fica sabendo.
         if (!saved) notify(PACK_LINE_CHANGED.title, PACK_LINE_CHANGED.message);
@@ -1094,6 +1095,10 @@ export default function ReceiptScreen() {
   /** A pergunta (ou o que já se sabe) de quantos vêm na embalagem do item, nos dois cartões. */
   function packPart(item: ReceiptItem, category: string, productName: string | null) {
     if (category !== 'ovos' || item.unit !== 'un') return null;
+    // Na nota confirmada, a linha cujo produto o catálogo ainda não tem (o criado agora por "Trocar produto", com os
+    // produtos ainda voltando) não pergunta: a categoria seria a da descrição ("OVOS BRANCOS" é ovo), e a linha pode
+    // estar em outro produto. A pergunta volta quando os produtos chegam, se ele for ovo.
+    if (!isDraft && item.product_id && !catalog.has(item.product_id)) return null;
     // Gravando, ou gravado sem a nota de volta: a pergunta e os chips não voltam no meio.
     if (savedUnshown.has(item.id) || writingIds.has(item.id)) return null;
     const count = packCountOf(item, productName);

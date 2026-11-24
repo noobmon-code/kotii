@@ -31,6 +31,15 @@
 -- receipt_item_id, também).
 create index pantry_items_receipt_item_idx on public.pantry_items (receipt_item_id) where receipt_item_id is not null;
 
+-- A linha incluída na nota já confirmada ("Item", add_confirmed_receipt_item): o texto é o que a pessoa digitou (começa
+-- com o nome do produto escolhido), e ela não ensinou apelido nem código. Trocar o produto dela não mexe em apelido:
+-- passaria para outro produto o apelido que uma nota impressa ensinou ("LEITE INTEGRAL", o nome de antes), ou criaria
+-- um do texto digitado. Só esta função marca; as outras linhas, lidas ou digitadas na revisão, passam pela
+-- confirmação, que ensina o apelido delas (falso, o padrão).
+alter table public.receipt_items add column added_after_confirmation boolean not null default false;
+comment on column public.receipt_items.added_after_confirmation is
+  'A linha entrou depois da confirmação (add_confirmed_receipt_item): o texto é da pessoa, e trocar o produto dela não move nem cria apelido.';
+
 -- =============================================================================
 -- 1. O app pergunta se este banco já tem as correções
 -- =============================================================================
@@ -162,9 +171,10 @@ begin
         pack_count = case when new_p.category = 'ovos' then item.pack_count end
     where id = item.id;
 
-  -- 7. O apelido: passa se ainda é do produto de antes; nasce se ninguém ensinou; o de um terceiro fica.
+  -- 7. O apelido: passa se ainda é do produto de antes; nasce se ninguém ensinou; o de um terceiro fica. A linha
+  -- incluída depois da confirmação não ensinou nenhum (o texto é da pessoa): nada passa nem nasce dela.
   v_key := public.normalize_alias(item.raw_description);
-  if v_key <> '' then
+  if v_key <> '' and not item.added_after_confirmation then
     if old_p.id is not null then
       update public.product_aliases a set product_id = new_p.id
         where a.household_id = r.household_id and a.alias = v_key and a.product_id = old_p.id;
@@ -393,11 +403,13 @@ begin
   end if;
 
   select coalesce(max(ri.position), -1) + 1 into v_position from public.receipt_items ri where ri.receipt_id = r.id;
-  -- Sem código, item genérico nem sugestão: o texto é da pessoa. Não ensina apelido, código nem validade.
+  -- Sem código, item genérico nem sugestão: o texto é da pessoa. Não ensina apelido, código nem validade, nem agora
+  -- nem quando o produto dela for trocado (added_after_confirmation).
   insert into public.receipt_items (
-    id, household_id, receipt_id, position, raw_description, product_id, quantity, unit, unit_price, total_price
+    id, household_id, receipt_id, position, raw_description, product_id, quantity, unit, unit_price, total_price,
+    added_after_confirmation
   ) values (
-    v_id, r.household_id, r.id, v_position, v_description, new_p.id, v_quantity, v_unit, v_unit_price, v_total
+    v_id, r.household_id, r.id, v_position, v_description, new_p.id, v_quantity, v_unit, v_unit_price, v_total, true
   );
 
   -- A despensa, como confirm_receipt: o congelador só com frozen_on (a linha "Congelei"), e a validade 'congelado' o
@@ -436,7 +448,7 @@ $$;
 comment on function public.receipt_corrections_available() is
   'O banco já tem as correções da nota confirmada ("Trocar produto" e "Item"): o app só as mostra quando responde true.';
 comment on function public.change_receipt_item_product(uuid, uuid, uuid, uuid, jsonb, jsonb, text) is
-  'Troca o produto de uma linha da nota confirmada: a linha, a despensa, o apelido e os códigos que ela ensinou passam para o produto escolhido. NK018 quando a linha já não está no produto esperado; NK019 quando a nota não está confirmada.';
+  'Troca o produto de uma linha da nota confirmada: a linha, a despensa, o apelido e os códigos que ela ensinou passam para o produto escolhido (a linha incluída depois da confirmação não ensinou apelido: nenhum passa nem nasce). NK018 quando a linha já não está no produto esperado; NK019 quando a nota não está confirmada.';
 comment on function public.add_confirmed_receipt_item(uuid, jsonb) is
   'Inclui na nota confirmada o item que a leitura perdeu, com valor, e põe na despensa quando pedido. O mesmo id de novo não cria outra linha (added falso, same diz se o pedido é o mesmo). NK019 quando a nota não está confirmada.';
 

@@ -11243,10 +11243,13 @@ declare
   bought constant date := (now() at time zone 'America/Sao_Paulo')::date - 2;
   r constant uuid := current_setting('test.cr_receipt')::uuid;
   feijao constant uuid := current_setting('test.cr_feijao')::uuid;
+  arroz constant uuid := current_setting('test.cr_arroz')::uuid;
+  map constant jsonb := current_setting('test.cr_map')::jsonb;
   x constant uuid := gen_random_uuid();
   y constant uuid := gen_random_uuid();
   z constant uuid := gen_random_uuid();
   w constant uuid := gen_random_uuid();
+  v constant uuid := gen_random_uuid();
   item jsonb;
   result jsonb;
   last_position integer;
@@ -11351,6 +11354,25 @@ begin
     assert sqlerrm = 'product not found', 'an unknown product (add): ' || sqlerrm;
   end;
   assert not exists (select 1 from public.receipt_items where raw_description in ('NO RASCUNHO', 'PRODUTO SUMIDO')), 'nothing was added';
+
+  -- 20b. Trocar o produto de uma linha incluída: ela não ensinou apelido (o texto é da pessoa), e nenhum passa nem nasce
+  -- dela. O texto que o app sugere é o nome do produto ("Feijão"), e o apelido FEIJAO que uma nota impressa ensinou ao
+  -- feijão fica com ele; o texto digitado de outra linha incluída não vira apelido do produto novo.
+  assert (select bool_and(added_after_confirmation) from public.receipt_items where id in (x, y, z, w)), 'the added lines are marked';
+  assert not exists (select 1 from public.receipt_items where receipt_id = r and position <= last_position and added_after_confirmation),
+    'the lines that came through the confirmation are not';
+  insert into public.product_aliases (alias, product_id) values (public.normalize_alias('Feijão'), feijao)
+    on conflict (household_id, alias) do update set product_id = excluded.product_id;
+  result := public.add_confirmed_receipt_item(r, jsonb_build_object('id', v, 'raw_description', 'Feijão', 'quantity', 1, 'unit', 'un',
+    'unit_price', 8, 'total_price', 8, 'product_id', feijao));
+  result := public.change_receipt_item_product(r, v, feijao, arroz, null, map, null);
+  assert (result ->> 'changed')::boolean and (select product_id from public.receipt_items where id = v) = arroz, 'the added line changes product';
+  assert (select product_id from public.product_aliases where alias = public.normalize_alias('Feijão')) = feijao,
+    'the alias a printed receipt taught stays with its product';
+  result := public.change_receipt_item_product(r, x, feijao, arroz, null, map, null);
+  assert (result ->> 'changed')::boolean and (select product_id from public.pantry_items where receipt_item_id = x) = arroz,
+    'the other added line changes product, pantry included';
+  assert not exists (select 1 from public.product_aliases where alias = 'FEIJAO CARIOCA 1KG'), 'and no alias is born from typed text';
 end $$;
 
 -- 21 e 13. Nada disso chegou à base comum, nem às ligações da lista, nem à validade aprendida dos produtos.
