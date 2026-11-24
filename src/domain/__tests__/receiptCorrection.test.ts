@@ -25,11 +25,13 @@ import {
   addItemProductLine,
   addItemSummary,
   CATEGORY_SHELF_LIFE_DAYS,
+  CHANGE_ADDED_PRODUCT_MESSAGE,
   CHANGE_PRODUCT_LABEL,
   CHANGE_PRODUCT_MESSAGE,
   CHANGE_PRODUCT_TITLE,
   changedFreezeKind,
   changeProductButton,
+  changeProductMessage,
   CHOOSE_PRODUCT_LABEL,
   CORRECTION_CODES,
   CORRECTION_NOT_FOUND,
@@ -360,6 +362,24 @@ describe('as frases', () => {
     expect(addItemPickerMessage('ai')).toBe('Escolha o produto do item que a leitura não pegou. Depois vêm a quantidade e o valor.');
     expect(addItemPickerMessage('qrcode')).toBe(addItemPickerMessage('ai'));
     expect(addItemPickerMessage('manual')).toBe('Escolha o produto do item que ficou fora da nota. Depois vêm a quantidade e o valor.');
+  });
+
+  it('a frase da troca promete que a casa aprende só na linha que veio na nota, como o banco faz', () => {
+    expect(changeProductMessage({ added_after_confirmation: false })).toBe(CHANGE_PRODUCT_MESSAGE);
+    // O banco de antes da coluna, e a linha que sumiu da nota com o seletor aberto: a frase de sempre.
+    expect(changeProductMessage({})).toBe(CHANGE_PRODUCT_MESSAGE);
+    expect(changeProductMessage(undefined)).toBe(CHANGE_PRODUCT_MESSAGE);
+    // A linha incluída depois da confirmação: o que muda, sem a promessa de aprender.
+    expect(changeProductMessage({ added_after_confirmation: true })).toBe(CHANGE_ADDED_PRODUCT_MESSAGE);
+    expect(CHANGE_ADDED_PRODUCT_MESSAGE).toBe(
+      'A compra passa para o produto escolhido no histórico de preço e nos gastos, e na despensa, se foi para lá.',
+    );
+    expect(CHANGE_ADDED_PRODUCT_MESSAGE).not.toMatch(/aprende|próximas notas/);
+    expect(CHANGE_PRODUCT_MESSAGE.startsWith(`${CHANGE_ADDED_PRODUCT_MESSAGE} `)).toBe(true);
+    // A regra de onde as duas frases saem: o passo do apelido não corre na linha incluída, e só a inclusão a marca.
+    expect(MIGRATION).toContain("if v_key <> '' and not item.added_after_confirmation then");
+    expect(MIGRATION).toContain('alter table public.receipt_items add column added_after_confirmation boolean not null default false;');
+    expect(MIGRATION).toMatch(/\n {4}added_after_confirmation\n {2}\) values \(\n[^)]*, v_total, true\n {2}\);/);
   });
 
   it('o formulário do item que faltou', () => {

@@ -300,6 +300,8 @@ jest.mock('@/lib/supabase', () => {
               unit: request.unit,
               unit_price: request.unit_price,
               total_price: request.total_price,
+              // Só a inclusão marca a linha; a troca do produto dela não ensina apelido (e a frase do seletor não promete).
+              added_after_confirmation: true,
             });
             return { data: { item_id: request.id, added: true, same: true, product_id: productId }, error: null };
           });
@@ -2191,6 +2193,26 @@ describe('nota já confirmada: "Item", o item que a leitura perdeu', () => {
     expect(notify).not.toHaveBeenCalled();
   });
 
+  it('"Trocar produto" na linha incluída: o seletor diz o que muda, sem prometer que a casa aprende (a linha não ensina apelido)', async () => {
+    answers = { [SUMMARY]: true };
+    seed(confirmedNote(), item('a', 'DETERGENTE YPE', 50, { product_id: 'p3', added_after_confirmation: false }));
+    await open();
+    await fill();
+    await press(button('Incluir item'));
+    await press(chip('Trocar produto', card('Feijão carioca')));
+    expect(productPicker()!.props).toMatchObject({
+      title: 'Qual produto é este?',
+      message: 'A compra passa para o produto escolhido no histórico de preço e nos gastos, e na despensa, se foi para lá.',
+      initialQuery: 'Feijão carioca',
+    });
+    await run(() => productPicker()!.props.onClose());
+    // A linha que veio na nota continua com a frase inteira: o apelido da descrição dela vai junto.
+    await press(chip('Trocar produto', card('Detergente')));
+    expect(productPicker()!.props.message).toBe(
+      'A compra passa para o produto escolhido no histórico de preço e nos gastos, e na despensa, se foi para lá. A casa aprende junto: as próximas notas com esta descrição costumam vir com ele.',
+    );
+  });
+
   it('o produto novo pelo nome digitado leva a categoria do nome, e sem a despensa a chave não vai', async () => {
     answers = { [SUMMARY]: true };
     await open();
@@ -3404,6 +3426,8 @@ describe('o alerta de preço usa a contagem que a tela mostra', () => {
 
 describe('quantos ovos vêm na embalagem', () => {
   const eggs = (patch: Row = {}) => item('i1', 'OVOS RANCHO CAIPIRA', 13.99, { suggested_category: 'ovos', pack_count: null, ...patch });
+  /** A resposta que não achou a linha: sem culpar outro aparelho, porque pode ter sido a troca desta tela. */
+  const PACK_CHANGED = ['Quantidade não salva', 'Este item já mudou antes deste toque. Confira a nota e, se ainda precisar, responda de novo.'];
 
   it('pergunta na revisão; com a resposta, a linha diz quanto sai cada ovo e deixa mudar', async () => {
     seed(receipt({ total: 13.99 }), eggs());
@@ -3485,7 +3509,7 @@ describe('quantos ovos vêm na embalagem', () => {
     await press(chip('10'));
     expect(writes('receipt_items')).toEqual([{ table: 'receipt_items', verb: 'update', values: { pack_count: 10 }, filters: { id: 'i1', receipt_id: 'r1', product_id: null } }]);
     expect(jest.mocked(notify).mock.calls).toEqual([
-      ['Quantidade não salva', 'A linha mudou em outro aparelho. Confira a nota e responda de novo, se ainda precisar.'],
+      PACK_CHANGED,
     ]);
   });
 
@@ -3497,7 +3521,7 @@ describe('quantos ovos vêm na embalagem', () => {
     await press(chip('10'));
     await settle();
     expect(jest.mocked(notify).mock.calls).toEqual([
-      ['Quantidade não salva', 'A linha mudou em outro aparelho. Confira a nota e responda de novo, se ainda precisar.'],
+      PACK_CHANGED,
     ]);
     expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
   });
@@ -3518,11 +3542,60 @@ describe('quantos ovos vêm na embalagem', () => {
     ]);
     expect(mockDb.items[0].pack_count).toBeNull();
     expect(jest.mocked(notify).mock.calls).toEqual([
-      ['Quantidade não salva', 'A linha mudou em outro aparelho. Confira a nota e responda de novo, se ainda precisar.'],
+      PACK_CHANGED,
     ]);
     // A nota relida mostra a linha na Ovomaltine, que não pergunta.
     expect(said(card('Ovomaltine'))[0]).toBe('Ovomaltine');
     expect(page()).not.toContain('Quantos ovos vêm na embalagem?');
+  });
+
+  it('a linha do ovo trocada aqui, com a nota relida que demora: a pergunta volta no produto de antes, e a resposta não grava nem culpa outro aparelho', async () => {
+    mockDb.corrections = true;
+    mockMarket.products = [
+      { id: 'po', name: 'Ovos', category: 'ovos', shelf_life_days: null },
+      { id: 'pl', name: 'Leite', category: 'laticinios', shelf_life_days: null },
+    ];
+    seed(receipt({ status: 'confirmed', source: 'qrcode', total: 13.99 }), eggs({ raw_description: 'OVOS BRANCOS', product_id: 'po' }));
+    await open();
+    await press(chip('Trocar produto'));
+    const releaseRead = hold(receiptRead);
+    await run(() => productPicker()!.props.onSelect('pl'));
+    await settle(4200);
+    // A troca gravou; a tela, sem a nota de volta, ainda mostra os ovos e a pergunta deles.
+    expect(mockDb.items[0].product_id).toBe('pl');
+    expect(said(card('Ovos'))[0]).toBe('Ovos');
+    expect(chip('12')).toBeDefined();
+    await press(chip('12'));
+    expect(writes('receipt_items')).toEqual([
+      { table: 'receipt_items', verb: 'update', values: { pack_count: 12 }, filters: { id: 'i1', receipt_id: 'r1', product_id: 'po' } },
+    ]);
+    expect(mockDb.items[0].pack_count).toBeNull();
+    expect(jest.mocked(notify).mock.calls).toEqual([PACK_CHANGED]);
+    await releaseRead();
+    expect(said(card('Leite'))[0]).toBe('Leite');
+    expect(page()).not.toContain('Quantos ovos vêm na embalagem?');
+  }, 15_000);
+
+  it('a linha do ovo trocada aqui com a resposta perdida: a resposta seguinte não grava, e o aviso não fala de outro aparelho', async () => {
+    mockDb.corrections = true;
+    mockMarket.products = [
+      { id: 'po', name: 'Ovos', category: 'ovos', shelf_life_days: null },
+      { id: 'pl', name: 'Leite', category: 'laticinios', shelf_life_days: null },
+    ];
+    seed(receipt({ status: 'confirmed', source: 'qrcode', total: 13.99 }), eggs({ raw_description: 'OVOS BRANCOS', product_id: 'po' }));
+    await open();
+    await press(chip('Trocar produto'));
+    mockDb.loses = [({ table }) => table === 'change_receipt_item_product'];
+    await run(() => productPicker()!.props.onSelect('pl'));
+    expect(mockDb.items[0].product_id).toBe('pl');
+    expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'caiu a rede']]);
+    mockDb.loses = [];
+    jest.mocked(notify).mockClear();
+    expect(said(card('Ovos'))[0]).toBe('Ovos');
+    await press(chip('12'));
+    expect(mockDb.items[0].pack_count).toBeNull();
+    expect(jest.mocked(notify).mock.calls).toEqual([PACK_CHANGED]);
+    expect(said(card('Leite'))[0]).toBe('Leite');
   });
 
   it('a linha do ovo trocada aqui para um produto novo que a busca dos produtos ainda não trouxe: a pergunta não volta no meio', async () => {

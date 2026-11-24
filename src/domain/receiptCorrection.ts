@@ -297,8 +297,19 @@ export function changeProductButton(lineTitle: string, hasProduct: boolean): { t
 }
 
 export const CHANGE_PRODUCT_TITLE = 'Qual produto é este?';
-export const CHANGE_PRODUCT_MESSAGE =
-  'A compra passa para o produto escolhido no histórico de preço e nos gastos, e na despensa, se foi para lá. A casa aprende junto: as próximas notas com esta descrição costumam vir com ele.';
+/** O que a troca muda em qualquer linha. */
+export const CHANGE_ADDED_PRODUCT_MESSAGE =
+  'A compra passa para o produto escolhido no histórico de preço e nos gastos, e na despensa, se foi para lá.';
+/** A linha que veio na nota: o apelido da descrição dela vai junto (change_receipt_item_product, passo 7). */
+export const CHANGE_PRODUCT_MESSAGE = `${CHANGE_ADDED_PRODUCT_MESSAGE} A casa aprende junto: as próximas notas com esta descrição costumam vir com ele.`;
+
+/**
+ * A frase do seletor da troca para esta linha. A incluída depois de a nota ser confirmada ("Item") não ensina apelido,
+ * nem quando o produto dela é trocado (o texto dela é da pessoa): para ela, a frase não promete que a casa aprende.
+ */
+export function changeProductMessage(line: { added_after_confirmation?: boolean } | undefined): string {
+  return line?.added_after_confirmation ? CHANGE_ADDED_PRODUCT_MESSAGE : CHANGE_PRODUCT_MESSAGE;
+}
 
 /** O botão "Item" da nota confirmada, para o leitor de tela. */
 export const ADD_ITEM_ACCESSIBILITY = 'Incluir um item que faltou na nota';

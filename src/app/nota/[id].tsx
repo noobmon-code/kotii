@@ -111,9 +111,9 @@ import {
   addItemPickerMessage,
   addItemProductLine,
   addItemSummary,
-  CHANGE_PRODUCT_MESSAGE,
   CHANGE_PRODUCT_TITLE,
   changeProductButton,
+  changeProductMessage,
   CORRECTION_STALE,
   correctionActions,
   correctionCatchUp,
@@ -1080,10 +1080,12 @@ export default function ReceiptScreen() {
     if (refuseStale()) return false;
     if (refuseWhileSaving(item.id)) return false;
     void settleValue(
-      // Com o produto que a tela mostrava: a linha que passou para outro produto em outro aparelho não leva a contagem.
+      // Com o produto que a tela mostrava: a linha que passou para outro produto (em outro aparelho, ou pela troca desta
+      // tela cuja nota ainda não voltou) não leva a contagem.
       setPack.mutateAsync({ id: item.id, productId: item.product_id ?? null, count }),
       ({ saved }) => {
-        // Sem a linha de volta, a resposta não gravou nada (a linha saiu ou mudou em outro aparelho): a pessoa fica sabendo.
+        // Sem a linha de volta, a resposta não gravou nada (a linha saiu ou mudou, aqui ou em outro aparelho): a pessoa
+        // fica sabendo, sem a frase culpar outro aparelho.
         if (!saved) notify(PACK_LINE_CHANGED.title, PACK_LINE_CHANGED.message);
         return saved;
       },
@@ -1679,7 +1681,7 @@ export default function ReceiptScreen() {
       <PickerModal
         visible={pickerMode != null}
         title={pickerMode === 'add' ? ADD_ITEM_PICKER_TITLE : pickerMode === 'change' ? CHANGE_PRODUCT_TITLE : 'Qual produto é este?'}
-        message={pickerMode === 'add' ? addItemPickerMessage(receipt.source) : pickerMode === 'change' ? CHANGE_PRODUCT_MESSAGE : undefined}
+        message={pickerMode === 'add' ? addItemPickerMessage(receipt.source) : pickerMode === 'change' ? changeProductMessage(pickerItem) : undefined}
         initialQuery={picker?.kind === 'product' ? picker.query : ''}
         options={(products.data ?? []).map((p) => ({
           id: p.id,

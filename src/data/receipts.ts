@@ -49,9 +49,15 @@ const ITEM_BASE_COLUMNS =
  */
 const OPTIONAL_ITEM_COLUMNS = ['generic_name', 'store_code', 'pack_count'] as const;
 type OptionalItemColumn = (typeof OPTIONAL_ITEM_COLUMNS)[number];
+/**
+ * As que o app só lê: a linha incluída depois de a nota ser confirmada (added_after_confirmation, que só
+ * add_confirmed_receipt_item marca). Por último, a mais nova: o banco sem ela custa uma leitura a mais.
+ */
+const READ_ITEM_COLUMNS = [...OPTIONAL_ITEM_COLUMNS, 'added_after_confirmation'] as const;
+type ReadItemColumn = (typeof READ_ITEM_COLUMNS)[number];
 
 /** A coluna recente que o banco disse que não tem (uma por erro), ou undefined. */
-const missingItemColumn = (error: unknown, columns: readonly OptionalItemColumn[]) =>
+const missingItemColumn = <C extends ReadItemColumn>(error: unknown, columns: readonly C[]) =>
   columns.find((column) => isMissingColumn(error, column));
 
 /** Uma nota da lista de Compras > Notas: com quantos itens ela tem. */
@@ -140,14 +146,15 @@ export function useReceiptHistory() {
 }
 
 /**
- * Os itens da nota, na ordem impressa, com o item genérico da leitura por foto (generic_name) e o código do
- * produto na nota (store_code). Com o banco de antes de uma dessas colunas (o app publicado antes da migração),
- * lê de novo sem ela, uma de cada vez (o erro fala de uma só): a revisão fica como era.
+ * Os itens da nota, na ordem impressa, com o item genérico da leitura por foto (generic_name), o código do
+ * produto na nota (store_code), quantos vêm na embalagem (pack_count) e se a linha foi incluída depois de a nota
+ * ser confirmada (added_after_confirmation). Com o banco de antes de uma dessas colunas (o app publicado antes da
+ * migração), lê de novo sem ela, uma de cada vez (o erro fala de uma só): a revisão fica como era.
  */
 export async function fetchReceiptItems(receiptId: string, db: SupabaseClient = supabase): Promise<ReceiptItem[]> {
   const read = (columns: readonly string[]) =>
     db.from('receipt_items').select([ITEM_BASE_COLUMNS, ...columns].join(', ')).eq('receipt_id', receiptId).order('position');
-  let columns: readonly OptionalItemColumn[] = OPTIONAL_ITEM_COLUMNS;
+  let columns: readonly ReadItemColumn[] = READ_ITEM_COLUMNS;
   for (;;) {
     const answer = await read(columns);
     const missing = missingItemColumn(answer.error, columns);
