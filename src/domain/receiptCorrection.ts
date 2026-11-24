@@ -339,6 +339,53 @@ export const PRODUCT_SAVED_NOT_SHOWN = {
   title: 'Produto trocado',
   message: 'Não deu para atualizar a nota na tela: o item pode aparecer com o produto de antes até ela ser buscada de novo.',
 };
+// ---------------------------------------------------------------------------
+// O produto de antes que ficou sem nada: "Excluir o produto de antes" (decisão do dono de 2026-11-24)
+
+/**
+ * O produto que a troca deixou para trás: o de antes da linha, só quando a troca mudou mesmo a linha (`changed`; o
+ * `changed` falso é a linha que já estava no escolhido, e a resposta não diz de qual produto ela tinha saído) e a linha
+ * tinha produto ("Escolher produto" não deixa nenhum). Se ele dá para excluir, quem diz é uma leitura feita para isto
+ * (fetchLeftProduct, em data/productDelete), nunca a memória da tela.
+ */
+export function productLeftBehind(before: string | null, result: { productId: string; changed: boolean }): string | null {
+  return before && result.changed && result.productId !== before ? before : null;
+}
+
+/** A oferta numa linha da nota confirmada: o produto de antes, e se ele já foi excluído (o aviso fica no lugar dela). */
+export interface LeftProduct {
+  itemId: string;
+  productId: string;
+  name: string;
+  deleted: boolean;
+}
+
+/**
+ * A oferta aparece enquanto nenhuma linha da nota em tela aponta para o produto de antes: a nota relida que ainda não
+ * voltou (a linha ainda mostra o produto de antes), ou outra linha que passou para ele depois, a escondem. O aviso de
+ * que ele foi excluído fica.
+ */
+export function leftProductShown(left: LeftProduct | null, items: readonly { product_id: string | null }[]): LeftProduct | null {
+  if (!left || left.deleted) return left;
+  return items.some((item) => item.product_id === left.productId) ? null : left;
+}
+
+export const LEFT_PRODUCT_DELETE = 'Excluir o produto de antes';
+export const LEFT_PRODUCT_KEEP = 'Manter';
+/** A frase da oferta, na linha que acabou de trocar de produto. */
+export const leftProductMessage = (name: string) => `"${name}", o produto de antes, ficou sem nenhuma compra.`;
+/** O que o leitor de tela ouve quando a oferta aparece (ela não leva o foco). */
+export const leftProductAnnouncement = (name: string) => `${leftProductMessage(name)} Dá para excluir o produto de antes ou manter.`;
+export const leftProductDeleteLabel = (name: string) => `Excluir o produto de antes, ${name}`;
+export const leftProductKeepLabel = (name: string) => `Manter o produto ${name}`;
+/** Excluído: a tela da nota fica (é a nota que a pessoa estava corrigindo), e diz isto no lugar da oferta. */
+export const leftProductDeleted = (name: string) => `"${name}" foi excluído dos produtos da casa.`;
+/**
+ * O título do mesmo aviso como alerta: quando a oferta de outra linha tomou o lugar desta enquanto o pedido ia (a troca
+ * dela respondeu no meio), o aviso não tem onde ficar na linha, e a oferta nova fica.
+ */
+export const LEFT_PRODUCT_DELETED_TITLE = 'Produto excluído';
+
 /** A busca de fundo falhou: as correções da nota confirmada esperam a nota voltar. */
 export const CORRECTION_STALE = {
   title: 'Não deu para buscar a nota',

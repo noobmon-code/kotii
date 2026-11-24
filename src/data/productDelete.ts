@@ -7,7 +7,7 @@
 // função, excluir avisa que ainda não está disponível. Não há plano B de apagar direto na tabela: isso soltaria
 // das linhas de nota o produto, que é justamente o que a função recusa.
 
-import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { onlineManager, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 
 import { toISODate } from '@/domain/dates';
 import {
@@ -25,6 +25,7 @@ import {
   DELETE_RENAMED_TITLE,
   DELETE_UNAVAILABLE,
   DELETE_UNAVAILABLE_TITLE,
+  deletableProduct,
   isProductInReview,
   isProductPurchased,
   PRODUCT_NOT_IN_HOUSE,
@@ -36,8 +37,9 @@ import type { ProductName } from '@/domain/similarNames';
 import { isDeadlock } from '@/lib/databaseErrors';
 import { errorMessage, supabase, unwrap } from '@/lib/supabase';
 
+import { fetchProducts } from './market';
 import { isMissingFunction, isMissingTable } from './missingSchema';
-import { isProductGone, openListRow, openPantryRow } from './productMerge';
+import { fetchDistinctPairs, isProductGone, openListRow, openPantryRow } from './productMerge';
 
 /** Quanto a leitura antes da pergunta espera (não é o DELETE_CHECK_MS de data/providers, de 4 s). */
 export const PRODUCT_DELETE_CHECK_MS = 10_000;
@@ -163,6 +165,35 @@ export function pairsToCarry(queryClient: QueryClient, id: string): DistinctPair
   );
 }
 
+/**
+ * pairsToCarry com o catálogo e os pares "São diferentes" na memória: sem um deles, carriedDistinctPairs não tem de
+ * onde tirar e devolve [], calado, e delete_product apaga os pares do produto (cascade) sem que os do gêmeo de nome
+ * sejam gravados (só o app os grava): a sugestão que a casa recusou voltaria para sempre. Nem toda tela que oferece
+ * excluir carrega os pares (a nota confirmada não os mostra, e eles não estão em PERSISTED): o que a memória já tem
+ * vale (e a conta sai dela na hora, antes de qualquer busca nova); o que não tem é buscado agora, com o mesmo prazo
+ * da leitura do toque (PRODUCT_DELETE_CHECK_MS). A busca que falha, ou passa do prazo (DELETE_CHECK_FAILED), lança:
+ * melhor não excluir do que excluir sem saber o que passa.
+ */
+export async function loadPairsToCarry(queryClient: QueryClient, id: string): Promise<DistinctPair[]> {
+  const missing: Promise<unknown>[] = [];
+  if (queryClient.getQueryData(['products']) === undefined) missing.push(queryClient.fetchQuery({ queryKey: ['products'], queryFn: fetchProducts }));
+  if (queryClient.getQueryData(['productDistinctPairs']) === undefined) {
+    missing.push(queryClient.fetchQuery({ queryKey: ['productDistinctPairs'], queryFn: fetchDistinctPairs }));
+  }
+  if (missing.length) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.all(missing),
+        new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(DELETE_CHECK_FAILED)), PRODUCT_DELETE_CHECK_MS))),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return pairsToCarry(queryClient, id);
+}
+
 /** Os pares guardados na memória sem os de `id` (null: nenhum sai) e com os de `carry` que ainda não estão lá. */
 function withCarriedPairs(queryClient: QueryClient, id: string | null, carry: readonly DistinctPair[]): void {
   queryClient.setQueryData<DistinctPair[] | null>(['productDistinctPairs'], (pairs) => {
@@ -242,8 +273,9 @@ export function useDeleteProduct() {
   return useMutation({
     // Os pares a passar saem do que a tela tinha antes do pedido (uma vez, também quando ele se repete): depois
     // dele, os do produto já não existem. Servem à resposta de excluiu, à de "já não existe" (P0002) e à que não
-    // chegou.
-    onMutate: ({ id }: { id: string; name: string | null }) => ({ carry: pairsToCarry(queryClient, id) }),
+    // chegou. Sem os pares ou o catálogo na memória, são buscados antes (loadPairsToCarry); se a busca falha, o pedido
+    // nem sai.
+    onMutate: async ({ id }: { id: string; name: string | null }) => ({ carry: await loadPairsToCarry(queryClient, id) }),
     mutationFn: async ({ id, name }: { id: string; name: string | null }): Promise<DeleteResult> => {
       // Pedido pendurado (sinal fraco no mercado; no Android o pedido não tem prazo): sem cortar, o botão
       // ficaria girando sem saída.
@@ -320,7 +352,38 @@ export async function fetchDeleteProductAvailable(): Promise<boolean> {
   return unwrap(result) === true;
 }
 
+/** A chave da pergunta acima, na memória (nunca em PERSISTED): a tela do produto e a nota confirmada usam a mesma. */
+export const DELETE_PRODUCT_AVAILABLE_KEY = ['deleteProductAvailable'] as const;
+
 /** A resposta só muda quando a migração é aplicada: perguntada uma vez por abertura do app (só na memória). */
 export function useDeleteProductAvailable() {
-  return useQuery({ queryKey: ['deleteProductAvailable'], queryFn: fetchDeleteProductAvailable, staleTime: Infinity });
+  return useQuery({ queryKey: DELETE_PRODUCT_AVAILABLE_KEY, queryFn: fetchDeleteProductAvailable, staleTime: Infinity });
+}
+
+/**
+ * Depois de "Trocar produto" na nota confirmada: o produto de antes dá para excluir agora? Só com
+ * delete_product_available() respondendo true (a mesma chave da tela do produto, na memória, perguntada uma vez por
+ * abertura do app) e por uma leitura feita para isto, a mesma do toque de excluir (fetchDeleteFacts), nunca pela
+ * memória da tela: o produto achado, e nenhuma linha de nota, confirmada ou em revisão, apontando para ele
+ * (deletableProduct). Sem internet, ou com a pergunta ou a leitura que falha ou passa de PRODUCT_DELETE_CHECK_MS: null,
+ * e nada é oferecido (o caminho por Preços continua). Nada é excluído aqui: o toque na oferta passa pela leitura, pela
+ * pergunta e pelo pedido de sempre.
+ */
+export async function fetchLeftProduct(queryClient: QueryClient, productId: string): Promise<{ id: string; name: string } | null> {
+  if (!onlineManager.isOnline()) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // A pergunta parada (sem internet no meio, o React Query a segura) não segura a oferta para sempre.
+    const available = await Promise.race([
+      queryClient.fetchQuery({ queryKey: DELETE_PRODUCT_AVAILABLE_KEY, queryFn: fetchDeleteProductAvailable, staleTime: Infinity }),
+      new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), PRODUCT_DELETE_CHECK_MS))),
+    ]);
+    if (available !== true) return null;
+    return deletableProduct(await fetchDeleteFacts(productId));
+  } catch {
+    // Calado: é só uma oferta, e o caminho por Preços continua.
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }

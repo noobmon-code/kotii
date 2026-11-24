@@ -1,7 +1,7 @@
 import { onlineManager, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { useFreezePantryItems, useFreezer } from '@/data/freezer';
@@ -120,6 +120,7 @@ import {
   correctionNameChoice,
   correctionNotice,
   correctionOffline,
+  leftProductShown,
   newProductCategory,
   NO_NOTE_NAMES,
   PRODUCT_SAVED_NOT_SHOWN,
@@ -175,6 +176,7 @@ import {
 import { canRenameStore, printedNameLine } from '@/domain/storeName';
 import { PayerChips } from '@/features/finance/PayerChips';
 import { StaleNotice } from '@/features/health/StaleNotice';
+import { LeftProductOffer, useLeftProductOffer } from '@/features/LeftProductOffer';
 import { ReceiptItemEditor } from '@/features/ReceiptItemEditor';
 import { ReceiptListSection } from '@/features/ReceiptListSection';
 import { ReceiptPantryChoice } from '@/features/ReceiptPantryChoice';
@@ -290,6 +292,8 @@ export default function ReceiptScreen() {
   const corrections = useReceiptCorrectionsAvailable(confirmed);
   const changeItem = useChangeReceiptItemProduct(id);
   const addItem = useAddConfirmedReceiptItem(id);
+  // Depois de "Trocar produto", o produto de antes que ficou sem nada: "Excluir o produto de antes" na linha.
+  const leftOffer = useLeftProductOffer();
   const queryClient = useQueryClient();
   // As notas confirmadas perto do dia do rascunho: a mesma compra lida duas vezes ganha um aviso (domain/duplicateReceipt).
   const nearby = useConfirmedNear(receiptQuery.data?.receipt.purchased_at, reviewing);
@@ -424,6 +428,8 @@ export default function ReceiptScreen() {
   const resolvedItems = new Map(items.map((item) => [item.id, resolveItem(item, overrides[item.id], catalog, purchasedOn, freezer)]));
   // Produto que sumiu do catálogo com a revisão aberta (foi juntado com outro em outro aparelho).
   const gone = goneProducts(items, overrides, catalog);
+  // A oferta de excluir o produto de antes (ou o aviso de excluído): some enquanto uma linha em tela aponta para ele.
+  const leftShown = leftProductShown(leftOffer.left, items);
   // A descrição da nota traz o tamanho da embalagem: o pacote de 5 kg se compara pelo preço por kg. Sem ele na
   // descrição, vale a mesma contagem que a tela mostra (packCountOf: a descrição, o nome do produto, depois a resposta da
   // revisão em pack_count): a cartela de 30 não se compara com a de 10 pelo preço.
@@ -1198,12 +1204,20 @@ export default function ReceiptScreen() {
       void products.refetch();
       return;
     }
+    // A resposta da troca: com ela, depois de a nota voltar, a oferta de excluir o produto de antes.
+    let answer: { productId: string; changed: boolean } | undefined;
     void settleValue(
       changeItem.mutateAsync({ item, target: pick.target, freezeKind: pick.freezeKind }),
-      undefined,
+      (result) => {
+        answer = result;
+      },
       { itemId: item.id, saved: PRODUCT_SAVED_NOT_SHOWN, value: false },
       notifyCorrectionError('change'),
-    );
+    ).then(() => {
+      // Só depois da espera pela nota (a linha já com o produto novo, se ela voltou), e só com a troca que respondeu:
+      // a recusa e a falta de resposta não deixam `answer`. Se dá para excluir, quem diz é a leitura de lá.
+      if (answer) leftOffer.check(item.id, item.product_id, answer);
+    });
   }
 
   /** "Item" na nota confirmada: primeiro o produto do item que faltou. */
@@ -1643,6 +1657,19 @@ export default function ReceiptScreen() {
                 artName={catalog.get(item.product_id ?? '')?.name ?? item.raw_description}
                 alert={alert}
                 change={can.changeProduct && corrections ? { writing: writingIds.has(item.id), onPress: () => startChange(item) } : null}
+                changeRef={leftOffer.chipRef(item.id)}
+                left={
+                  leftShown?.itemId === item.id ? (
+                    <LeftProductOffer
+                      left={leftShown}
+                      name={catalog.get(leftShown.productId)?.name ?? leftShown.name}
+                      busy={leftOffer.busy}
+                      onDelete={leftOffer.remove}
+                      onKeep={leftOffer.keep}
+                      onShown={leftOffer.shown}
+                    />
+                  ) : null
+                }
                 prompt={prompt}
                 onUse={applySuggestion}
                 onFill={() => setEditing({ item })}
@@ -1654,6 +1681,8 @@ export default function ReceiptScreen() {
       </Columns>
 
       {desktop ? null : removeButton}
+      {/* O anúncio da oferta de excluir o produto de antes, no navegador: fora do cartão, que ela deixa quando sai. */}
+      {leftOffer.region}
 
       {renamingStore && noteStore ? (
         <RenameStoreModal store={noteStore} stores={stores.data ?? []} onClose={() => setRenamingStore(false)} />
@@ -2045,6 +2074,8 @@ function ConfirmedItemCard({
   artName,
   alert,
   change,
+  changeRef,
+  left,
   prompt,
   onUse,
   onFill,
@@ -2059,6 +2090,10 @@ function ConfirmedItemCard({
   alert: string | null;
   /** "Trocar produto": null sem o banco que tem as correções; `writing` desliga o chip até a nota voltar. */
   change: { writing: boolean; onPress: () => void } | null;
+  /** O chip "Trocar produto": o foco volta a ele quando a oferta de excluir o produto de antes sai. */
+  changeRef: Ref<View>;
+  /** A oferta de excluir o produto de antes, quando é desta linha (features/LeftProductOffer). */
+  left: ReactNode;
   prompt: UnpricedPrompt | null;
   onUse: (suggestion: GapSuggestion) => void;
   onFill: () => void;
@@ -2083,6 +2118,7 @@ function ConfirmedItemCard({
         // Um chip, e não um botão largo: a nota comprida não cresce muito.
         <Row style={styles.wrap}>
           <Chip
+            ref={changeRef}
             label={button.title}
             accessibilityLabel={button.accessibilityLabel}
             icon="swap-horizontal"
@@ -2091,6 +2127,7 @@ function ConfirmedItemCard({
           />
         </Row>
       ) : null}
+      {left}
       {/* O valor do que ficou sem (domain/receiptEdit). */}
       {prompt ? <ValueQuestion prompt={prompt} onUse={onUse} onFill={onFill} /> : null}
       {pack}

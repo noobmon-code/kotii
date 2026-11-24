@@ -11,6 +11,7 @@ import {
   DELETE_PURCHASED,
   DELETE_PURCHASED_TITLE,
   DELETE_TITLE,
+  deletableProduct,
   deleteInReviewMessage,
   deleteQuestion,
   deleteStep,
@@ -68,6 +69,28 @@ describe('deleteStep: o que o toque faz, pelo que a leitura trouxe', () => {
       confirmLabel: 'Excluir',
     });
     expect(DELETE_CONFIRM).toBe('Excluir');
+  });
+});
+
+describe('deletableProduct: dá para excluir agora (a oferta depois de "Trocar produto")', () => {
+  it('só o produto achado, sem linha de nota confirmada nem em revisão; o que está na despensa, na lista ou com códigos também', () => {
+    expect(deletableProduct(facts())).toEqual({ id: 'p1', name: 'Biscoito errado' });
+    expect(deletableProduct(facts({ inPantry: true, onList: true, barcodes: { count: 2, first: '07891000100103' } }))).toEqual({
+      id: 'p1',
+      name: 'Biscoito errado',
+    });
+  });
+
+  it('o que sumiu, o que tem compra e o que está num rascunho: nada', () => {
+    expect(deletableProduct(facts({ product: null }))).toBeNull();
+    expect(deletableProduct(facts({ purchased: true }))).toBeNull();
+    expect(deletableProduct(facts({ review: draft }))).toBeNull();
+  });
+
+  it('é o mesmo que a pergunta do toque: dá para excluir exatamente quando o toque perguntaria', () => {
+    for (const patch of [{}, { product: null }, { purchased: true }, { review: draft }, { purchased: true, review: draft }] as Partial<DeleteFacts>[]) {
+      expect(deletableProduct(facts(patch)) !== null).toBe(deleteStep(facts(patch)).kind === 'ask');
+    }
   });
 });
 
