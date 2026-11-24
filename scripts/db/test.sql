@@ -13568,6 +13568,80 @@ begin
     'shared_week and the per-row date_trunc of the readers give the same Monday';
 end $$;
 
+-- A limpeza diária (forget_old_shared_prices): sai o que fica antes da primeira semana da janela das leituras
+-- (shared_week(hoje) - 91), que nenhuma leitura devolve mais; a primeira semana inteira fica. Num bloco desfeito no
+-- fim, sobre linhas postas direto, para não mexer no que os blocos abaixo leem.
+do $$
+declare
+  who text;
+  fn constant text := 'public.forget_old_shared_prices()';
+begin
+  -- Cada papel por si: nenhum cliente executa a limpeza (o pg_cron roda como dono).
+  foreach who in array array['public', 'anon', 'authenticated'] loop
+    assert not has_function_privilege(who, fn, 'execute'), format('%s cannot execute %s', who, fn);
+  end loop;
+  assert (select prosecdef from pg_proc where oid = fn::regprocedure), 'the cleanup is security definer';
+  assert (select proconfig from pg_proc where oid = fn::regprocedure) @> array['search_path=""'], 'the cleanup has its search_path set';
+end $$;
+begin;
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+  since constant date := week - 91;
+begin
+  truncate public.shared_prices;
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
+    -- Fora da janela: o domingo antes da primeira semana, uma semana antes, e uma compra velha gravada nesta semana
+    -- (uma nota antiga confirmada agora, que ainda nem é legível).
+    ('64000000000901', '35', 'X', 'DOMINGO ANTES', 'un', since - 1, 1.00, since + 6),
+    ('64000000000901', '35', 'X', 'SEMANA ANTES', 'un', since - 7, 1.00, since),
+    ('64000000000901', '35', 'X', 'VELHA GRAVADA AGORA', 'un', since - 30, 1.00, week + 7),
+    -- Dentro: a segunda-feira e o domingo da primeira semana da janela, e a semana passada.
+    ('64000000000901', '35', 'X', 'BORDA SEGUNDA', 'un', since, 1.00, since + 7),
+    ('64000000000901', '35', 'X', 'BORDA DOMINGO', 'un', since + 6, 1.00, since + 7),
+    ('64000000000901', '35', 'X', 'SEMANA PASSADA', 'un', week - 3, 1.00, week);
+  assert public.forget_old_shared_prices() = 3, 'the three rows before the window go';
+  assert (select array_agg(item_key order by item_key) from public.shared_prices)
+    = array['BORDA DOMINGO', 'BORDA SEGUNDA', 'SEMANA PASSADA'], 'the first week of the window and what is after it stay';
+  assert public.forget_old_shared_prices() = 0, 'run again, nothing else goes';
+end $$;
+-- A borda é a mesma das leituras: a linha da segunda-feira da primeira semana ainda é lida, a do domingo antes não.
+do $$
+declare
+  since constant date := current_setting('test.op_week')::date - 91;
+begin
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
+    ('64000000000901', '35', 'X', 'LEITE LIMPEZA DENTRO 1L', 'un', since, 1.00, since + 7),
+    ('64000000000901', '35', 'X', 'LEITE LIMPEZA FORA 1L', 'un', since - 1, 1.00, since + 6);
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_op1', false) \gset
+do $$
+declare
+  answer jsonb := public.shared_item_keys('[{"f": ["LEITE"], "s": [], "x": []}]');
+begin
+  assert exists (select 1 from jsonb_array_elements(answer -> 0 -> 'k') k where k ->> 0 = 'LEITE LIMPEZA DENTRO 1L'),
+    'the reads still return the first Monday of the window: ' || answer::text;
+  assert not exists (select 1 from jsonb_array_elements(answer -> 0 -> 'k') k where k ->> 0 = 'LEITE LIMPEZA FORA 1L'),
+    'and never the Sunday before it';
+  -- Um cliente não roda a limpeza.
+  begin
+    perform public.forget_old_shared_prices();
+    raise exception 'FAIL: a member ran the cleanup';
+  exception when insufficient_privilege then
+    null;
+  end;
+end $$;
+reset role;
+do $$
+begin
+  assert public.forget_old_shared_prices() = 1, 'the cleanup takes the row the reads no longer return';
+  assert exists (select 1 from public.shared_prices where item_key = 'LEITE LIMPEZA DENTRO 1L')
+    and not exists (select 1 from public.shared_prices where item_key = 'LEITE LIMPEZA FORA 1L'),
+    'and keeps the one they still do';
+end $$;
+rollback;
+
 -- A mudança única da migração: o que foi gravado nesta semana (o visible_on de antes é o dia da gravação + 1) espera a
 -- próxima segunda-feira, já legível ou não; o gravado em semanas anteriores fica como está. Aplicada de novo aqui,
 -- sobre linhas postas direto, e tudo desfeito no fim; aplicada mais uma vez, não muda nada.

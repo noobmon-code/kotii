@@ -27,7 +27,9 @@
 --   * a compra da própria casa esconde a linha comum da mesma semana ou de
 --     antes (com o dia exato, um membro aprenderia o dia da linha).
 -- A tabela continua guardando o dia (seen_on): a chave primária, a janela e a
--- regra da compra própria precisam dele. Ele só não sai do banco.
+-- regra da compra própria precisam dele. Ele só não sai do banco. E o que fica
+-- antes da janela, que nenhuma leitura devolve mais, é apagado uma vez por dia
+-- (forget_old_shared_prices, na seção 6).
 --
 -- Os estados de uma casa (shared_household_states): os das notas lidas e
 -- confirmadas (os dois primeiros dígitos da chave de acesso) e, agora, o do
@@ -776,3 +778,43 @@ end;
 $$;
 revoke execute on function public.shared_item_prices(jsonb) from public, anon;
 grant execute on function public.shared_item_prices(jsonb) to authenticated;
+
+-- =============================================================================
+-- 6. A limpeza: o que nenhuma leitura devolve mais sai da base
+-- =============================================================================
+
+-- Decisão do dono (24/11/2026): as linhas que as leituras nunca mais podem devolver são apagadas. As três leituras
+-- (shared_latest_prices, shared_item_keys, shared_item_prices) só aceitam as 13 semanas inteiras da janela, a
+-- partir de shared_week(hoje) - 91 em São Paulo; esta função apaga, com a MESMA expressão, toda linha de antes
+-- disso. A janela só anda para a frente (a semana de hoje nunca volta), então uma linha apagada nunca mais seria
+-- lida; a da primeira semana da janela (seen_on = since ou depois) fica. Também sai a linha gravada hoje com uma
+-- compra de mais de 13 semanas (uma nota velha confirmada agora), que nunca seria lida. Roda uma vez por dia, pelo
+-- pg_cron, como dono; nenhum cliente a executa.
+create or replace function public.forget_old_shared_prices()
+returns integer
+language sql
+security definer
+set search_path = ''
+as $$
+  with gone as (
+    delete from public.shared_prices p
+      where p.seen_on < public.shared_week((now() at time zone 'America/Sao_Paulo')::date) - 91
+      returning 1
+  )
+  select count(*)::integer from gone;
+$$;
+revoke execute on function public.forget_old_shared_prices() from public, anon, authenticated;
+
+-- Todo dia às 4h47 UTC (1h47 em São Paulo), entre as limpezas das leituras de nota (4h41) e das marcas de item
+-- apagado (4h53). Com o mesmo nome, uma segunda aplicação troca o agendamento em vez de duplicar.
+do $$
+begin
+  if not exists (select 1 from pg_extension where extname = 'pg_cron') then
+    return;
+  end if;
+  if exists (select 1 from cron.job where jobname = 'shared-prices-cleanup') then
+    perform cron.unschedule('shared-prices-cleanup');
+  end if;
+  perform cron.schedule('shared-prices-cleanup', '47 4 * * *', 'select public.forget_old_shared_prices()');
+end;
+$$;

@@ -97,9 +97,12 @@ describe('termos de uso', () => {
       'a descrição que tem um número comprido (como um CPF ou um telefone) não sai da base',
       'o do local da casa, em Configurações → Clima da casa',
       'cada um aparece com a semana em que foi visto',
+      // A limpeza diária (forget_old_shared_prices): o que as leituras não devolvem mais sai da base.
+      'A base apaga sozinha, todo dia, o preço de uma compra de antes das últimas 13 semanas inteiras',
     ]) {
       expect(prices).toContain(part);
     }
+    expect(section('Apagar dados e sair')).toContain('saem sozinhos, como todos, quando a semana da compra fica antes das últimas 13 semanas inteiras');
     // O local da casa agora também guarda o estado, e o texto diz para quê.
     const stored = section('O que o app guarda e para quê');
     expect(stored).toContain('o nome do bairro e o estado');
