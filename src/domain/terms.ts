@@ -6,14 +6,14 @@
 import { formatBRDate } from './dates';
 
 /** Data da versão do texto (AAAA-MM-DD). Muda a cada mudança no texto. */
-export const TERMS_VERSION = '2026-11-22';
+export const TERMS_VERSION = '2026-11-24';
 
 /**
  * A versão que a pessoa aceita (AAAA-MM-DD). Só muda numa mudança importante (o que é guardado, compartilhado
  * entre casas ou mandado para a IA ou outros serviços, quem responde pelos dados, quem pode ter conta): aí o
  * aviso da tela Hoje volta para todo mundo. Corrigir uma palavra muda só a TERMS_VERSION.
  */
-export const TERMS_ACCEPT_VERSION = '2026-11-22';
+export const TERMS_ACCEPT_VERSION = '2026-11-24';
 
 /** O aviso dos termos: para quem nunca aceitou nenhuma versão, ou para quem aceitou uma anterior. */
 export type TermsNotice = 'primeira' | 'mudou';
@@ -80,7 +80,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
   {
     title: 'O que o app guarda e para quê',
     paragraphs: [
-      'O app guarda o que você e a sua casa registram, para mostrar de volta e fazer as contas dele: notas fiscais (mercado, CNPJ, data, itens e preços), listas de compras, despensa, cardápio, tarefas e pontos, aparelhos e prestadores, documentos (número, validade e fotos), saúde (fichas das pessoas e dos pets, remédios, consultas, vacinas, exames, treino e dieta) e finanças (gastos, contas, orçamento e quem pagou o quê).',
+      'O app guarda o que você e a sua casa registram, para mostrar de volta e fazer as contas dele: notas fiscais (mercado, CNPJ, data, itens e preços), listas de compras, despensa (com o que foi para o congelador), cardápio, os prazos de troca dos itens da casa (escova de dente, refil do filtro…), tarefas e pontos, aparelhos e prestadores, documentos (número, validade e fotos), saúde (fichas das pessoas e dos pets, remédios, consultas, vacinas, exames, treino e dieta) e finanças (gastos, contas, orçamento e quem pagou o quê).',
       'Tudo fica no Supabase, o serviço de banco de dados e de login que o Kotii usa, com regras que deixam cada casa ler só o que é dela. As fotos ficam num armazenamento privado da casa. O aparelho guarda uma cópia do que você abriu, para o app abrir sem internet.',
       'Dados de saúde são sensíveis. Qualquer morador da casa pode registrá-los, inclusive sobre você ou sobre quem não usa o app (crianças, idosos, pets), e todos os moradores os veem. Eles servem às funções de saúde do app e ao Nuke, como explicado abaixo.',
       'Para a previsão do tempo, a casa pode informar o CEP ou usar a localização do aparelho. O app guarda a localização da casa só aproximada (cerca de 1 km), o nome do bairro e o estado, não o endereço. Para isso ele consulta serviços públicos de CEP e de mapa (ViaCEP, BrasilAPI e OpenStreetMap) e de previsão do tempo (Open-Meteo), mandando só o CEP ou as coordenadas. O estado também serve para mostrar os preços de outras casas do mesmo estado (veja "Preços compartilhados").',
@@ -113,7 +113,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
     title: 'Preços compartilhados',
     paragraphs: [
       'Toda casa contribui e toda casa vê. Quando você confirma uma nota lida pelo app (pelo QR code ou pela foto), os preços que o app leu nela entram numa base de preços aberta a todas as casas do Kotii: o mercado (pelo CNPJ, com o nome impresso na nota, sem o CPF que às vezes vem nele, e, quando a nota tem chave de acesso, o estado), a descrição de cada item padronizada (sem acentos e em maiúsculas), o código de barras do produto, quando a nota traz, a unidade, o tamanho da embalagem que o app leu na descrição (só na nota lida pelo QR code, quando ela diz, como "5 kg" ou "12 x 350 ml"), o preço e o dia da compra, que a base guarda mas não mostra a ninguém: as outras casas veem só a semana da compra. A base apaga sozinha, todo dia, o preço de uma compra de antes das últimas 13 semanas inteiras (de segunda a domingo), que ninguém vê mais. O código de barras é o número impresso na embalagem, o mesmo em qualquer loja: com ele, o app acha o mesmo produto em outra rede, mesmo quando a nota de lá o descreve de outro jeito. O código que o mercado dá aos próprios produtos (como o da balança) não entra.',
-      'Qualquer casa vê esses preços, também os de itens que ela nunca comprou: para o item da sua lista de compras que ainda não tem preço na casa, o app procura na base o mesmo item, de qualquer marca, nos mercados do estado onde a casa compra (o das notas lidas pelo app ou o do local da casa, em Configurações → Clima da casa), e mostra o menor preço que achou em cada mercado na semana mais recente, marcado como de outras casas. Para isso, a descrição padronizada dos itens da base chega ao app de quem procura, que a usa só para reconhecer o mesmo item e não a mostra na tela; a descrição que tem um número comprido (como um CPF ou um telefone) não sai da base.',
+      'Qualquer casa vê esses preços, também os de itens que ela nunca comprou: para o item da sua lista de compras que ainda não tem preço na casa, o app procura na base o mesmo item, de qualquer marca, nos mercados do estado onde a casa compra (o das notas lidas pelo app ou o do local da casa, em Configurações → Clima da casa), e mostra o menor preço que achou em cada mercado na semana mais recente, marcado como de outras casas. No item sem marca da lista, com o mercado escolhido e no "Onde comprar", o app também procura ali as outras marcas do mesmo item que a casa já compra, para fazer a conta pela mais barata por kg ou por litro; a marca que só outras casas compraram aparece como "outra marca". Para isso, a descrição padronizada dos itens da base chega ao app de quem procura, que a usa só para reconhecer o mesmo item e não a mostra na tela; a descrição que tem um número comprido (como um CPF ou um telefone) não sai da base.',
       'Ninguém vê de qual casa veio um preço: não entra quem comprou, nem de qual casa, nem a nota, a quantidade que você levou, o total ou a hora, e ninguém vê o dia da compra, só a semana (de segunda a domingo). Cada preço só aparece na segunda-feira depois da semana em que a nota foi confirmada. A mesma coisa comprada no mesmo mercado no mesmo dia por duas casas vira uma linha só: não dá para saber quem são as casas que viram um preço, nem quantas são.',
       'Mas, numa semana em que só a sua casa, entre as que usam o Kotii, comprou num mercado (o que é comum num mercado pequeno, e mais ainda enquanto poucas casas usam o app), os preços daquele mercado naquela semana são os da sua compra: qualquer pessoa que use o Kotii pode ver esses preços e deduzir o que foi comprado lá naquela semana.',
       'Ficam de fora as notas digitadas à mão, os remédios (e a nota inteira que tenha remédio), as compras em farmácia, os suplementos, os primeiros socorros, os itens de higiene pessoal e o que o app não reconheceu. Também fica na casa o que você corrige na revisão: a linha redigitada, o preço ou a unidade corrigidos, a linha acrescentada e quantos vêm na embalagem, quando você responde; e a nota lida pela foto em que você troca o mercado ou a data não entra.',
@@ -139,8 +139,8 @@ export const TERMS_SECTIONS: TermsSection[] = [
   {
     title: 'Apagar dados e sair',
     paragraphs: [
-      'Nas telas do app dá para excluir notas fiscais e itens delas, itens das listas, tarefas, aparelhos, prestadores e serviços, documentos, gastos, contas, consultas, vacinas, exames, fichas de treino e de dieta, compromissos, fichas de pessoas e pets, e gás, água e ração.',
-      'Nem tudo sai assim: os remédios só são arquivados; apagar a ficha de uma pessoa não apaga os remédios dela; o item da despensa fica marcado como consumido; e os produtos, os mercados e os históricos (compras, tarefas feitas, pontos trocados, treinos feitos e idas ao mercado) ficam com a casa.',
+      'Nas telas do app dá para excluir notas fiscais e itens delas, itens das listas, tarefas, aparelhos, prestadores e serviços, documentos, gastos, contas, consultas, vacinas, exames, fichas de treino e de dieta, compromissos, fichas de pessoas e pets, gás, água e ração, e os produtos que não estão em nenhuma nota.',
+      'Nem tudo sai assim: os remédios só são arquivados; apagar a ficha de uma pessoa não apaga os remédios dela; o item da despensa fica marcado como consumido; e os produtos que estão em alguma nota, os mercados e os históricos (compras, tarefas feitas, pontos trocados, treinos feitos e idas ao mercado) ficam com a casa.',
       `Para apagar tudo o que é seu, escreva para ${TERMS_CONTACT}.`,
       'Sair da casa ("Sair desta casa", em Configurações) tira o seu acesso a ela; o que você registrou continua com a casa. Se você é a última pessoa, sair apaga a casa e tudo o que ela tem, para sempre: listas, notas, despensa, tarefas, saúde, documentos e fotos.',
       'Sair da conta só desconecta este aparelho; não apaga nada.',

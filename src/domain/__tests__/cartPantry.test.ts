@@ -182,6 +182,24 @@ describe('receiptPantryRepeats', () => {
     expect(repeats).toEqual([{ id: 'r1', name: 'Leite Italac 1L', since: '2026-09-27' }]);
   });
 
+  it('diz qual compra da despensa a linha repete, quando a entrada traz o id (o "Congelei" de quem não vai de novo)', () => {
+    const repeats = receiptPantryRepeats(
+      [
+        { id: 'r1', product_id: 'p-leite', pantry: { name: 'Leite Italac 1L' } },
+        { id: 'r2', pantry: { name: 'Banana prata' } },
+      ],
+      '2026-09-28',
+      [
+        { id: 'e1', product_id: 'p-leite', name: 'Leite', purchased_on: '2026-09-27' },
+        { id: 'e2', product_id: null, name: 'Banana', purchased_on: '2026-09-27' },
+      ],
+    );
+    expect(repeats).toEqual([
+      { id: 'r1', name: 'Leite Italac 1L', since: '2026-09-27', entryId: 'e1' },
+      { id: 'r2', name: 'Banana prata', since: '2026-09-27', entryId: 'e2' },
+    ]);
+  });
+
   it('uma entrada da despensa é a repetição de uma compra só da nota, a mais certa', () => {
     const fromCart = [{ product_id: null, name: 'Carne', purchased_on: '2026-10-18' }];
     const repeats = receiptPantryRepeats(

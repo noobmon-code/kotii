@@ -1,7 +1,18 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { LinkIndex, matchListItems, receiptLineNames, type OpenListItem, type ReceiptLine } from '../listLinks';
-import { addsForm, itemExtraWords, itemIdentity, itemSearchWords, sameItemFit, spelledOut, spellOut, termWords, wordOverlap } from '../sameItem';
+import {
+  addsForm,
+  itemExtraWords,
+  itemIdentity,
+  itemSearchWords,
+  sameItemFit,
+  spelledOut,
+  spelledOutFirstWords,
+  spellOut,
+  termWords,
+  wordOverlap,
+} from '../sameItem';
 import { guessCategory } from '../search';
 import { sameListedName } from '../similarNames';
 
@@ -671,5 +682,20 @@ describe('as palavras com que a nota escreve o item (a busca na base aberta de p
     expect(addsForm(itemIdentity('Café solúvel')!, itemIdentity('CAFE SOLUVEL NESCAFE')!)).toBe(false);
     // O tipo que não é forma (integral, desnatado) não conta aqui: sameItemFit decide.
     expect(addsForm(itemIdentity('Leite')!, itemIdentity('LEITE DESNATADO ITALAC')!)).toBe(false);
+  });
+});
+
+describe('spelledOutFirstWords', () => {
+  it('as abreviações de nota que viram a palavra no começo do texto, com as próprias palavras', () => {
+    expect(spelledOutFirstWords(['escova'])).toEqual(expect.arrayContaining(['esc', 'escova']));
+    expect(spelledOutFirstWords(['esponja'])).toEqual(['espo', 'esponj', 'esponja']);
+    expect(spelledOutFirstWords(['nada'])).toEqual(['nada']);
+  });
+
+  it('fecha as correntes e devolve em ordem', () => {
+    // "leite" vem de "lte" e de "lt" ("^lt integral"); o resultado sai em ordem e sem repetir.
+    const words = spelledOutFirstWords(['leite', 'leite']);
+    expect(words).toEqual(expect.arrayContaining(['leite', 'lte', 'lt']));
+    expect(words).toEqual([...new Set(words)].sort());
   });
 });

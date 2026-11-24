@@ -174,6 +174,26 @@ export function spelledOut(name: string): string {
     .join(' ');
 }
 
+/**
+ * As palavras que, no começo do texto (termText), spelledOut pode trocar por uma destas ("esc" de "esc dent" vira
+ * "escova"), com as próprias. Só lê a tabela (não muda o vocabulário): diz à leitura do servidor dos prazos de troca
+ * (domain/longCycle) que primeiras palavras pedir. A mais (os nomes regionais, as correntes fechadas): uma palavra a
+ * mais só traz mais linhas, que o app lê e filtra.
+ */
+export function spelledOutFirstWords(words: Iterable<string>): string[] {
+  const found = new Set(words);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const { from, to } of SPELLED_OUT_WORDS) {
+      if (found.has(to[0]) && !found.has(from[0])) {
+        found.add(from[0]);
+        grew = true;
+      }
+    }
+  }
+  return [...found].sort();
+}
+
 // ---------------------------------------------------------------------------
 // O vocabulário
 
@@ -397,6 +417,18 @@ interface KindDimension {
    * de fora (addsForm). Não muda o "mesmo item" da revisão da nota.
    */
   form?: boolean;
+  /**
+   * Valores que são a marca, não um tipo de qualquer marca (a Coca, a Pepsi do refrigerante): a chave com um deles já diz
+   * a marca, e toda descrição com essa chave é dela (keyNamesBrand). Não muda o "mesmo item".
+   */
+  brands?: readonly string[];
+  /**
+   * Palavras de um valor que são uma marca, num tipo de qualquer marca: o Kuat é um guaraná, a Sukita uma laranja e o
+   * Sprite um limão, e a chave ("i:refrigerante|4=guarana") não diz a marca; mas no nome de um produto da casa a
+   * palavra é a marca dele (brandHead, em domain/cheaperBrand: a descrição da base aberta com "KUAT" é da própria
+   * casa, não "outra marca"). Não muda o "mesmo item" nem a chave.
+   */
+  brandTerms?: readonly string[];
 }
 
 const FLAVORS: Readonly<Record<string, readonly string[]>> = {
@@ -467,6 +499,8 @@ const KINDS: readonly KindDimension[] = [
       limao: ['limao', 'sprite', 'soda limonada'],
       tonica: ['tonica'],
     },
+    brands: ['coca', 'pepsi', 'fanta', 'schweppes'],
+    brandTerms: ['kuat', 'sukita', 'sprite'],
   },
   { keys: ['suco', 'iogurte', 'bebida_lactea', 'biscoito', 'sorvete', 'picole', 'bolo', 'gelatina'], values: FLAVORS },
   // O biscoito que a lista diz: o recheado não é o de maisena. Um "Biscoito" só, sem tipo, é qualquer um.
@@ -691,6 +725,24 @@ function readKinds(text: string, key: string, family: string | null): Map<number
 function isKindWord(word: string, key: string, family: string | null): boolean {
   return KINDS.some((dimension) => dimensionFits(dimension, key, family) && Object.values(dimension.values).some((terms) => terms.includes(word)));
 }
+
+/**
+ * A chave sem marca (genericItem, "i:refrigerante|4=coca") já diz a marca: um tipo dela é uma marca (`brands`). Aí
+ * outra descrição com a mesma chave é a mesma marca, nunca "outra marca".
+ */
+export function keyNamesBrand(key: string): boolean {
+  return key
+    .split('|')
+    .slice(1)
+    .some((part) => {
+      const [at, values = ''] = part.split('=');
+      const brands = /^\d+$/.test(at) ? KINDS[Number(at)]?.brands : undefined;
+      return brands != null && values.split(',').some((value) => brands.includes(value));
+    });
+}
+
+/** As palavras que são uma marca dentro de um tipo de qualquer marca (`brandTerms`: o Kuat, a Sukita, o Sprite). */
+export const KIND_BRAND_TERMS: ReadonlySet<string> = new Set(KINDS.flatMap((dimension) => dimension.brandTerms ?? []));
 
 /** O grupo do item, pela chave de itemIdentity ("papel_toalha" é de casa, "presunto" é comida). */
 export function itemGroup(key: string): 'casa' | 'comida' | 'pet' {

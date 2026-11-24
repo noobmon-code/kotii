@@ -165,27 +165,40 @@ export function productsByGenericKey(
   return byKey;
 }
 
+/** Os produtos da casa com preço, por chave de item sem marca (ownSameItemKeys). */
+export type OwnSameItems = ReadonlyMap<string, readonly { name: string; category: string | null }[]>;
+
 /**
- * As chaves de item sem marca dos produtos da casa que têm preço (acima de zero). O item digitado "Arroz" numa casa
- * que comprou "Arroz Camil 5kg" fica fora da base aberta: o dado da casa vence, e dar preço a ele pelos produtos
- * da casa é outra mudança.
+ * Os produtos da casa que têm preço (acima de zero), por chave de item sem marca. O item digitado "Arroz" numa casa
+ * que comprou "Arroz Camil 5kg" fica fora da base aberta: o dado da casa vence, e ele sai por esse produto (`sameItem`,
+ * em domain/listEstimate). Numa casa que só comprou "Arroz Quebrado Kicaldo 5kg", não: o quebrado tem a chave do
+ * arroz, mas não é o "Arroz" da lista (openPriceItem confere o mesmo item, como a conta).
  */
 export function ownSameItemKeys(
   products: readonly { id: string; name: string; category?: string | null }[],
   prices: readonly { productId: string; unitPrice: number }[],
-): Set<string> {
+): OwnSameItems {
   const priced = new Set(prices.filter((price) => price.unitPrice > 0).map((price) => price.productId));
-  return new Set(productsByGenericKey(products, (id) => priced.has(id)).keys());
+  const byId = new Map(products.map((product) => [product.id, product]));
+  return new Map(
+    [...productsByGenericKey(products, (id) => priced.has(id))].map(([key, ids]) => [
+      key,
+      ids.map((id) => ({ name: byId.get(id)!.name, category: byId.get(id)!.category ?? null })),
+    ]),
+  );
 }
 
 /**
  * O item pode buscar preço na base aberta (quem chama já sabe que ele não tem preço nenhum: itemsWithoutPrice): de
  * qualquer marca (brandFreeItemKey), de uma categoria que se compartilha, "outros" ou sem categoria, com palavras
- * para buscar, e não é o item de um produto da casa com preço (`ownKeys`).
+ * para buscar, e não é o item de um produto da casa com preço (`own`: a mesma chave e o mesmo item, itemFits, sem
+ * marca de outro produto que a lista não diga; a mesma regra que dá a ele o preço desse produto). Essa regra só vale
+ * para o item que não diz produto nenhum (sem produto, sem ligação e sem produto de mesmo nome): para o outro, quem
+ * chama passa `own` vazio (openCandidates, em domain/listEstimate), e ele procura em vez de ficar sem preço.
  */
-export function openPriceItem(item: Pick<OpenSearchItem, 'name' | 'category' | 'brandPreferred'>, ownKeys: ReadonlySet<string>): boolean {
+export function openPriceItem(item: Pick<OpenSearchItem, 'name' | 'category' | 'brandPreferred'>, own: OwnSameItems): boolean {
   const key = brandFreeItemKey(item);
-  if (!key || ownKeys.has(key)) return false;
+  if (!key || (own.get(key) ?? []).some((product) => itemFits(item, product))) return false;
   if (item.category != null && item.category !== 'outros' && !SHARED_CATEGORIES.includes(item.category)) return false;
   return searchWords(item.name, item.category) != null;
 }
@@ -213,12 +226,31 @@ function searchEntry(item: OpenSearchItem): OpenSearchEntry | null {
   return { signature: JSON.stringify([first, second, extra]), first, second, extra };
 }
 
+/** Chamadas a mais, de cada passo, para as buscas de fora da base aberta (a troca de marca, domain/cheaperBrand). */
+export const EXTRA_SEARCH_CALLS = 2;
+
+const bySignatureOrder = (a: { signature: string }, b: { signature: string }) =>
+  a.signature < b.signature ? -1 : a.signature > b.signature ? 1 : 0;
+
+/** As buscas em chamadas de OPEN_MAX_ENTRIES, na ordem da assinatura, no máximo `cap` chamadas. */
+function inCalls(entries: readonly OpenSearchEntry[], cap: number): OpenSearchEntry[][] {
+  const sorted = [...entries].sort(bySignatureOrder);
+  const calls: OpenSearchEntry[][] = [];
+  for (let at = 0; at < sorted.length && calls.length < cap; at += OPEN_MAX_ENTRIES) calls.push(sorted.slice(at, at + OPEN_MAX_ENTRIES));
+  return calls;
+}
+
 /**
  * As buscas da lista: uma por conjunto de palavras (itens com as mesmas palavras dividem), em ordem de assinatura,
  * em chamadas de OPEN_MAX_ENTRIES, no máximo OPEN_MAX_CALLS. A ordem pela assinatura deixa os pedaços iguais quando a
  * ordem da lista muda (e a resposta guardada serve).
+ *
+ * `extra`: os itens que a troca de marca procura (domain/cheaperBrand, os que já têm preço da casa). Os itens da base
+ * aberta são planejados exatamente como sem eles (as mesmas buscas, as mesmas chamadas); a busca de um item de
+ * `extra` igual a uma já planejada é a mesma, e as outras vão depois, em chamadas só delas, no máximo
+ * EXTRA_SEARCH_CALLS. Além disso, o item fica sem busca (sem outra marca da base aberta), sem erro.
  */
-export function openSearchPlan(items: readonly OpenSearchItem[]): OpenSearchPlan {
+export function openSearchPlan(items: readonly OpenSearchItem[], extra: readonly OpenSearchItem[] = []): OpenSearchPlan {
   const bySignature = new Map<string, OpenSearchEntry>();
   const entryOf = new Map<string, string>();
   for (const item of items) {
@@ -227,12 +259,23 @@ export function openSearchPlan(items: readonly OpenSearchItem[]): OpenSearchPlan
     bySignature.set(entry.signature, entry);
     entryOf.set(item.id, entry.signature);
   }
-  const entries = [...bySignature.values()].sort((a, b) => (a.signature < b.signature ? -1 : a.signature > b.signature ? 1 : 0));
-  const calls: OpenSearchEntry[][] = [];
-  for (let at = 0; at < entries.length && calls.length < OPEN_MAX_CALLS; at += OPEN_MAX_ENTRIES) calls.push(entries.slice(at, at + OPEN_MAX_ENTRIES));
+  const calls = inCalls([...bySignature.values()], OPEN_MAX_CALLS);
   const planned = new Set(calls.flat().map((entry) => entry.signature));
   for (const [id, signature] of [...entryOf]) if (!planned.has(signature)) entryOf.delete(id);
-  return { calls, entryOf };
+  // As buscas de fora: a mesma que já vai é dividida; as outras, em chamadas depois.
+  const extraBySignature = new Map<string, OpenSearchEntry>();
+  const extraOf = new Map<string, string>();
+  for (const item of extra) {
+    if (entryOf.has(item.id)) continue;
+    const entry = searchEntry(item);
+    if (!entry) continue;
+    if (!planned.has(entry.signature)) extraBySignature.set(entry.signature, entry);
+    extraOf.set(item.id, entry.signature);
+  }
+  const extraCalls = inCalls([...extraBySignature.values()], EXTRA_SEARCH_CALLS);
+  for (const entry of extraCalls.flat()) planned.add(entry.signature);
+  for (const [id, signature] of extraOf) if (planned.has(signature)) entryOf.set(id, signature);
+  return { calls: [...calls, ...extraCalls], entryOf };
 }
 
 /** O que identifica a lista para a busca (o gancho guarda o plano e os grupos por isto): marcar no carrinho não muda nada. */
@@ -538,36 +581,73 @@ function itemMarks(name: string, itemKey: string | null): ReadonlySet<string> {
 }
 
 /**
- * A descrição da base é o mesmo item da lista: `mesmo` de sameItemFit (talvez, outro e "não sei" ficam de fora), sem
- * marca de outro produto que o nome da lista não tenha (otherProductMarks, sem a lata onde ela é só a embalagem:
- * CAN_IS_THE_PACKAGE, e sem o cozido onde ele é o de sempre: COOKED_IS_THE_USUAL), sem faltar a marca que vale nos dois
- * sentidos (o cru do presunto: "Presunto parma" não leva o cozido) e sem forma que a lista não diz (addsForm: o café
- * solúvel para "Café"). A descrição é lida
- * com a caixa de volta (restorePackMark) e a categoria que o app adivinha dela. O resultado fica guardado (até
- * 20 000), fora do guardado de readItem: refazer a conta quando alguém marca um item no carrinho não chama
- * sameItemFit de novo.
+ * O texto (uma descrição da base, ou o nome de um produto) é o mesmo item da lista: `mesmo` de sameItemFit (talvez,
+ * outro e "não sei" ficam de fora), sem marca de outro produto que o nome da lista não tenha (otherProductMarks, sem a
+ * lata onde ela é só a embalagem: CAN_IS_THE_PACKAGE, e sem o cozido onde ele é o de sempre: COOKED_IS_THE_USUAL), sem
+ * faltar a marca que vale nos dois sentidos (o cru do presunto: "Presunto parma" não leva o cozido) e sem forma que a
+ * lista não diz (addsForm: o café solúvel para "Café"). Com `reference` (o produto que a casa compra, na troca de
+ * marca, domain/cheaperBrand), as marcas dele também são da lista, e o texto tem de tê-las todas: a casa que compra o
+ * leite de cabra pedindo "Leite" leva só leite de cabra, e a que compra o arroz de sempre não leva o quebrado.
  */
-export function keyFit(item: { name: string; category?: string | null }, key: string): boolean {
-  const restored = restorePackMark(key);
-  const cacheKey = `${item.category ?? ''}\u0000${item.name}\u0001${restored}`;
-  const known = VERDICTS.get(cacheKey);
-  if (known !== undefined) return known;
-  const category = guessCategory(restored, { abbreviated: true });
-  let fit = sameItemFit({ name: item.name, category: item.category }, { names: [restored], category }) === 'mesmo';
+function computeFit(
+  item: { name: string; category?: string | null },
+  text: string,
+  category: string | null,
+  reference: string | null,
+): boolean {
+  let fit = sameItemFit({ name: item.name, category: item.category }, { names: [text], category }) === 'mesmo';
   const want = fit ? itemIdentity(item.name, item.category) : null;
   if (fit) {
     const itemKey = want?.key ?? null;
     const mine = itemMarks(item.name, itemKey);
-    const theirs = itemMarks(restored, itemKey);
-    fit = [...theirs].every((mark) => mine.has(mark)) && [...mine].every((mark) => !BOTH_WAYS.has(mark) || theirs.has(mark));
+    const usual = reference != null ? itemMarks(reference, itemKey) : new Set<string>();
+    const theirs = itemMarks(text, itemKey);
+    fit =
+      [...theirs].every((mark) => mine.has(mark) || usual.has(mark)) &&
+      [...mine].every((mark) => !BOTH_WAYS.has(mark) || theirs.has(mark)) &&
+      [...usual].every((mark) => theirs.has(mark));
   }
   if (fit) {
-    const have = itemIdentity(restored, category);
+    const have = itemIdentity(text, category);
     fit = !(want && have && addsForm(want, have));
   }
+  return fit;
+}
+
+function remembered(cacheKey: string, compute: () => boolean): boolean {
+  const known = VERDICTS.get(cacheKey);
+  if (known !== undefined) return known;
+  const fit = compute();
   if (VERDICTS.size >= VERDICTS_LIMIT) VERDICTS.clear();
   VERDICTS.set(cacheKey, fit);
   return fit;
+}
+
+/**
+ * A descrição da base é o mesmo item da lista (computeFit), lida com a caixa de volta (restorePackMark) e a categoria
+ * que o app adivinha dela. O resultado fica guardado (até 20 000), fora do guardado de readItem: refazer a conta quando
+ * alguém marca um item no carrinho não chama sameItemFit de novo.
+ */
+export function keyFit(item: { name: string; category?: string | null }, key: string): boolean {
+  const restored = restorePackMark(key);
+  return remembered(`k\u0000${item.category ?? ''}\u0000${item.name}\u0001${restored}`, () =>
+    computeFit(item, restored, guessCategory(restored, { abbreviated: true }), null),
+  );
+}
+
+/**
+ * O nome de um produto (com a categoria dele), ou uma descrição já lida, é o mesmo item da lista (computeFit), com as
+ * marcas do produto de sempre (`reference`) também valendo. Guardado como keyFit.
+ */
+export function itemFits(
+  item: { name: string; category?: string | null },
+  candidate: { name: string; category: string | null },
+  reference: string | null = null,
+): boolean {
+  return remembered(
+    `n\u0000${item.category ?? ''}\u0000${item.name}\u0001${candidate.name}\u0002${candidate.category ?? ''}\u0003${reference ?? ''}`,
+    () => computeFit(item, candidate.name, candidate.category, reference),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -619,6 +699,11 @@ function groupKeys(keys: readonly SharedItemKey[]): { keys: string[]; weightOnly
 }
 
 const expectedText = (size: PackageSize | null) => (size ? `\n#${size.unit}|${size.amount}|${size.of ?? ''}` : '');
+
+/** A assinatura de um grupo: as chaves, em ordem, uma por linha, as só a peso depois de "~", e o tamanho esperado. */
+export function groupSignature(keys: readonly string[], weightOnly: readonly string[], expected: PackageSize | null): string {
+  return [...keys, ...weightOnly.map((key) => `~${key}`)].join('\n') + expectedText(expected);
+}
 
 /**
  * Os grupos de descrições da lista. Para cada item, na ordem da lista: as descrições da busca dele (em todas as
@@ -691,10 +776,10 @@ export function openGroups(items: readonly OpenSearchItem[], answers: readonly O
     if (!keys.length && !weightOnly.length) continue;
     // O tamanho que o banco confere nas linhas por unidade (o pacote do preço por kg, o da lista, o escolhido).
     const expected = keys.length ? basePackSize(entry.pack) : null;
-    const groupSignature = [...keys, ...weightOnly.map((key) => `~${key}`)].join('\n') + expectedText(expected);
-    const group = groups.get(groupSignature) ?? { signature: groupSignature, keys, weightOnly, expected, items: [] };
+    const named = groupSignature(keys, weightOnly, expected);
+    const group = groups.get(named) ?? { signature: named, keys, weightOnly, expected, items: [] };
     group.items.push({ id: item.id, ...entry });
-    groups.set(groupSignature, group);
+    groups.set(named, group);
   }
   return [...groups.values()];
 }
@@ -712,7 +797,9 @@ export function openGroupCalls(groups: readonly OpenGroup[]): OpenGroup[][] {
  * esperado das linhas por unidade (`p`), sempre dentro do que o banco aceita (basePackSize: um "1 x" ou um tamanho
  * fora dos limites faria o banco recusar a chamada inteira, de até 40 grupos).
  */
-export function openGroupArgument(group: OpenGroup): { k: string[]; w?: string[]; p?: { u: string; a: number; o?: number } } {
+export function openGroupArgument<G extends Pick<OpenGroup, 'keys' | 'weightOnly' | 'expected'>>(
+  group: G,
+): { k: string[]; w?: string[]; p?: { u: string; a: number; o?: number } } {
   const size = group.keys.length ? basePackSize(group.expected) : null;
   return {
     k: group.keys,
@@ -732,7 +819,7 @@ const UF = /^\d{2}$/;
  * casa] e, no banco com o tamanho, [..., pack_unit, pack_amount, pack_of]. A linha que não tem essa forma fica de
  * fora; uma resposta que não é lista é erro (a busca tenta de novo).
  */
-export function parseSharedItemPrices(raw: unknown, groups: readonly OpenGroup[]): OpenPricesAnswer {
+export function parseSharedItemPrices(raw: unknown, groups: readonly Pick<OpenGroup, 'signature'>[]): OpenPricesAnswer {
   if (!Array.isArray(raw)) throw new Error('shared_item_prices: resposta inesperada');
   const rows: SharedItemPrice[] = [];
   for (const row of raw) {

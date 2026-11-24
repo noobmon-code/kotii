@@ -48,6 +48,8 @@ const PERSISTED = new Set([
   'productBarcodes',
   'householdLocation',
   'weather',
+  // Os prazos de troca que a casa mudou (poucas linhas): sem internet, o Hoje ainda respeita o "Não sugerir mais".
+  'longCycleSettings',
 ]);
 
 /** Quanto a conferência da casa pode segurar o aviso de erro. */

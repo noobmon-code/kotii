@@ -11,6 +11,7 @@ import { FIRST_LIST_SKIP, FIRST_LIST_TEXT } from '@/domain/onboarding';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { PRICE_CALCULATOR_LABEL, WAITING_SENTENCE as WAITING_TEXT } from '@/domain/priceCalculator';
 import { listShareText } from '@/domain/listShare';
+import { BRAND_OPT_OUT, KEY_BRAND_FACT, type BrandKeyQuote, type BrandSearchItem } from '@/domain/cheaperBrand';
 import { OPEN_PRICE_FACT, type OpenSearchItem } from '@/domain/openPrices';
 import { SHARED_PRICES_NOTICE, sharedWeekStart, type SharedPrice, type SharedQuote } from '@/domain/sharedPrices';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -53,9 +54,17 @@ interface Query {
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockQueries: Record<string, Query> = {};
 /** A base aberta (useOpenSharedPrices): o que ela responde e o que a tela pediu a ela. */
-const mockOpen: { quotes: Map<string, SharedQuote[]>; asked: (OpenSearchItem[] | null)[]; refetch: jest.Mock } = {
+const mockOpen: {
+  quotes: Map<string, SharedQuote[]>;
+  brandQuotes: Map<string, BrandKeyQuote[]>;
+  asked: (OpenSearchItem[] | null)[];
+  brandAsked: (BrandSearchItem[] | null)[];
+  refetch: jest.Mock;
+} = {
   quotes: new Map(),
+  brandQuotes: new Map(),
   asked: [],
+  brandAsked: [],
   refetch: jest.fn(async () => undefined),
 };
 /** O que a tela entregou à grade do que falta comprar e à faixa "Acho que acabou". */
@@ -157,14 +166,17 @@ const mockClipboard = { text: '' };
 jest.mock('expo-clipboard', () => ({ getStringAsync: async () => mockClipboard.text, setStringAsync: async () => true }));
 jest.mock('@/data/sharedPrices', () => ({
   useSharedPrices: () => mockQueries.shared,
-  useOpenSharedPrices: (items: OpenSearchItem[] | null) => {
+  useOpenSharedPrices: (items: OpenSearchItem[] | null, _stores: unknown, brandItems: BrandSearchItem[] | null = null) => {
     mockOpen.asked.push(items);
-    return { quotes: mockOpen.quotes, waiting: false, refetch: mockOpen.refetch };
+    mockOpen.brandAsked.push(brandItems);
+    return { quotes: mockOpen.quotes, brandQuotes: mockOpen.brandQuotes, waiting: false, refetch: mockOpen.refetch };
   },
 }));
 // As abreviações aprendidas têm os testes delas (learnedAbbreviations.test): aqui, nenhuma.
 jest.mock('@/data/learnedAbbreviations', () => ({
   useLearnedAbbreviations: () => jest.requireActual<typeof import('@/domain/learnedAbbreviations')>('@/domain/learnedAbbreviations').NO_LEARNED,
+  // As descrições da casa (product_aliases), que a troca de marca não traz como "outra marca".
+  useProductAliases: () => mockQueries.aliases ?? { data: [], isPending: false, isError: false, fetchStatus: 'idle' },
 }));
 jest.mock('@/lib/auth', () => ({
   useAuth: () => ({ session: { user: { id: 'u1' } } }),
@@ -383,7 +395,8 @@ function choose(label: string) {
 }
 
 beforeEach(() => {
-  Object.assign(mockOpen, { quotes: new Map(), asked: [] });
+  Object.assign(mockOpen, { quotes: new Map(), brandQuotes: new Map(), asked: [], brandAsked: [] });
+  delete mockQueries.aliases;
   delete mockRouteParams.primeira;
   mockTrips.list = [];
   mockTrips.online = true;
@@ -3201,5 +3214,136 @@ describe('a base aberta: o item que a casa nunca comprou', () => {
     const refresh = renderer!.root.findAll((node) => typeof node.props.onRefresh === 'function')[0];
     await act(async () => refresh.props.onRefresh());
     expect(mockOpen.refetch).toHaveBeenCalled();
+  });
+});
+
+describe('a marca mais barata no mercado escolhido', () => {
+  const ASSAI = '11222333000181';
+  const DIA = '22333444000172';
+  const page = () => texts(renderer!.toJSON()).join('\n');
+  const grain = (id: string, name: string): Product => ({ ...product(id, name), category: 'graos' }) as Product;
+  const bought = (product_id: string, store_id: string, unit_price: number, raw_description: string, ago: number): LatestPrice => ({
+    product_id,
+    store_id,
+    unit: 'un',
+    unit_price,
+    purchased_at: `${day(ago)}T12:00:00`,
+    raw_description,
+  });
+  const detailFacts = async (): Promise<string[]> => {
+    await act(async () => mockSeen.open!((mockQueries.items.data as ShoppingListItem[])[0]));
+    return (mockSeen.editor!.facts as (priority: string) => string[])('normal');
+  };
+
+  beforeEach(() => {
+    mockQueries.stores = loaded([
+      { id: 's1', name: 'Assaí', cnpj: ASSAI, address: null },
+      { id: 's2', name: 'Dia', cnpj: DIA, address: null },
+    ]);
+    mockQueries.products = loaded([grain('tj', 'Arroz Tio João 5kg'), grain('pf', 'Arroz Prato Fino 5kg'), grain('cm', 'Arroz Camil 1kg')]);
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'tj', 'graos')]);
+    mockQueries.prices = loaded([
+      bought('tj', 's1', 24.9, 'ARROZ T1 TIO JOAO 5KG', 12),
+      bought('tj', 's2', 5.49, 'ARROZ T1 TIO JOAO 1KG', 19),
+      bought('pf', 's1', 22.9, 'ARROZ PRATO FINO T1 5KG', 10),
+      bought('cm', 's2', 4.49, 'ARROZ CAMIL T1 1KG', 7),
+    ]);
+  });
+
+  it('com "Onde estou": o preço da marca mais barata, o nome dela no quadrinho e no leitor de tela, e o cartão diz quantos', async () => {
+    await mount();
+    // Sem lugar escolhido: o último preço pago, como sempre.
+    expect(mockSeen.hints?.get('a')).toEqual({ cost: 'R$ 24,90', inPantry: false });
+    await act(async () => storePicker().props.onChangeStore('s2'));
+    expect(mockSeen.hints?.get('a')).toEqual({
+      cost: '~R$ 4,49',
+      inPantry: false,
+      brand: 'Camil 1kg',
+      brandSpoken: 'pela marca mais barata: Arroz Camil 1kg',
+    });
+    expect(page()).toContain('Lugar escolhido: Dia · 1 item pela marca mais barata');
+    const open = await openEstimate();
+    expect(open).toContain('Lugar escolhido: Dia. Todos os itens têm preço; 1 sai pela marca mais barata de lá.');
+    const facts = await detailFacts();
+    expect(facts).toContain(`Mais barato aqui: Arroz Camil 1kg, R$ 4,49/kg, 1 kg por R$ 4,49 (Dia, ${formatShortDate(day(7))}).`);
+    expect(facts).toContain('O de sempre (Arroz Tio João 5kg) sai R$ 5,49/kg aqui.');
+    // O item tem a "Marca preferida" para escolher (o produto dele tem marca): como ficar com o de sempre.
+    expect(facts).toContain(BRAND_OPT_OUT);
+    await act(async () => storePicker().props.onChangeStore(null));
+  });
+
+  it('a marca que só outras casas compraram, da base aberta: "outra marca", de outras casas', async () => {
+    mockOpen.brandQuotes = new Map([
+      [
+        'a',
+        [
+          {
+            storeId: 's1',
+            group: 'ARROZ BRANCO T1 KICALDO 5KG\n#kg|5|',
+            referenceKey: 'i:arroz',
+            price: { base: 'kg', perBase: 3.98, pack: { unit: 'kg', amount: 5, label: '5 kg' }, packagePrice: 19.9 },
+            quote: {
+              productId: null,
+              storeId: 's1',
+              storeCnpj: ASSAI,
+              storeName: 'Assaí',
+              state: null,
+              mine: true,
+              unit: 'un',
+              unitPrice: 19.9,
+              seenWeek: sharedWeekStart(day(9)),
+              pack: { unit: 'kg', amount: 5, label: '5 kg' },
+            },
+          },
+        ],
+      ],
+    ]);
+    await mount();
+    await act(async () => storePicker().props.onChangeStore('s1'));
+    expect(mockSeen.hints?.get('a')).toEqual({
+      cost: '~R$ 19,90',
+      inPantry: false,
+      brand: 'outra marca',
+      brandSpoken: 'pela marca mais barata: outra marca, de outras casas',
+    });
+    expect(page()).toContain('Lugar escolhido: Assaí · 1 item pela marca mais barata · inclui preços de outras casas');
+    const facts = await detailFacts();
+    expect(facts).toContain(KEY_BRAND_FACT);
+    expect(facts).toContain(SHARED_PRICES_NOTICE);
+    expect(facts).not.toContain(OPEN_PRICE_FACT);
+    await act(async () => storePicker().props.onChangeStore(null));
+  });
+
+  it('com "Marca preferida", o de sempre', async () => {
+    mockQueries.items = loaded([{ ...listItem('a', 'Arroz Tio João 5kg', 'tj', 'graos'), brand_preferred: true }]);
+    await mount();
+    await act(async () => storePicker().props.onChangeStore('s2'));
+    expect(mockSeen.hints?.get('a')).toEqual({ cost: 'R$ 5,49', inPantry: false });
+    expect(page()).not.toContain('pela marca mais barata');
+    await act(async () => storePicker().props.onChangeStore(null));
+  });
+
+  it('a busca das marcas na base aberta só sai com os preços, os mercados, as ligações, os produtos e as descrições da casa', async () => {
+    const asked = () => mockOpen.brandAsked.at(-1)?.map((entry) => [entry.id, entry.referenceKey, entry.excludedKeys]) ?? null;
+    for (const key of ['prices', 'stores', 'links', 'products', 'aliases'] as const) {
+      Object.assign(mockOpen, { brandAsked: [] });
+      const saved = mockQueries[key];
+      mockQueries[key] = onTheWay();
+      await mount();
+      expect([key, asked()]).toEqual([key, null]);
+      await act(async () => renderer?.unmount());
+      renderer = undefined;
+      if (saved) mockQueries[key] = saved;
+      else delete mockQueries[key];
+    }
+    // As descrições que falharam: nada vai (a casa veria o próprio produto como outra marca).
+    mockQueries.aliases = failed();
+    await mount();
+    expect(asked()).toBeNull();
+    await act(async () => renderer?.unmount());
+    renderer = undefined;
+    mockQueries.aliases = loaded([{ alias: 'ARROZ T1 TIO JOAO 5KG', product_id: 'tj' }]);
+    await mount();
+    expect(asked()).toEqual([['a', 'i:arroz', ['ARROZ T1 TIO JOAO 5KG']]]);
   });
 });

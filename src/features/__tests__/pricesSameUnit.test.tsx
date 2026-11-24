@@ -66,6 +66,8 @@ jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => ({ data: [], is
 jest.mock('@/features/market/PriceHistorySection', () => ({ PriceHistorySection: () => null }));
 jest.mock('@/features/SharedPrices', () => ({ SharedPricesSection: () => null }));
 jest.mock('@/features/MergeSuggestionsCard', () => ({ MergeSuggestionsCard: () => null }));
+jest.mock('@/features/DistinctPairsSection', () => ({ DistinctPairsSection: () => null }));
+jest.mock('@/features/DeleteProductButton', () => ({ DeleteProductButton: () => null }));
 jest.mock('@/features/MergeProductsModal', () => ({
   MergeProductsModal: (props: Record<string, unknown>) => {
     mockMerge.props = props;

@@ -262,7 +262,8 @@ const round4 = (n: number) => Math.round(n * 10000) / 10000;
 /**
  * Os preços de outras casas de UM produto, prontos para a tela. Unidades não
  * se misturam: por g vira por kg e por ml vira por litro (pricePerBase), e
- * cada mercado fica com uma linha por unidade, a mais recente. Na frente vêm
+ * cada mercado fica com uma linha por unidade e tamanho da embalagem (o que o
+ * servidor leu, sharedPack), a mais recente. Na frente vêm
  * as da unidade principal do produto (a mesma escolha do resumo de preços:
  * a que tem mais mercados entre os preços da casa; sem preço da casa, entre
  * estes), do mais barato para o mais caro; no empate, o visto por último.
@@ -278,7 +279,10 @@ export function sharedPriceRows(
   const latest = new Map<string, SharedPriceRow>();
   for (const price of shared) {
     const row = sharedRowOf(price, ownName.get(price.store_cnpj));
-    const key = row.storeCnpj + SEPARATOR + row.unit;
+    // Por tamanho também, como compareSharedPrices: a caixa de 5 kg e o pacote de 1 kg do mesmo produto no mesmo
+    // mercado são dois preços (a troca de marca, domain/cheaperBrand, compara os dois). A conta de hoje pega, de cada
+    // mercado, o mesmo de antes (newestShared: a semana mais nova, depois o mais barato).
+    const key = row.storeCnpj + SEPARATOR + row.unit + SEPARATOR + (row.pack?.label ?? '');
     const seen = latest.get(key);
     if (!seen || newerSharedRow(row, seen)) latest.set(key, row);
   }
@@ -409,8 +413,11 @@ export function sharedPack(row: Pick<SharedPrice, 'unit' | 'pack_unit' | 'pack_a
 export const ownSharedPack = (row: Pick<OwnPrice, 'raw_description' | 'pack_count'>): PackageSize | null =>
   (row.raw_description ? sharedPackageSize(row.raw_description) : null) ?? answeredPack(row.pack_count);
 
-/** Os dois preços a no máximo 2,5 vezes um do outro (inclusive). */
-export const withinBand = (a: number, b: number) => a > 0 && b > 0 && a <= b * SHARED_PRICE_BAND && b <= a * SHARED_PRICE_BAND;
+/**
+ * Os dois preços a no máximo `limit` vezes um do outro (inclusive): 2,5 (SHARED_PRICE_BAND) entre o preço de fora e o
+ * da casa; 2 (BRAND_PRICE_BAND, domain/cheaperBrand) entre outra marca e o preço por kg que a casa pagou.
+ */
+export const withinBand = (a: number, b: number, limit: number = SHARED_PRICE_BAND) => a > 0 && b > 0 && a <= b * limit && b <= a * limit;
 
 /**
  * Os preços por unidade da casa com que um preço por unidade de fora se compara: os de mesmo tamanho, quando ele diz

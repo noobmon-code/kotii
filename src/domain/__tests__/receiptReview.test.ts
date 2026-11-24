@@ -1,12 +1,21 @@
 import { describe, expect, it } from '@jest/globals';
+import { DEFAULT_FREEZE_DAYS } from '../freezer';
 import {
   allArrived,
   buildConfirmPayload,
   confirmBlock,
+  GONE_CHOICE_HINT,
   goneProducts,
+  pantryChoiceLabel,
+  pantryEntry,
+  pantryPayload,
+  receiptExpiryHint,
+  receiptFreezeKind,
   REFRESH_FAILED_NOTICE,
   resolveItem,
+  toggleFrozen,
   type CatalogProduct,
+  type ItemOverride,
   type ReviewItem,
 } from '../receiptReview';
 
@@ -114,13 +123,17 @@ describe('produto que sumiu do catálogo com a revisão aberta (foi juntado com 
     expect(confirmBlock({ chosen: ['a'], own: [] }, [])).toEqual({
       kind: 'choose',
       title: 'Escolha o produto de novo',
-      message: 'O produto escolhido para um item desta nota foi juntado com outro em outro aparelho. Escolha de novo o produto desse item.',
+      message: 'O produto escolhido para um item desta nota foi juntado com outro ou excluído em outro aparelho. Escolha de novo o produto desse item.',
     });
     expect(confirmBlock({ chosen: ['a', 'e'], own: ['c:gone'] }, ['c:gone'])).toEqual({
       kind: 'choose',
       title: 'Escolha o produto de novo',
-      message: 'Os produtos escolhidos para 2 itens desta nota foram juntados com outros em outro aparelho. Escolha de novo o produto desses itens.',
+      message: 'Os produtos escolhidos para 2 itens desta nota foram juntados com outros ou excluídos em outro aparelho. Escolha de novo o produto desses itens.',
     });
+  });
+
+  it('no item, a escolha que sumiu diz que o produto foi juntado ou excluído', () => {
+    expect(GONE_CHOICE_HINT).toBe('O produto escolhido foi juntado com outro ou excluído. Escolha de novo.');
   });
 
   it('o produto do próprio item fora do catálogo pede uma busca nova, e impede até as duas buscas chegarem', () => {
@@ -201,5 +214,134 @@ describe('buildConfirmPayload', () => {
       { id: 'b', new_product: { name: 'Detergente Ypê', category: 'limpeza' } },
       { id: 'c' },
     ]);
+  });
+});
+
+describe('"Congelou?" na revisão da nota', () => {
+  const freezer = DEFAULT_FREEZE_DAYS;
+  const meat = new Map<string, CatalogProduct>([
+    ['p-frango', { id: 'p-frango', name: 'Coxa de frango', category: 'carnes', shelf_life_days: null }],
+    ['p-pao', { id: 'p-pao', name: 'Pão francês', category: 'padaria', shelf_life_days: null }],
+  ]);
+  const frango = item({ id: 'f', raw_description: 'COXA FRANGO KG', suggested_name: 'Coxa de frango', suggested_category: 'carnes', product_id: 'p-frango', unit: 'kg' });
+  const tilapia = item({ id: 't', raw_description: 'FILE TILAPIA CONG', suggested_name: 'Filé de tilápia', suggested_category: 'peixes', unit: 'un' });
+
+  it('pergunta em carnes e peixes; marcada, a validade é a do congelador e a de antes é a estimada', () => {
+    const asked = resolveItem(frango, undefined, meat, '2026-11-10', freezer);
+    expect(asked).toMatchObject({ freezeKind: 'frango', frozen: false, expiresOn: '2026-11-13', expirySource: 'categoria' });
+    const frozen = resolveItem(frango, toggleFrozen(undefined, true), meat, '2026-11-10', freezer);
+    expect(frozen).toMatchObject({
+      frozen: true,
+      expiresOn: '2027-02-08',
+      expirySource: 'congelado',
+      freshExpiresOn: '2026-11-13',
+      freshExpirySource: 'categoria',
+    });
+    expect(receiptExpiryHint(frozen, freezer)).toBe('Validade estimada no congelador (frango: 90 dias) — ajuste se quiser.');
+  });
+
+  it('a data digitada antes de marcar vira a de antes (manual); desmarcar a devolve', () => {
+    const typed: ItemOverride = { expiryManual: true, expiresOn: '2026-11-15' };
+    const on = toggleFrozen(typed, true);
+    expect(on).toEqual({ frozen: true, freshExpiresOn: '2026-11-15', freshManual: true, expiryManual: false, expiresOn: undefined });
+    expect(resolveItem(frango, on, meat, '2026-11-10', freezer)).toMatchObject({
+      expiresOn: '2027-02-08',
+      expirySource: 'congelado',
+      freshExpiresOn: '2026-11-15',
+      freshExpirySource: 'manual',
+    });
+    const off = toggleFrozen(on, false);
+    expect(off).toEqual({ frozen: false, expiresOn: '2026-11-15', expiryManual: true, freshExpiresOn: undefined, freshManual: undefined });
+    expect(resolveItem(frango, off, meat, '2026-11-10', freezer)).toMatchObject({ frozen: false, expiresOn: '2026-11-15', expirySource: 'manual' });
+  });
+
+  it('a data digitada com "Congelei" marcado é a do congelador (manual), e sai ao desmarcar', () => {
+    const on = { ...toggleFrozen(undefined, true), expiryManual: true, expiresOn: '2027-01-01' };
+    const resolved = resolveItem(frango, on, meat, '2026-11-10', freezer);
+    expect(resolved).toMatchObject({ frozen: true, expiresOn: '2027-01-01', expirySource: 'manual', freshExpiresOn: '2026-11-13' });
+    expect(receiptExpiryHint(resolved, freezer)).toBeNull();
+    const [payload] = buildConfirmPayload([frango], { f: on }, meat, '2026-11-10', freezer);
+    expect(payload.pantry).toEqual({
+      name: 'Coxa de frango',
+      category: 'carnes',
+      purchased_on: '2026-11-10',
+      expires_on: '2027-01-01',
+      expiry_source: 'manual',
+      frozen_on: '2026-11-10',
+      freeze_kind: 'frango',
+      fresh_expires_on: '2026-11-13',
+      fresh_expiry_source: 'categoria',
+    });
+    expect(resolveItem(frango, toggleFrozen(on, false), meat, '2026-11-10', freezer)).toMatchObject({
+      frozen: false,
+      expiresOn: '2026-11-13',
+      expirySource: 'categoria',
+    });
+  });
+
+  it('"CONG" no nome começa marcado, e a pessoa pode desmarcar', () => {
+    expect(resolveItem(tilapia, undefined, meat, '2026-11-10', freezer)).toMatchObject({ freezeKind: 'peixe', frozen: true, expirySource: 'congelado' });
+    expect(resolveItem(tilapia, toggleFrozen(undefined, false), meat, '2026-11-10', freezer).frozen).toBe(false);
+  });
+
+  it('sem o congelador no banco nada é congelado, e o payload é o de antes (também na linha "CONG")', () => {
+    const payload = buildConfirmPayload([frango, tilapia], { f: toggleFrozen(undefined, true) }, meat, '2026-11-10', null);
+    expect(JSON.stringify(payload)).toBe(
+      JSON.stringify([
+        {
+          id: 'f',
+          product_id: 'p-frango',
+          pantry: { name: 'Coxa de frango', category: 'carnes', purchased_on: '2026-11-10', expires_on: '2026-11-13', expiry_source: 'categoria' },
+        },
+        {
+          id: 't',
+          new_product: { name: 'Filé de tilápia', category: 'peixes' },
+          pantry: { name: 'Filé de tilápia', category: 'peixes', purchased_on: '2026-11-10', expires_on: '2026-11-12', expiry_source: 'categoria' },
+        },
+      ]),
+    );
+    expect(resolveItem(tilapia, undefined, meat, '2026-11-10', null)).toMatchObject({ freezeKind: null, frozen: false });
+  });
+
+  it('sem despensa ou sem produto não pergunta; pão e frios comprados como frios também não; linguiça no açougue sim', () => {
+    expect(resolveItem(frango, { pantry: false, frozen: true }, meat, '2026-11-10', freezer)).toMatchObject({ freezeKind: null, frozen: false });
+    expect(resolveItem(frango, { product: { kind: 'none' }, frozen: true }, meat, '2026-11-10', freezer).freezeKind).toBeNull();
+    const [payload] = buildConfirmPayload([frango], { f: { pantry: false, frozen: true } }, meat, '2026-11-10', freezer);
+    expect(payload.pantry).toBeUndefined();
+    const pao = item({ id: 'p', raw_description: 'PAO FRANCES KG', suggested_name: 'Pão francês', suggested_category: 'padaria', product_id: 'p-pao' });
+    expect(resolveItem(pao, undefined, meat, '2026-11-10', freezer).freezeKind).toBeNull();
+    const salsicha = item({ id: 's', raw_description: 'SALSICHA HOT DOG', suggested_name: 'Salsicha', suggested_category: 'frios' });
+    expect(resolveItem(salsicha, undefined, meat, '2026-11-10', freezer).freezeKind).toBeNull();
+    const linguica = item({ id: 'l', raw_description: 'LINGUICA TOSCANA', suggested_name: 'Linguiça toscana', suggested_category: 'carnes' });
+    expect(resolveItem(linguica, undefined, meat, '2026-11-10', freezer).freezeKind).toBe('frios');
+  });
+
+  it('o texto embaixo da validade diz de onde ela veio', () => {
+    expect(receiptExpiryHint(resolveItem(item({ product_id: 'p-arroz' }), undefined, catalog, '2026-09-20'), null)).toBe(
+      'Validade que o produto aprendeu — ajuste se quiser.',
+    );
+    expect(receiptExpiryHint(resolveItem(item(), undefined, catalog, '2026-09-20'), null)).toBe('Validade estimada pela categoria — ajuste se quiser.');
+    expect(receiptExpiryHint(resolveItem(item(), { expiryManual: true, expiresOn: '2027-01-01' }, catalog, '2026-09-20'), null)).toBeNull();
+    expect(receiptExpiryHint(resolveItem(item(), { pantry: false }, catalog, '2026-09-20'), null)).toBeNull();
+    expect(pantryChoiceLabel(true)).toBe('Vai para a despensa');
+    expect(pantryChoiceLabel(false)).toBe('Não vai para a despensa');
+  });
+
+  it('a linha incluída depois numa nota confirmada usa as mesmas regras (pantryEntry, pantryPayload)', () => {
+    const freezeKind = receiptFreezeKind(['Coxa de frango', 'COXA FRANGO KG'], 'carnes', 'kg', freezer);
+    expect(freezeKind).toBe('frango');
+    expect(receiptFreezeKind(['Coxa de frango'], 'carnes', 'kg', null)).toBeNull();
+    const entry = pantryEntry({ category: 'carnes', purchasedOn: '2026-11-10', freezeKind, names: ['COXA FRANGO KG'], override: { frozen: true }, freezer });
+    expect(pantryPayload({ ...entry, freezeKind }, { name: 'Coxa de frango', category: 'carnes', purchasedOn: '2026-11-10' })).toEqual({
+      name: 'Coxa de frango',
+      category: 'carnes',
+      purchased_on: '2026-11-10',
+      expires_on: '2027-02-08',
+      expiry_source: 'congelado',
+      frozen_on: '2026-11-10',
+      freeze_kind: 'frango',
+      fresh_expires_on: '2026-11-13',
+      fresh_expiry_source: 'categoria',
+    });
   });
 });
