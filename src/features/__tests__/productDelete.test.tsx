@@ -11,6 +11,8 @@ import {
   DELETE_CONFIRM,
   DELETE_GONE_TITLE,
   DELETE_IN_REVIEW_TITLE,
+  DELETE_NO_ANSWER,
+  DELETE_NO_ANSWER_TITLE,
   DELETE_PURCHASED,
   DELETE_PURCHASED_TITLE,
   DELETE_RENAMED,
@@ -22,6 +24,7 @@ import {
   PRODUCT_NOT_CHECKED,
   PRODUCT_NOT_IN_HOUSE,
 } from '@/domain/productDelete';
+import { PRODUCT_DELETE_TIMEOUT_MS } from '@/data/productDelete';
 import { DISTINCT_TITLE, orderedPair, type MergeSuggestion } from '@/domain/productMerge';
 import { useMergeSuggestions } from '@/features/useProductMerge';
 import { FEATURES } from '@/lib/features';
@@ -51,6 +54,8 @@ const mockDb = {
   available: { data: true, error: null } as Reply,
   /** A resposta de delete_product; sem ela, o banco exclui de verdade. */
   deleteAnswer: null as null | (() => Promise<Reply>),
+  /** As gravações (upsert), na ordem; a com ignoreDuplicates põe na tabela as linhas que ela ainda não tem. */
+  upserts: [] as { table: string; rows: unknown; options: unknown }[],
 };
 const mockParams = { id: 'biscoito' };
 const mockRouter = { push: jest.fn(), back: jest.fn(), replace: jest.fn(), canGoBack: jest.fn(() => true) };
@@ -144,7 +149,16 @@ jest.mock('@/lib/supabase', () => {
     supabase: {
       from: (name: string) => ({
         ...read(name, () => mockDb.tables[name] ?? []),
-        upsert: () => ({ abortSignal: () => Promise.resolve({ data: null, error: null }) }),
+        upsert: (rows: Row | Row[], options?: { ignoreDuplicates?: boolean }) => {
+          mockDb.upserts.push({ table: name, rows, options });
+          if (options?.ignoreDuplicates) {
+            const table = (mockDb.tables[name] ??= []);
+            for (const row of Array.isArray(rows) ? rows : [rows]) {
+              if (!table.some((have) => JSON.stringify(have) === JSON.stringify(row))) table.push({ ...row });
+            }
+          }
+          return { abortSignal: () => Promise.resolve({ data: null, error: null }) };
+        },
         delete: () => read(name, () => []),
       }),
       rpc,
@@ -168,6 +182,8 @@ const line = (id: string, productId: string, status: 'confirmed' | 'draft', stor
 
 let client: QueryClient;
 let renderer: ReactTestRenderer | undefined;
+/** O teste trocou os relógios (jest.useFakeTimers): as esperas andam o relógio de mentira. */
+let fakeClock = false;
 /** Tudo o que a tela já desenhou, depois de cada passo: a tela que sai nunca pode dizer que o produto não existe. */
 let seen: string[] = [];
 
@@ -179,7 +195,8 @@ const record = () => {
 };
 const settle = async (ms = 30) => {
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, ms));
+    if (fakeClock) await jest.advanceTimersByTimeAsync(ms);
+    else await new Promise((resolve) => setTimeout(resolve, ms));
   });
   record();
 };
@@ -238,6 +255,7 @@ beforeEach(() => {
   mockDb.rpcs = [];
   mockDb.available = { data: true, error: null };
   mockDb.deleteAnswer = null;
+  mockDb.upserts = [];
   mockParams.id = 'biscoito';
   mockRouter.canGoBack.mockReturnValue(true);
   seen = [];
@@ -248,6 +266,7 @@ afterEach(async () => {
   renderer = undefined;
   onlineManager.setOnline(true);
   jest.useRealTimers();
+  fakeClock = false;
   jest.clearAllMocks();
   client.clear();
 });
@@ -489,6 +508,22 @@ describe('o cartão "Parecem o mesmo produto" de Preços, montado embaixo da tel
       expect(shown.slice(from).flat()).not.toContain(refused);
       expect(shown.at(-1)).toEqual(['Arroz 5kg / Arroz Tio João 5 kg']);
     };
+    /** O par que passa, gravado por este aparelho (uma vez, o menor id primeiro, sem mexer no que já está gravado). */
+    const carriedWrite = { table: 'product_distinct_pairs', rows: [orderedPair('gemeo', 'siciliano')], options: { ignoreDuplicates: true } };
+    /** As buscas novas do catálogo e dos pares, seguradas até aqui, chegam com o que o banco tem agora. */
+    const arrive = async () => {
+      mockDb.holdCatalog = false;
+      mockDb.hold.delete('product_distinct_pairs');
+      await act(async () => {
+        void client.invalidateQueries({ queryKey: ['products'] });
+        void client.invalidateQueries({ queryKey: ['productDistinctPairs'] });
+      });
+      for (let round = 0; round < 6; round++) await settle();
+      expect(client.getQueryData<Row[]>(['products'])?.map((row) => row.id)).not.toContain('limao');
+      // O par gravado por este aparelho é o que a busca nova traz.
+      expect(client.getQueryData(['productDistinctPairs'])).toEqual([orderedPair('gemeo', 'siciliano')]);
+      expect(shown.at(-1)).toEqual(['Arroz 5kg / Arroz Tio João 5 kg']);
+    };
 
     it('excluiu aqui', async () => {
       await openHeld();
@@ -497,6 +532,39 @@ describe('o cartão "Parecem o mesmo produto" de Preços, montado embaixo da tel
       await confirmLast();
       expect(rpcCalls('delete_product')).toHaveLength(1);
       await after(from);
+      expect(mockDb.upserts).toEqual([carriedWrite]);
+    });
+
+    it('excluiu aqui, mas a resposta se perdeu (25 s): o par que passa entra na memória e é gravado, e a sugestão escondida pelo nome não volta', async () => {
+      await openHeld();
+      await tap();
+      // O banco exclui "Limao" (o produto sai, e os pares dele com ele, cascade), e a resposta nunca chega.
+      mockDb.deleteAnswer = () => {
+        mockDb.tables.products = mockDb.tables.products.filter((row) => row.id !== 'limao');
+        mockDb.tables.product_distinct_pairs = [];
+        return new Promise<Reply>(() => undefined);
+      };
+      const from = shown.length;
+      jest.useFakeTimers();
+      fakeClock = true;
+      await act(async () => {
+        confirmMock.mock.calls.at(-1)![3]();
+        await jest.advanceTimersByTimeAsync(PRODUCT_DELETE_TIMEOUT_MS);
+      });
+      for (let round = 0; round < 6; round++) await settle();
+      expect(rpcCalls('delete_product')).toHaveLength(1);
+      expect(notifyMock).toHaveBeenCalledWith(DELETE_NO_ANSWER_TITLE, DELETE_NO_ANSWER);
+      expect(mockDb.upserts).toEqual([carriedWrite]);
+      // Não se sabe se excluiu: o produto fica na memória até a busca nova, e o par que passa já entrou.
+      expect(client.getQueryData<Row[]>(['products'])?.map((row) => row.id)).toContain('limao');
+      expect(client.getQueryData(['productDistinctPairs'])).toEqual([orderedPair('limao', 'siciliano'), orderedPair('gemeo', 'siciliano')]);
+      expect(client.getQueryState(['products'])?.fetchStatus).toBe('fetching');
+      expect(client.getQueryState(['productDistinctPairs'])?.fetchStatus).toBe('fetching');
+      expect(shown.slice(from).flat()).not.toContain(hidden);
+      expect(shown.slice(from).flat()).not.toContain(refused);
+      await arrive();
+      expect(shown.slice(from).flat()).not.toContain(hidden);
+      expect(shown.slice(from).flat()).not.toContain(refused);
     });
 
     it('a leitura do toque acha o produto já excluído em outro aparelho', async () => {
@@ -507,6 +575,25 @@ describe('o cartão "Parecem o mesmo produto" de Preços, montado embaixo da tel
       expect(notifyMock).toHaveBeenCalledWith(DELETE_GONE_TITLE, PRODUCT_NOT_IN_HOUSE);
       expect(rpcCalls('delete_product')).toHaveLength(0);
       await after(from);
+      // Gravado de novo aqui, sem repetir o que o outro aparelho já gravou.
+      expect(mockDb.upserts).toEqual([carriedWrite]);
+      expect(mockDb.tables.product_distinct_pairs).toEqual([orderedPair('gemeo', 'siciliano')]);
+    });
+
+    it('a leitura do toque acha o produto já excluído, e quem excluiu não gravou o par que passa: este aparelho grava', async () => {
+      await openHeld();
+      // Outro aparelho excluiu "Limao" e o par que passa não foi gravado (a gravação dele falhou, a resposta se
+      // perdeu, ou o app dele é de antes).
+      mockDb.tables.products = mockDb.tables.products.filter((row) => row.id !== 'limao');
+      mockDb.tables.product_distinct_pairs = [];
+      const from = shown.length;
+      await tap();
+      expect(notifyMock).toHaveBeenCalledWith(DELETE_GONE_TITLE, PRODUCT_NOT_IN_HOUSE);
+      expect(rpcCalls('delete_product')).toHaveLength(0);
+      expect(mockDb.upserts).toEqual([carriedWrite]);
+      await after(from);
+      await arrive();
+      expect(shown.slice(from).flat()).not.toContain(hidden);
     });
 
     it('o pedido de excluir acha o produto já excluído em outro aparelho (P0002)', async () => {
@@ -520,6 +607,7 @@ describe('o cartão "Parecem o mesmo produto" de Preços, montado embaixo da tel
       await confirmLast();
       expect(notifyMock).toHaveBeenCalledWith(DELETE_GONE_TITLE, PRODUCT_NOT_IN_HOUSE);
       await after(from);
+      expect(mockDb.upserts).toEqual([carriedWrite]);
     });
   });
 });

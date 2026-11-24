@@ -500,7 +500,7 @@ describe('excluir', () => {
     }
   });
 
-  it('já não existia (P0002), com um gêmeo de nome: os pares que passam entram na memória, sem gravar, e a sugestão escondida pelo nome não volta', async () => {
+  it('já não existia (P0002), com um gêmeo de nome: os pares que passam entram na memória e são gravados, e só então os pares são buscados de novo', async () => {
     const products = [
       { id: 'p00', name: 'Limão siciliano', category: 'hortifruti' },
       { id: 'p01', name: 'Limao', category: 'hortifruti' },
@@ -512,15 +512,82 @@ describe('excluir', () => {
     hook.client.setQueryData<DistinctPair[]>(['productDistinctPairs'], [orderedPair('p00', 'p01')]);
     // A casa recusou "Limao / Limão siciliano", o que pela regra do nome também esconde "Limão / Limão siciliano".
     expect(mergeCandidates(products, [orderedPair('p00', 'p01')]).flat().map((p) => p.id)).not.toContain('p00');
+    mockDb.holdUpsert = true;
+    jest.useFakeTimers();
     await act(async () => {
       await expect(hook.value().mutateAsync({ id: 'p01', name: 'Limao' })).rejects.toMatchObject({ code: 'P0002' });
     });
     expect(hook.client.getQueryData(['products'])).toEqual([products[0], products[2]]);
     expect(hook.client.getQueryData(['productDistinctPairs'])).toEqual([orderedPair('p00', 'p02')]);
     expect(mergeCandidates(hook.client.getQueryData(['products'])!, hook.client.getQueryData(['productDistinctPairs'])!)).toEqual([]);
-    // Só na memória: quem excluiu gravou os dele, e a busca nova dos pares confirma.
-    expect(mockDb.upserts).toEqual([]);
+    // Gravados também aqui: o aparelho que excluiu pode não ter gravado os dele (a gravação dele falhou, a resposta
+    // se perdeu, o app dele é de antes). O menor id primeiro, sem mexer no que já está gravado.
+    expect(mockDb.upserts).toEqual([{ table: 'product_distinct_pairs', rows: [orderedPair('p00', 'p02')], options: { ignoreDuplicates: true } }]);
+    expect(hook.invalidated).not.toContain('productDistinctPairs');
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(PAIRS_CARRY_MS);
+    });
+    expect([...hook.invalidated].sort()).toEqual([...DELETE_REFRESHES].sort());
+  });
+
+  it('já não existia (P0002): a gravação dos pares que falha não muda o que a pessoa vê', async () => {
+    const products = [
+      { id: 'p00', name: 'Limão siciliano', category: 'hortifruti' },
+      { id: 'p01', name: 'Limao', category: 'hortifruti' },
+      { id: 'p02', name: 'Limão', category: 'hortifruti' },
+    ];
+    mockDb.rpcReply = { data: null, error: { code: 'P0002', message: 'product not found' } };
+    mockDb.upsertReply = { data: null, error: { message: 'TypeError: Network request failed' } };
+    const hook = await withHook(() => useDeleteProduct());
+    hook.client.setQueryData(['products'], products);
+    hook.client.setQueryData<DistinctPair[]>(['productDistinctPairs'], [orderedPair('p00', 'p01')]);
+    let failure: unknown;
+    await act(async () => {
+      failure = await hook.value().mutateAsync({ id: 'p01', name: 'Limao' }).catch((error: unknown) => error);
+    });
+    await flush();
+    // O erro é o do pedido, e o aviso é o de "já não existe"; os pares na memória ficam como estavam.
+    expect(deleteErrorNotice(failure)).toEqual({ title: DELETE_GONE_TITLE, message: PRODUCT_NOT_IN_HOUSE });
+    expect(mockDb.upserts.map((upsert) => upsert.rows)).toEqual([[orderedPair('p00', 'p02')]]);
+    expect(hook.client.getQueryData(['productDistinctPairs'])).toEqual([orderedPair('p00', 'p02')]);
     expect(hook.invalidated).toContain('productDistinctPairs');
+  });
+
+  it('sem resposta em 25 s, com um gêmeo de nome: os pares que passam entram na memória sem tirar o produto, são gravados, e só então os pares são buscados de novo', async () => {
+    const products = [
+      { id: 'p00', name: 'Limão siciliano', category: 'hortifruti' },
+      { id: 'p01', name: 'Limao', category: 'hortifruti' },
+      { id: 'p02', name: 'Limão', category: 'hortifruti' },
+    ];
+    jest.useFakeTimers();
+    // O banco pode ter excluído (a tela de verdade, em features/__tests__, faz o banco excluir); a resposta não chega.
+    mockDb.holdRpc = true;
+    mockDb.holdUpsert = true;
+    const hook = await withHook(() => useDeleteProduct());
+    hook.client.setQueryData(['products'], products);
+    hook.client.setQueryData<DistinctPair[]>(['productDistinctPairs'], [orderedPair('p00', 'p01')]);
+    await act(async () => {
+      const failed = expect(hook.value().mutateAsync({ id: 'p01', name: 'Limao' })).rejects.toThrow(DELETE_NO_ANSWER);
+      await jest.advanceTimersByTimeAsync(PRODUCT_DELETE_TIMEOUT_MS);
+      await failed;
+    });
+    expect(deleteErrorNotice(new Error(DELETE_NO_ANSWER))).toEqual({ title: DELETE_NO_ANSWER_TITLE, message: DELETE_NO_ANSWER });
+    // Não se sabe se excluiu: o produto e os pares dele ficam na memória até a busca nova, e o par que passa entra.
+    expect(hook.client.getQueryData(['products'])).toEqual(products);
+    expect(hook.client.getQueryData(['productDistinctPairs'])).toEqual([orderedPair('p00', 'p01'), orderedPair('p00', 'p02')]);
+    // Se não excluiu, o par que entrou não muda as sugestões: só diz o que a regra do nome já dizia (a dos gêmeos fica).
+    expect(mergeCandidates(products, hook.client.getQueryData(['productDistinctPairs'])!)).toEqual(mergeCandidates(products, [orderedPair('p00', 'p01')]));
+    // A busca nova dos produtos chega antes da dos pares, já sem o excluído: a sugestão escondida pelo nome não volta.
+    hook.client.setQueryData(['products'], [products[0], products[2]]);
+    expect(mergeCandidates(hook.client.getQueryData(['products'])!, hook.client.getQueryData(['productDistinctPairs'])!)).toEqual([]);
+    expect(mockDb.upserts).toEqual([{ table: 'product_distinct_pairs', rows: [orderedPair('p00', 'p02')], options: { ignoreDuplicates: true } }]);
+    expect(hook.invalidated).not.toContain('productDistinctPairs');
+    expect([...hook.invalidated].sort()).toEqual(DELETE_REFRESHES.filter((key) => key !== 'productDistinctPairs').sort());
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(PAIRS_CARRY_MS);
+    });
+    expect([...hook.invalidated].sort()).toEqual([...DELETE_REFRESHES].sort());
+    expect(mockDb.rpcs).toHaveLength(1);
   });
 
   it('os pares que passam saem do que a memória tinha antes do pedido, mesmo que uma busca nova tire o produto no meio dele', async () => {
@@ -545,7 +612,7 @@ describe('excluir', () => {
       });
       expect(hook.client.getQueryData(['productDistinctPairs'])).toEqual([orderedPair('p00', 'p02')]);
       expect(mergeCandidates(hook.client.getQueryData(['products'])!, hook.client.getQueryData(['productDistinctPairs'])!)).toEqual([]);
-      expect(mockDb.upserts.map((upsert) => upsert.rows)).toEqual(rpcReply.error ? [] : [[orderedPair('p00', 'p02')]]);
+      expect(mockDb.upserts.map((upsert) => upsert.rows)).toEqual([[orderedPair('p00', 'p02')]]);
       await act(async () => renderer?.unmount());
     }
   });
