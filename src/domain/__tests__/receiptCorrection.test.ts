@@ -56,7 +56,7 @@ import { pantryChoiceLabel, type CatalogProduct } from '../receiptReview';
 import { indexNames, nameCandidates } from '../similarNames';
 
 const MIGRATION = readFileSync(
-  path.join(__dirname, '../../../supabase/migrations/20261122120000_confirmed_receipt_items.sql'),
+  path.join(__dirname, '../../../supabase/migrations/20261124180430_confirmed_receipt_items.sql'),
   'utf8',
 );
 

@@ -4,7 +4,7 @@
 // item que a leitura perdeu ("Item"): a data errada deixa a nota fora do mês, o
 // mercado ou o produto errado estragam o histórico de preço, e o item que faltou
 // some dos gastos. A troca de produto e o item que faltou passam pelas funções de
-// 20261122120000_confirmed_receipt_items.sql (domain/receiptCorrection), que
+// 20261124180430_confirmed_receipt_items.sql (domain/receiptCorrection), que
 // levam junto a despensa da linha. Tirar uma linha e mudar a quantidade, a
 // unidade ou a descrição continuam só na revisão. Os preços compartilhados entre
 // casas, se a nota deu algum, ficam como estão (o gatilho do banco só

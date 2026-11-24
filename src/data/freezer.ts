@@ -1,7 +1,7 @@
 // Congelador da despensa: a pergunta se o banco já o tem e as duas funções que mudam as compras. As regras e as
 // frases estão em domain/freezer.
 //
-// O congelador chega numa migração própria (20261122110000_pantry_freezer.sql), e o app pode ser publicado antes
+// O congelador chega numa migração própria (20261124173722_pantry_freezer.sql), e o app pode ser publicado antes
 // dela: os controles que congelam só aparecem quando pantry_freezer_available() responde true (useFreezer). Sem a
 // migração, uma linha "Congelei" levaria 'congelado' a um check que não o aceita, e a nota inteira falharia. Os
 // tempos são os do app (DEFAULT_FREEZE_DAYS): não há tempos por casa, e o banco refaz a data de quem grava.
