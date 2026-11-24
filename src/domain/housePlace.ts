@@ -20,7 +20,13 @@ export const HOUSE_PLACE_REMOVE = 'Tirar o local';
 
 /** O que fica guardado: o mesmo texto na tela do clima e ao criar a casa. */
 export const HOUSE_PLACE_PRIVACY =
-  'Fica guardado só o bairro (um ponto com cerca de 1 km de precisão), não o endereço. Vale para toda a casa.';
+  'Fica guardado só o bairro (um ponto com cerca de 1 km de precisão) e o estado, não o endereço. Vale para toda a casa.';
+
+/**
+ * Logo depois de HOUSE_PLACE_PRIVACY, onde ele aparece: o estado do local também traz preços (a base aberta de preços
+ * lê os mercados dos estados da casa, domain/openPrices).
+ */
+export const HOUSE_PLACE_PRICES = 'Com o local, a lista de compras também acha preços que outras casas viram nos mercados do seu estado.';
 
 /** O convite da parte "Onde fica a casa" ao criar uma casa. */
 export const HOUSE_PLACE_CREATE_INTRO = 'Com o bairro, o Kotii dá dicas do tempo: dia de lavar roupa, chuva chegando, calor, frio.';

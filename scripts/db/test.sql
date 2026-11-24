@@ -595,6 +595,438 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+\echo '• congelador da despensa: quem chama, o tempo de cada tipo e os checks'
+reset role;
+do $$
+declare
+  fn text;
+begin
+  -- Cada papel conferido sozinho.
+  foreach fn in array array[
+    'public.pantry_freeze_days(text)', 'public.freeze_pantry_items(uuid[], text, date)',
+    'public.thaw_pantry_items(uuid[], date)', 'public.pantry_freezer_available()'] loop
+    assert has_function_privilege('authenticated', fn, 'execute'), fn || ': members call it';
+    assert not has_function_privilege('anon', fn, 'execute'), fn || ': anon does not';
+    assert not has_function_privilege('public', fn, 'execute'), fn || ': nor everyone (PUBLIC)';
+    assert (select not prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = fn::regprocedure),
+      fn || ': runs as the caller, with an empty search_path';
+  end loop;
+  -- As funções dos gatilhos: só os gatilhos as chamam.
+  foreach fn in array array['public.pantry_items_freezer_expiry()', 'public.pantry_items_freezer_history()'] loop
+    assert not has_function_privilege('public', fn, 'execute'), fn || ': nobody calls the trigger (PUBLIC)';
+    assert not has_function_privilege('anon', fn, 'execute'), fn || ': nobody calls the trigger (anon)';
+    assert not has_function_privilege('authenticated', fn, 'execute'), fn || ': nobody calls the trigger (members)';
+    assert (select not prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = fn::regprocedure),
+      fn || ': the trigger runs as the caller, with an empty search_path';
+  end loop;
+  -- Nenhum índice do congelador: nada lê as compras pelo tipo (os tempos são fixos, sem tempos por casa).
+  assert not exists (select 1 from pg_indexes where tablename = 'pantry_items' and indexdef like '%freeze_kind%'),
+    'no index over freeze_kind';
+  -- O tempo do tipo é fixo (DEFAULT_FREEZE_DAYS): sem tabela, sem casa.
+  assert (select provolatile = 'i' from pg_proc where oid = 'public.pantry_freeze_days(text)'::regprocedure), 'the freezer time is immutable';
+  assert public.pantry_freeze_days('carne') = 90, 'carne 90';
+  assert public.pantry_freeze_days('frango') = 90, 'frango 90';
+  assert public.pantry_freeze_days('carne_moida') = 60, 'carne moída 60';
+  assert public.pantry_freeze_days('peixe') = 60, 'peixe 60';
+  assert public.pantry_freeze_days('pao') = 60, 'pão 60';
+  assert public.pantry_freeze_days('frios') = 30, 'frios 30';
+  assert public.pantry_freeze_days('boi') is null, 'no time for an unknown kind';
+  assert not exists (select 1 from pg_class where relname = 'pantry_freeze_times'), 'no table of household freezer times';
+end $$;
+set role anon;
+do $$
+begin
+  begin
+    perform public.pantry_freezer_available();
+    raise exception 'FAIL: anon asked for the freezer';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.freeze_pantry_items(array[gen_random_uuid()], 'carne', '2026-11-01');
+    raise exception 'FAIL: anon froze';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.thaw_pantry_items(array[gen_random_uuid()], '2026-11-01');
+    raise exception 'FAIL: anon thawed';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  v uuid;
+  w uuid;
+begin
+  assert public.pantry_freezer_available() is true, 'a signed-in person learns that the freezer exists';
+  begin
+    insert into public.pantry_items (name, category, frozen_on) values ('X', 'carnes', '2026-11-01');
+    raise exception 'FAIL: frozen_on without freeze_kind';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, freeze_kind) values ('X', 'carnes', 'carne');
+    raise exception 'FAIL: freeze_kind without frozen_on';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, frozen_on, freeze_kind) values ('X', 'carnes', '2026-11-01', 'boi');
+    raise exception 'FAIL: unknown freeze kind';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, frozen_on, freeze_kind, thawed_on)
+      values ('X', 'carnes', '2026-11-05', 'carne', '2026-11-04');
+    raise exception 'FAIL: thawed before it was frozen';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, thawed_on) values ('X', 'carnes', '2026-11-04');
+    raise exception 'FAIL: thawed without being frozen';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, frozen_on, freeze_kind) values ('X', 'carnes', 'infinity', 'carne');
+    raise exception 'FAIL: frozen on infinity';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, frozen_on, freeze_kind) values ('X', 'carnes', '1999-12-31', 'carne');
+    raise exception 'FAIL: frozen before 2000';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, frozen_on, freeze_kind, thawed_on, fresh_expires_on)
+      values ('X', 'carnes', '2026-11-01', 'carne', '2026-11-05', '2026-11-04');
+    raise exception 'FAIL: fresh expiry kept on a thawed row';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, fresh_expires_on) values ('X', 'carnes', '2026-11-04');
+    raise exception 'FAIL: fresh expiry on a row never frozen';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, frozen_on, freeze_kind, fresh_expires_on, fresh_expiry_source)
+      values ('X', 'carnes', '2026-11-01', 'carne', '2026-11-04', 'congelado');
+    raise exception 'FAIL: fresh source congelado';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, frozen_on, freeze_kind, fresh_expiry_source)
+      values ('X', 'carnes', '2026-11-01', 'carne', 'categoria');
+    raise exception 'FAIL: fresh source without its date';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, expires_on, expiry_source) values ('X', 'carnes', '2026-11-04', 'outra');
+    raise exception 'FAIL: unknown expiry source';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, expires_on, expiry_source) values ('X', 'carnes', '2026-11-04', 'congelado');
+    raise exception 'FAIL: freezer expiry on a row that is not in the freezer';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, expires_on, expiry_source, frozen_on, freeze_kind, thawed_on)
+      values ('X', 'carnes', '2026-11-04', 'congelado', '2026-11-01', 'carne', '2026-11-03');
+    raise exception 'FAIL: freezer expiry on a thawed row';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, expires_on, expiry_source) values ('X', 'carnes', '2026-11-04', 'descongelado');
+    raise exception 'FAIL: thawed expiry on a row never frozen';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.pantry_items (name, category, frozen_on, freeze_kind, fresh_expires_on, fresh_expiry_source)
+      values ('X', 'carnes', '2026-11-05', 'carne', '2026-11-08', 'descongelado');
+    raise exception 'FAIL: thawed fresh expiry without the thawed lot it came from';
+  exception when check_violation then null;
+  end;
+  -- O descongelado, fora do congelador e com a data de quando saiu, entra.
+  insert into public.pantry_items (name, category, expires_on, expiry_source, frozen_on, freeze_kind, thawed_on)
+    values ('X', 'carnes', '2026-11-08', 'descongelado', '2026-11-01', 'carne', '2026-11-05') returning id into v;
+  -- Os dias de antes são do gatilho: quem grava não os escolhe.
+  insert into public.pantry_items (name, category, frozen_on, freeze_kind, prev_frozen_on, prev_thawed_on)
+    values ('Y', 'carnes', '2026-11-06', 'carne', '2026-11-01', '2026-11-05') returning id into w;
+  assert (select prev_frozen_on is null and prev_thawed_on is null from public.pantry_items where id = w),
+    'an insert carries no freezer of before';
+  update public.pantry_items set prev_frozen_on = '2026-11-01', prev_thawed_on = '2026-11-05' where id = w;
+  assert (select prev_frozen_on is null and prev_thawed_on is null from public.pantry_items where id = w),
+    'nor an update of a lot frozen once';
+  update public.pantry_items set prev_frozen_on = '2026-11-01', prev_thawed_on = '2026-11-05' where id = v;
+  assert (select prev_frozen_on is null and prev_thawed_on is null from public.pantry_items where id = v),
+    'nor an update of a thawed lot';
+  delete from public.pantry_items where id in (v, w);
+end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• congelador: o banco refaz a validade do congelador de quem grava'
+do $$
+declare
+  v uuid;
+  w uuid;
+begin
+  -- O aparelho mandou outra data (um app antigo, um tempo de antes): vale o do tipo.
+  insert into public.pantry_items (name, category, purchased_on, expires_on, expiry_source, frozen_on, freeze_kind,
+    fresh_expires_on, fresh_expiry_source)
+    values ('Frango do congelador', 'carnes', '2026-11-01', '2030-01-01', 'congelado', '2026-11-01', 'frango', '2026-11-04', 'categoria')
+    returning id into v;
+  assert (select expires_on from public.pantry_items where id = v) = date '2026-11-01' + 90, 'insert: frozen day + the kind''s time';
+  update public.pantry_items set expires_on = '2031-01-01' where id = v;
+  assert (select expires_on from public.pantry_items where id = v) = date '2026-11-01' + 90, 'an update that keeps congelado is redone';
+  update public.pantry_items set freeze_kind = 'frios' where id = v;
+  assert (select expires_on from public.pantry_items where id = v) = date '2026-11-01' + 30, 'another kind, its own time';
+  update public.pantry_items set frozen_on = '2026-11-03' where id = v;
+  assert (select expires_on from public.pantry_items where id = v) = date '2026-11-03' + 30, 'another freezing day';
+  -- Digitada: fica.
+  update public.pantry_items set expires_on = '2027-01-01', expiry_source = 'manual' where id = v;
+  assert (select expires_on from public.pantry_items where id = v) = '2027-01-01', 'a typed date on a frozen row stays';
+  update public.pantry_items set quantity = 2 where id = v;
+  assert (select expires_on from public.pantry_items where id = v) = '2027-01-01', 'and other edits keep it';
+  insert into public.pantry_items (name, category, purchased_on, expires_on, expiry_source)
+    values ('Leite do congelador', 'laticinios', '2026-11-01', '2026-11-10', 'categoria') returning id into w;
+  assert (select expires_on from public.pantry_items where id = w) = '2026-11-10', 'a category date stays';
+  delete from public.pantry_items where id in (v, w);
+end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• confirm_receipt: a linha "Congelei" vai para o congelador e não ensina o produto'
+do $$
+declare
+  r uuid;
+  i_carne uuid;
+  i_peixe uuid;
+  i_arroz uuid;
+  p_peixe uuid;
+  p_arroz uuid;
+begin
+  insert into public.products (name, category) values ('Filé de tilápia do congelador', 'peixes') returning id into p_peixe;
+  insert into public.products (name, category) values ('Arroz do congelador', 'graos') returning id into p_arroz;
+  insert into public.receipts (purchased_at, source) values ('2026-11-10 12:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'ALCATRA KG CONGELADOR', 1.2, 'kg', 50, 60) returning id into i_carne;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'FILE TILAPIA CONG CONGELADOR', 1, 'un', 30, 30) returning id into i_peixe;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'ARROZ 5KG CONGELADOR', 1, 'un', 25, 25) returning id into i_arroz;
+  perform public.confirm_receipt(r, jsonb_build_array(
+    -- Estimada: a data que o aparelho mandou não vale, vale a do tipo.
+    jsonb_build_object('id', i_carne,
+      'new_product', jsonb_build_object('name', 'Alcatra do congelador', 'category', 'carnes'),
+      'pantry', jsonb_build_object('name', 'Alcatra do congelador', 'category', 'carnes', 'purchased_on', '2026-11-10',
+        'expires_on', '2026-11-13', 'expiry_source', 'congelado', 'frozen_on', '2026-11-10', 'freeze_kind', 'carne',
+        'fresh_expires_on', '2026-11-13', 'fresh_expiry_source', 'categoria')),
+    -- Digitada numa linha congelada: fica, e não ensina o produto.
+    jsonb_build_object('id', i_peixe, 'product_id', p_peixe,
+      'pantry', jsonb_build_object('name', 'Filé de tilápia do congelador', 'category', 'peixes', 'purchased_on', '2026-11-10',
+        'expires_on', '2027-06-01', 'expiry_source', 'manual', 'frozen_on', '2026-11-10', 'freeze_kind', 'peixe',
+        'fresh_expiry_source', 'categoria')),
+    -- Sem frozen_on, o resto do congelador não entra.
+    jsonb_build_object('id', i_arroz, 'product_id', p_arroz,
+      'pantry', jsonb_build_object('name', 'Arroz do congelador', 'category', 'graos', 'purchased_on', '2026-11-10',
+        'expires_on', '2027-05-10', 'expiry_source', 'manual', 'freeze_kind', 'carne', 'fresh_expires_on', '2026-11-20'))));
+  assert (select frozen_on = '2026-11-10' and freeze_kind = 'carne' and thawed_on is null
+            and fresh_expires_on = '2026-11-13' and fresh_expiry_source = 'categoria'
+            and expiry_source = 'congelado' and expires_on = date '2026-11-10' + 90
+          from public.pantry_items where receipt_item_id = i_carne), 'the frozen line stores the freezer columns and the kind''s date';
+  assert (select frozen_on = '2026-11-10' and freeze_kind = 'peixe' and expires_on = '2027-06-01' and expiry_source = 'manual'
+            and fresh_expires_on is null and fresh_expiry_source is null
+          from public.pantry_items where receipt_item_id = i_peixe), 'a typed date on a frozen line stays (no fresh source without its date)';
+  assert (select shelf_life_days from public.products where id = p_peixe) is null, 'a frozen line teaches no shelf life';
+  assert (select frozen_on is null and freeze_kind is null and thawed_on is null and fresh_expires_on is null and fresh_expiry_source is null
+          from public.pantry_items where receipt_item_id = i_arroz), 'without frozen_on the five columns stay null';
+  assert (select shelf_life_days from public.products where id = p_arroz) = 181, 'a typed date on a line not frozen is still learned';
+  delete from public.pantry_items where receipt_item_id in (i_carne, i_peixe, i_arroz);
+  delete from public.receipts where id = r;
+end $$;
+reset role;
+delete from public.products where name in ('Filé de tilápia do congelador', 'Arroz do congelador', 'Alcatra do congelador');
+set role authenticated;
+
+-- ---------------------------------------------------------------------------
+\echo '• congelar e descongelar: cada compra no seu dia, e o congelador pausa a validade'
+do $$
+declare
+  a uuid;
+  b uuid;
+  c uuid;
+  d uuid;
+  e uuid;
+  f uuid;
+  g uuid;
+  n integer;
+  r record;
+begin
+  insert into public.pantry_items (name, category, purchased_on, expires_on, expiry_source)
+    values ('Frango A', 'carnes', '2026-11-01', '2026-11-04', 'categoria') returning id into a;
+  insert into public.pantry_items (name, category, purchased_on, expires_on, expiry_source)
+    values ('Frango B', 'carnes', '2026-11-05', '2026-11-08', 'manual') returning id into b;
+  insert into public.pantry_items (name, category, purchased_on, consumed_at) values ('Frango C', 'carnes', '2026-11-01', now())
+    returning id into c;
+  insert into public.pantry_items (name, category, purchased_on) values ('Pão D', 'padaria', '2026-11-01') returning id into d;
+  insert into public.pantry_items (name, category, purchased_on, expires_on, expiry_source)
+    values ('Frango E', 'carnes', '2026-11-01', '2026-11-04', 'categoria') returning id into e;
+  perform set_config('test.freeze_a', a::text, false);
+
+  begin
+    perform public.freeze_pantry_items(array[a], 'boi', '2026-11-01');
+    raise exception 'FAIL: unknown kind';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.freeze_pantry_items(array[a], 'frango', '1999-12-31');
+    raise exception 'FAIL: freeze day before 2000';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.freeze_pantry_items(array[a], 'frango', null);
+    raise exception 'FAIL: no freeze day';
+  exception when invalid_parameter_value then null;
+  end;
+
+  -- "Congelei no dia de cada compra": o dia pedido é antes das duas, e cada uma fica com o seu. A consumida fica de fora.
+  select count(*) into n from public.freeze_pantry_items(array[a, b, c], 'frango', '2026-10-01');
+  assert n = 2, 'two lots frozen, the consumed one left out';
+  assert (select frozen_on = '2026-11-01' and freeze_kind = 'frango' and thawed_on is null
+            and fresh_expires_on = '2026-11-04' and fresh_expiry_source = 'categoria'
+            and expires_on = date '2026-11-01' + 90 and expiry_source = 'congelado'
+          from public.pantry_items where id = a), 'A: frozen on its purchase day, the fresh date kept';
+  assert (select frozen_on = '2026-11-05' and fresh_expires_on = '2026-11-08' and fresh_expiry_source = 'manual'
+            and expires_on = date '2026-11-05' + 90 and expiry_source = 'congelado'
+          from public.pantry_items where id = b), 'B: its own purchase day, the typed date kept as the fresh one';
+  assert (select frozen_on is null from public.pantry_items where id = c), 'the consumed lot is not frozen';
+  select count(*) into n from public.freeze_pantry_items(array[a], 'frango', '2026-11-02');
+  assert n = 0, 'a lot already in the freezer is left out';
+
+  -- Sem validade: ganha a do congelador; a de antes fica vazia.
+  select count(*) into n from public.freeze_pantry_items(array[d], 'pao', '2026-11-03');
+  assert n = 1, 'D frozen';
+  assert (select frozen_on = '2026-11-03' and expires_on = date '2026-11-03' + 60 and expiry_source = 'congelado'
+            and fresh_expires_on is null and fresh_expiry_source is null
+          from public.pantry_items where id = d), 'D: no fresh date, the freezer one';
+
+  -- Já vencida antes do dia: a validade e a origem de antes ficam, e a compra vai para o congelador do mesmo jeito.
+  select count(*) into n from public.freeze_pantry_items(array[e], 'frango', '2026-11-06');
+  assert n = 1, 'E frozen';
+  assert (select frozen_on = '2026-11-06' and expires_on = '2026-11-04' and expiry_source = 'categoria'
+            and fresh_expires_on = '2026-11-04' and fresh_expiry_source = 'categoria'
+          from public.pantry_items where id = e), 'E: already expired, keeps its date and source';
+
+  -- Descongelar. A: o que faltava (3 dias) volta a contar do dia em que saiu.
+  begin
+    perform public.thaw_pantry_items(array[a], '2101-01-01');
+    raise exception 'FAIL: thaw day after 2100';
+  exception when invalid_parameter_value then null;
+  end;
+  select count(*) into n from public.thaw_pantry_items(array[a, c], '2026-11-20') t where not t.item_undone;
+  assert n = 1, 'only A thaws (C is consumed), and it is not an undo';
+  assert (select expires_on = '2026-11-23' and expiry_source = 'descongelado' and thawed_on = '2026-11-20'
+            and frozen_on = '2026-11-01' and freeze_kind = 'frango' and fresh_expires_on is null and fresh_expiry_source is null
+          from public.pantry_items where id = a), 'A: thawed 20/11, due 23/11';
+  select count(*) into n from public.thaw_pantry_items(array[a], '2026-11-21');
+  assert n = 0, 'a thawed lot does not thaw again';
+  -- B: no mesmo dia em que foi congelada, desfaz.
+  select * into r from public.thaw_pantry_items(array[b], '2026-11-05');
+  assert r.item_id = b and r.item_undone and r.item_frozen_on is null and r.item_expires_on = '2026-11-08'
+    and r.item_expiry_source = 'manual', 'B thaws, and the rpc says it was an undo';
+  assert (select frozen_on is null and freeze_kind is null and thawed_on is null and fresh_expires_on is null
+            and expires_on = '2026-11-08' and expiry_source = 'manual'
+          from public.pantry_items where id = b), 'B: same day, undone';
+  -- D: sem validade de antes, fica sem validade.
+  select * into r from public.thaw_pantry_items(array[d], '2026-11-20');
+  assert r.item_id = d and not r.item_undone and r.item_expires_on is null, 'D thaws, not an undo';
+  assert (select expires_on is null and expiry_source is null and thawed_on = '2026-11-20' from public.pantry_items where id = d),
+    'D: no fresh date, no date';
+  -- E: congelada dois dias depois de vencer, continua dois dias vencida.
+  select count(*) into n from public.thaw_pantry_items(array[e], '2026-11-20');
+  assert (select expires_on = '2026-11-18' and expiry_source = 'descongelado' from public.pantry_items where id = e),
+    'E: the past days come back too';
+
+  -- Congelar de novo a descongelada: nunca antes do dia em que saiu.
+  select count(*) into n from public.freeze_pantry_items(array[a], 'frango', '2026-11-15');
+  assert n = 1, 'A refrozen';
+  assert (select frozen_on = '2026-11-20' and thawed_on is null and expires_on = date '2026-11-20' + 90
+            and fresh_expires_on = '2026-11-23' and fresh_expiry_source = 'descongelado'
+            and prev_frozen_on = '2026-11-01' and prev_thawed_on = '2026-11-20'
+          from public.pantry_items where id = a), 'A: refrozen on the thaw day, the thawed date as the fresh one, the thawed lot kept';
+
+  -- F: congelada, descongelada, de novo no congelador por engano no dia seguinte e descongelada nesse mesmo dia. O
+  -- desfazer volta à descongelada de antes (o dia em que saiu, a validade dela), não a uma compra que nunca foi ao
+  -- congelador: a validade digitada depois não ensinaria o produto.
+  insert into public.pantry_items (name, category, purchased_on, expires_on, expiry_source)
+    values ('Frango F', 'carnes', '2026-11-01', '2026-11-04', 'categoria') returning id into f;
+  perform public.freeze_pantry_items(array[f], 'frango', '2026-11-01');
+  perform public.thaw_pantry_items(array[f], '2026-11-20');
+  select count(*) into n from public.freeze_pantry_items(array[f], 'frango', '2026-11-21');
+  assert n = 1, 'F refrozen';
+  assert (select frozen_on = '2026-11-21' and thawed_on is null and prev_frozen_on = '2026-11-01' and prev_thawed_on = '2026-11-20'
+            and fresh_expires_on = '2026-11-23' and fresh_expiry_source = 'descongelado'
+          from public.pantry_items where id = f), 'F: refrozen, the thawed lot kept';
+  -- Ficou no congelador: outra gravação (a quantidade, outro dia de congelado) não perde os dias de antes.
+  update public.pantry_items set quantity = 2, frozen_on = '2026-11-21', freeze_kind = 'frango' where id = f;
+  assert (select prev_frozen_on = '2026-11-01' and prev_thawed_on = '2026-11-20' from public.pantry_items where id = f),
+    'F: an edit in the freezer keeps the thawed lot';
+  -- O banco devolve frozen_on (01/11), e item_undone diz que foi desfeito: o aviso é o de desfazer, como a prévia.
+  select * into r from public.thaw_pantry_items(array[f], '2026-11-21');
+  assert r.item_id = f and r.item_undone and r.item_frozen_on = '2026-11-01' and r.item_expires_on = '2026-11-23'
+    and r.item_expiry_source = 'descongelado', 'F thaws as an undo, with the frozen_on of the thawed lot';
+  assert (select frozen_on = '2026-11-01' and thawed_on = '2026-11-20' and freeze_kind = 'frango'
+            and expires_on = '2026-11-23' and expiry_source = 'descongelado'
+            and fresh_expires_on is null and fresh_expiry_source is null and prev_frozen_on is null and prev_thawed_on is null
+          from public.pantry_items where id = f), 'F: same day, back to the thawed lot (still marked as frozen once)';
+  select count(*) into n from public.thaw_pantry_items(array[f], '2026-11-25');
+  assert n = 0, 'F is no longer in the freezer';
+
+  -- G: o "Congelei" do formulário (uma gravação direta) leva a descongelada de volta: o gatilho guarda o mesmo, e a
+  -- validade digitada depois de descongelar (manual) volta com ela.
+  insert into public.pantry_items (name, category, purchased_on, expires_on, expiry_source)
+    values ('Frango G', 'carnes', '2026-11-01', '2026-11-04', 'categoria') returning id into g;
+  perform public.freeze_pantry_items(array[g], 'frango', '2026-11-01');
+  perform public.thaw_pantry_items(array[g], '2026-11-10');
+  update public.pantry_items set expires_on = '2026-11-12', expiry_source = 'manual' where id = g;
+  update public.pantry_items set frozen_on = '2026-11-11', thawed_on = null, freeze_kind = 'frango',
+    fresh_expires_on = '2026-11-12', fresh_expiry_source = 'manual', expires_on = '2026-11-11', expiry_source = 'congelado'
+    where id = g;
+  assert (select prev_frozen_on = '2026-11-01' and prev_thawed_on = '2026-11-10' and expires_on = date '2026-11-11' + 90
+          from public.pantry_items where id = g), 'G: refrozen by the form, the thawed lot kept';
+  select * into r from public.thaw_pantry_items(array[g], '2026-11-11');
+  assert r.item_undone and r.item_frozen_on = '2026-11-01' and r.item_expiry_source = 'manual', 'G: an undo';
+  assert (select frozen_on = '2026-11-01' and thawed_on = '2026-11-10' and expires_on = '2026-11-12' and expiry_source = 'manual'
+          from public.pantry_items where id = g), 'G: same day, back to the thawed lot with its typed date';
+  -- Descongelada de verdade (outro dia), a de antes sai: fica a última vez no congelador.
+  perform public.freeze_pantry_items(array[g], 'frango', '2026-11-12');
+  select * into r from public.thaw_pantry_items(array[g], '2026-11-15');
+  assert not r.item_undone, 'G: a real thaw is not an undo';
+  assert (select frozen_on = '2026-11-12' and thawed_on = '2026-11-15' and expires_on = '2026-11-15'
+            and expiry_source = 'descongelado' and prev_frozen_on is null and prev_thawed_on is null
+          from public.pantry_items where id = g), 'G: a real thaw keeps the last stint and drops the one before';
+  perform set_config('test.freeze_rows', array_to_string(array[a, b, c, d, e, f, g], ','), false);
+end $$;
+-- Outra casa não acha as compras.
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+declare
+  a uuid := current_setting('test.freeze_a')::uuid;
+  n integer;
+begin
+  select count(*) into n from public.thaw_pantry_items(array[a], '2026-11-25');
+  assert n = 0, 'C cannot thaw A''s lot';
+  select count(*) into n from public.freeze_pantry_items(array[a], 'carne', '2026-11-25');
+  assert n = 0, 'C cannot freeze A''s lot';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  assert (select frozen_on = '2026-11-20' and thawed_on is null and freeze_kind = 'frango'
+          from public.pantry_items where id = current_setting('test.freeze_a')::uuid), 'A''s lot is as it was';
+  delete from public.pantry_items where id = any(string_to_array(current_setting('test.freeze_rows'), ',')::uuid[]);
+end $$;
+
+-- ---------------------------------------------------------------------------
 \echo '• a nota tira da lista o que a compra cumpriu e aprende o vínculo'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$
@@ -4533,6 +4965,505 @@ end $$;
 reset role;
 
 -- ---------------------------------------------------------------------------
+\echo '• excluir produto: só o que não está em nenhuma nota, e o código ambíguo fica'
+-- Dalva e Davi moram juntos; Dora mora em outra casa e também tem um "Biscoito errado".
+\set user_dp1 '00000000-0000-0000-0000-0000000007d1'
+\set user_dp2 '00000000-0000-0000-0000-0000000007d2'
+\set user_dp3 '00000000-0000-0000-0000-0000000007d3'
+reset role;
+insert into auth.users (id) values (:'user_dp1'), (:'user_dp2'), (:'user_dp3');
+
+-- As permissões e as peças que a migração escreve. Conferidas duas vezes: como a migração as deixou e depois de
+-- rodar de novo os revoke e grant dela, que precisam dar no mesmo.
+create function pg_temp.delete_product_access() returns void language plpgsql as $$
+declare
+  fk record;
+begin
+  -- Cada papel conferido sozinho.
+  assert has_function_privilege('authenticated', 'public.delete_product(uuid, text)', 'execute'), 'members delete products';
+  assert not has_function_privilege('anon', 'public.delete_product(uuid, text)', 'execute'), 'anon does not';
+  assert not has_function_privilege('public', 'public.delete_product(uuid, text)', 'execute'), 'nor everyone (PUBLIC)';
+  assert (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'delete_product') = 1,
+    'one delete_product only';
+  assert (select not prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = 'public.delete_product(uuid, text)'::regprocedure),
+    'delete_product runs as the caller, with an empty search_path';
+  assert has_function_privilege('authenticated', 'public.delete_product_available()', 'execute'), 'members ask whether deleting exists';
+  assert not has_function_privilege('anon', 'public.delete_product_available()', 'execute'), 'anon cannot ask it';
+  assert not has_function_privilege('public', 'public.delete_product_available()', 'execute'), 'nor everyone (PUBLIC)';
+  assert (select proconfig = array['search_path=""'] from pg_proc where oid = 'public.delete_product_available()'::regprocedure),
+    'the probe has an empty search_path';
+  -- As funções dos dois gatilhos: só os gatilhos as chamam.
+  assert (select not prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = 'public.products_keep_receipt_lines()'::regprocedure),
+    'the guard runs as the caller, with an empty search_path';
+  assert (select not prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = 'public.product_store_codes_forget_unlinked()'::regprocedure),
+    'the store-code cleanup runs as the caller, with an empty search_path';
+  assert not has_function_privilege('public', 'public.products_keep_receipt_lines()', 'execute'), 'nobody calls the guard (PUBLIC)';
+  assert not has_function_privilege('anon', 'public.products_keep_receipt_lines()', 'execute'), 'nobody calls the guard (anon)';
+  assert not has_function_privilege('authenticated', 'public.products_keep_receipt_lines()', 'execute'), 'nobody calls the guard (members)';
+  assert not has_function_privilege('public', 'public.product_store_codes_forget_unlinked()', 'execute'), 'nobody calls the cleanup (PUBLIC)';
+  assert not has_function_privilege('anon', 'public.product_store_codes_forget_unlinked()', 'execute'), 'nobody calls the cleanup (anon)';
+  assert not has_function_privilege('authenticated', 'public.product_store_codes_forget_unlinked()', 'execute'), 'nobody calls the cleanup (members)';
+  assert exists (select 1 from pg_trigger where tgrelid = 'public.products'::regclass and tgname = 'products_keep_receipt_lines' and not tgisinternal),
+    'the guard trigger is on products';
+  assert exists (select 1 from pg_trigger where tgrelid = 'public.product_store_codes'::regclass and tgname = 'product_store_codes_forget_unlinked' and not tgisinternal),
+    'the cleanup trigger is on product_store_codes';
+  -- A linha de código pode ficar sem produto (a ambígua); a marca continua obrigatória.
+  assert not (select attnotnull from pg_attribute where attrelid = 'public.product_store_codes'::regclass and attname = 'product_id'),
+    'a store code may lose its product';
+  assert (select attnotnull from pg_attribute where attrelid = 'public.product_store_codes'::regclass and attname = 'ambiguous'),
+    'ambiguous is still not null';
+  -- O que cada chave para products faz quando o produto sai: c (cascade) leva as linhas, n (set null) as deixa sem
+  -- o produto. Uma tabela nova precisa de uma decisão aqui e em merge_products.
+  assert (
+    select array_agg(t.relname::text || ':' || c.confdeltype::text order by t.relname::text, c.conname::text)
+    from pg_constraint c join pg_class t on t.oid = c.conrelid
+    where c.contype = 'f' and c.confrelid = 'public.products'::regclass
+  ) = array['list_item_links:c', 'pantry_items:n', 'product_aliases:c', 'product_barcodes:c', 'product_distinct_pairs:c',
+            'product_distinct_pairs:c', 'product_store_codes:n', 'purchase_history:n', 'receipt_items:n', 'shopping_list_items:n'],
+    'a table that references products needs a decision in delete_product (and merge_products): keep its rows without the product (set null) or delete them (cascade)';
+  -- Todo set null para products só limpa o product_id (a casa da linha fica).
+  for fk in
+    select c.conname, c.conrelid, c.confdelsetcols
+    from pg_constraint c
+    where c.contype = 'f' and c.confrelid = 'public.products'::regclass and c.confdeltype = 'n'
+  loop
+    assert fk.confdelsetcols = array[(select attnum from pg_attribute where attrelid = fk.conrelid and attname = 'product_id')]::int2[],
+      format('%s nulls only product_id', fk.conname);
+  end loop;
+end $$;
+select pg_temp.delete_product_access() \gset
+revoke execute on function public.delete_product(uuid, text) from public, anon;
+grant execute on function public.delete_product(uuid, text) to authenticated;
+revoke execute on function public.delete_product_available() from public, anon;
+grant execute on function public.delete_product_available() to authenticated;
+revoke execute on function public.products_keep_receipt_lines() from public, anon, authenticated;
+revoke execute on function public.product_store_codes_forget_unlinked() from public, anon, authenticated;
+select pg_temp.delete_product_access() \gset
+
+-- Tudo o que excluir mexeria num produto, como quem chama vê. Depois de uma recusa, tem de estar igual.
+create function pg_temp.delete_product_state(p uuid) returns jsonb language sql as $$
+  select jsonb_build_object(
+    'product', (select to_jsonb(x) from public.products x where x.id = p),
+    'receipt_items', (select jsonb_agg(to_jsonb(i) order by i.id) from public.receipt_items i where i.product_id = p),
+    'pantry_items', (select jsonb_agg(to_jsonb(i) order by i.id) from public.pantry_items i where i.product_id = p),
+    'list_items', (select jsonb_agg(to_jsonb(i) order by i.id) from public.shopping_list_items i where i.product_id = p),
+    'purchase_history', (select jsonb_agg(to_jsonb(h) order by h.id) from public.purchase_history h where h.product_id = p),
+    'aliases', (select jsonb_agg(to_jsonb(a) order by a.alias) from public.product_aliases a where a.product_id = p),
+    'links', (select jsonb_agg(to_jsonb(k) order by k.name_key) from public.list_item_links k where k.product_id = p),
+    'barcodes', (select jsonb_agg(to_jsonb(b) order by b.gtin) from public.product_barcodes b where b.product_id = p),
+    'store_codes', (select jsonb_agg(to_jsonb(s) order by s.store_cnpj, s.store_code) from public.product_store_codes s where s.product_id = p),
+    'pairs', (select jsonb_agg(to_jsonb(d) order by d.product_a, d.product_b)
+      from public.product_distinct_pairs d where p in (d.product_a, d.product_b)),
+    'prices', (select jsonb_agg(to_jsonb(o) order by o.receipt_id, o.unit_price) from public.price_observations o where o.product_id = p)
+  );
+$$;
+
+create function pg_temp.delete_product_unchanged() returns void language plpgsql as $$
+begin
+  assert pg_temp.delete_product_state(current_setting('test.dp_junk')::uuid) = current_setting('test.dp_state_junk')::jsonb, 'the junk product is untouched';
+  assert pg_temp.delete_product_state(current_setting('test.dp_bought')::uuid) = current_setting('test.dp_state_bought')::jsonb, 'the bought product is untouched';
+  assert pg_temp.delete_product_state(current_setting('test.dp_review')::uuid) = current_setting('test.dp_state_review')::jsonb, 'the product in review is untouched';
+  assert pg_temp.delete_product_state(current_setting('test.dp_both')::uuid) = current_setting('test.dp_state_both')::jsonb, 'the product bought and in review is untouched';
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_dp1', false) \gset
+select (public.create_household('Casa da Dalva', 'Dalva')).invite_code as invite_dp \gset
+select set_config('request.jwt.claim.sub', :'user_dp2', false) \gset
+select public.join_household(:'invite_dp', 'Davi') \gset
+select set_config('request.jwt.claim.sub', :'user_dp3', false) \gset
+select (public.create_household('Casa da Dora', 'Dora')).id as hh_dp3 \gset
+select set_config('test.hh_dp3_id', :'hh_dp3', false) \gset
+do $$
+declare
+  p uuid;
+begin
+  assert public.delete_product_available() is true, 'a signed-in person learns that deleting exists';
+  insert into public.products (name, category) values ('Biscoito errado', 'mercearia') returning id into p;
+  perform set_config('test.dp_dora', p::text, false);
+end $$;
+
+-- Dalva: um produto que ninguém comprou, ligado a tudo o que pode apontar para ele, e os que estão em notas.
+select set_config('request.jwt.claim.sub', :'user_dp1', false) \gset
+do $$
+declare
+  s uuid;
+  r uuid;
+  i uuid;
+  l uuid;
+  l_old uuid;
+  ids uuid[];
+  tokens uuid[];
+  p_junk uuid;
+  p_other uuid;
+  p_bought uuid;
+  p_review uuid;
+  p_both uuid;
+  p_free uuid;
+  p_direct uuid;
+begin
+  insert into public.stores (name, cnpj) values ('Mercado da Dalva', '11222333000181') returning id into s;
+  insert into public.products (name, category) values ('Biscoito errado', 'mercearia') returning id into p_junk;
+  insert into public.products (name, category) values ('Biscoito recheado', 'mercearia') returning id into p_other;
+
+  -- Despensa: um item aberto e um já consumido.
+  insert into public.pantry_items (product_id, name, category) values (p_junk, 'Biscoito', 'mercearia');
+  insert into public.pantry_items (product_id, name, category, consumed_at) values (p_junk, 'Biscoito', 'mercearia', now());
+  -- Listas: um item aberto, um que saiu pelo carrinho (histórico de compras) e um de lista arquivada.
+  insert into public.shopping_lists (name) values ('Mercado') returning id into l;
+  insert into public.shopping_list_items (list_id, name, product_id) values (l, 'Biscoito', p_junk);
+  insert into public.shopping_list_items (list_id, name, product_id, checked_at) values (l, 'Biscoito errado', p_junk, now());
+  select array_agg(id), array_agg(toggle_token) into ids, tokens from public.shopping_list_items where list_id = l and checked_at is not null;
+  assert public.clear_checked_items(l, ids, tokens) = 1, 'the cart item went to the purchase history';
+  insert into public.shopping_lists (name, archived_at) values ('Semana passada', now()) returning id into l_old;
+  insert into public.shopping_list_items (list_id, name, product_id) values (l_old, 'Biscoito', p_junk);
+  -- O que a casa aprendeu: a descrição da nota, o nome da lista, o código de barras e dois códigos do mercado (um
+  -- deles ambíguo: o 1 de todo o hortifruti a granel, que um dia ensinou este produto).
+  insert into public.product_aliases (alias, product_id) values ('BISC ERRADO', p_junk);
+  insert into public.list_item_links (name_key, product_id) values ('biscoito errado', p_junk);
+  insert into public.product_barcodes (gtin, product_id) values ('07891000100103', p_junk);
+  insert into public.product_store_codes (store_cnpj, store_code, product_id, learned_from) values ('11222333000181', 'B123', p_junk, 'BISC ERRADO');
+  insert into public.product_store_codes (store_cnpj, store_code, product_id, learned_from, ambiguous) values ('11222333000181', '1', p_junk, 'TOMATE KG', true);
+  insert into public.product_distinct_pairs (product_a, product_b) values (least(p_junk, p_other), greatest(p_junk, p_other));
+
+  -- "Arroz 5kg": uma compra, pela confirmação da nota.
+  insert into public.receipts (store_id, purchased_at, source) values (s, '2026-11-01 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'ARROZ 5KG', 1, 'un', 25.90, 25.90) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i,
+    'new_product', jsonb_build_object('name', 'Arroz 5kg', 'category', 'mercearia'))));
+  select id into p_bought from public.products where name = 'Arroz 5kg';
+  -- "Feijão": só num rascunho, achado pelo apelido.
+  insert into public.products (name, category) values ('Feijão', 'mercearia') returning id into p_review;
+  insert into public.receipts (store_id, status) values (s, 'draft') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit_price, total_price, product_id) values (r, 'FEIJAO', 8, 8, p_review);
+  -- "Café": uma compra e um rascunho.
+  insert into public.receipts (store_id, purchased_at, source) values (s, '2026-11-02 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'CAFE 500G', 1, 'un', 19.90, 19.90) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i,
+    'new_product', jsonb_build_object('name', 'Café', 'category', 'mercearia'))));
+  select id into p_both from public.products where name = 'Café';
+  insert into public.receipts (store_id, status) values (s, 'draft') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit_price, total_price, product_id) values (r, 'CAFE 500G', 21, 21, p_both);
+  -- Nada aponta para estes.
+  insert into public.products (name, category) values ('Sabão', 'limpeza') returning id into p_free;
+  insert into public.products (name, category) values ('Sal', 'mercearia') returning id into p_direct;
+
+  perform set_config('test.dp_junk', p_junk::text, false);
+  perform set_config('test.dp_other', p_other::text, false);
+  perform set_config('test.dp_bought', p_bought::text, false);
+  perform set_config('test.dp_review', p_review::text, false);
+  perform set_config('test.dp_both', p_both::text, false);
+  perform set_config('test.dp_free', p_free::text, false);
+  perform set_config('test.dp_direct', p_direct::text, false);
+  perform set_config('test.dp_state_junk', pg_temp.delete_product_state(p_junk)::text, false);
+  perform set_config('test.dp_state_bought', pg_temp.delete_product_state(p_bought)::text, false);
+  perform set_config('test.dp_state_review', pg_temp.delete_product_state(p_review)::text, false);
+  perform set_config('test.dp_state_both', pg_temp.delete_product_state(p_both)::text, false);
+  assert pg_temp.delete_product_state(p_bought)->'prices' is not null, 'the bought product has a price';
+  assert jsonb_array_length(pg_temp.delete_product_state(p_junk)->'store_codes') = 2, 'both market codes point to the junk product';
+end $$;
+
+-- Dora (outra casa): para ela o produto da Dalva não existe, e ela não fica sabendo se acertou o nome.
+select set_config('request.jwt.claim.sub', :'user_dp3', false) \gset
+do $$
+declare
+  p_junk uuid := current_setting('test.dp_junk')::uuid;
+begin
+  begin
+    perform public.delete_product(p_junk);
+    raise exception 'FAIL: D deleted a product of another household';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.delete_product(p_junk, 'Biscoito errado');
+    raise exception 'FAIL: D deleted a product of another household by its name';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.delete_product(p_junk, 'Outro');
+    raise exception 'FAIL: D was told the name of a product of another household does not match';
+  exception when no_data_found then null;
+  end;
+  delete from public.products where id = p_junk;
+  assert not found, 'a direct delete of another household''s product reaches nothing';
+  assert (select count(*) from public.products) = 1, 'D keeps her product';
+end $$;
+
+set role anon;
+do $$
+begin
+  begin
+    perform public.delete_product(current_setting('test.dp_junk')::uuid);
+    raise exception 'FAIL: anon deleted a product';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.delete_product(current_setting('test.dp_junk')::uuid, 'Biscoito errado');
+    raise exception 'FAIL: anon deleted a product by its name';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.delete_product_available();
+    raise exception 'FAIL: anon asked whether deleting exists';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- Dalva: cada recusa vem antes de qualquer mudança.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_dp1', false) \gset
+do $$
+declare
+  p_junk uuid := current_setting('test.dp_junk')::uuid;
+  p_bought uuid := current_setting('test.dp_bought')::uuid;
+  p_review uuid := current_setting('test.dp_review')::uuid;
+  p_both uuid := current_setting('test.dp_both')::uuid;
+  wrong text;
+begin
+  begin
+    perform public.delete_product(p_bought, 'Arroz 5kg');
+    raise exception 'FAIL: deleted a product with purchases';
+  exception when sqlstate 'NK016' then null;
+  end;
+  perform pg_temp.delete_product_unchanged();
+  -- O nome é conferido antes das compras.
+  begin
+    perform public.delete_product(p_bought, 'Outro');
+    raise exception 'FAIL: deleted a product by a wrong name';
+  exception when sqlstate 'NK008' then null;
+  end;
+  perform pg_temp.delete_product_unchanged();
+  -- A compra vence o rascunho.
+  begin
+    perform public.delete_product(p_both, 'Café');
+    raise exception 'FAIL: deleted a product with purchases and a draft';
+  exception when sqlstate 'NK016' then null;
+  end;
+  perform pg_temp.delete_product_unchanged();
+  begin
+    perform public.delete_product(p_review, 'Feijão');
+    raise exception 'FAIL: deleted a product on a receipt under review';
+  exception when sqlstate 'NK017' then null;
+  end;
+  perform pg_temp.delete_product_unchanged();
+  begin
+    perform public.delete_product(null);
+    raise exception 'FAIL: deleted a null product';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.delete_product(gen_random_uuid(), 'Biscoito errado');
+    raise exception 'FAIL: deleted a product that does not exist';
+  exception when no_data_found then null;
+  end;
+  -- O nome tem de ser exatamente o da linha: nem maiúsculas, nem espaço, nem vazio.
+  foreach wrong in array array['biscoito errado', 'Biscoito errado ', 'Biscoito Errado', ''] loop
+    begin
+      perform public.delete_product(p_junk, wrong);
+      raise exception 'FAIL: deleted by the name %', wrong;
+    exception when sqlstate 'NK008' then null;
+    end;
+  end loop;
+  perform pg_temp.delete_product_unchanged();
+end $$;
+-- Outro aparelho renomeia entre a leitura e o toque: o nome que a pessoa leu já não é o dele.
+update public.products set name = 'Biscoito errado 2' where id = current_setting('test.dp_junk')::uuid;
+do $$
+begin
+  perform public.delete_product(current_setting('test.dp_junk')::uuid, 'Biscoito errado');
+  raise exception 'FAIL: deleted a product renamed meanwhile';
+exception when sqlstate 'NK008' then null;
+end $$;
+update public.products set name = 'Biscoito errado' where id = current_setting('test.dp_junk')::uuid;
+do $$
+begin
+  perform pg_temp.delete_product_unchanged();
+end $$;
+
+-- Dalva: um delete direto pela API do produto que está numa nota esbarra no gatilho; o que não está, sai.
+do $$
+declare
+  p_direct uuid := current_setting('test.dp_direct')::uuid;
+begin
+  begin
+    delete from public.products where id = current_setting('test.dp_bought')::uuid;
+    raise exception 'FAIL: a product with purchases left by a direct delete';
+  exception when sqlstate 'NK016' then null;
+  end;
+  begin
+    delete from public.products where id = current_setting('test.dp_both')::uuid;
+    raise exception 'FAIL: a product with purchases and a draft left by a direct delete';
+  exception when sqlstate 'NK016' then null;
+  end;
+  begin
+    delete from public.products where id = current_setting('test.dp_review')::uuid;
+    raise exception 'FAIL: a product on a receipt under review left by a direct delete';
+  exception when sqlstate 'NK017' then null;
+  end;
+  perform pg_temp.delete_product_unchanged();
+  delete from public.products where id = p_direct;
+  assert found, 'the guard only refuses with receipt lines';
+  assert not exists (select 1 from public.products where id = p_direct), 'the product with nothing pointing to it left';
+end $$;
+
+-- As marcas da lixeira de itens da lista, antes: excluir o produto não apaga item nenhum.
+reset role;
+select count(*) as dp_tombstones from public.shopping_list_item_tombstones \gset
+select set_config('test.dp_tombstones', :'dp_tombstones', false) \gset
+
+-- Davi (mesma casa, não foi ele quem criou o produto) exclui. O que estava na despensa e nas listas fica, sem o
+-- produto; o que a casa aprendeu sobre ele sai; o código de mercado ambíguo fica, sem produto e ainda sem valer.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_dp2', false) \gset
+do $$
+declare
+  p_junk uuid := current_setting('test.dp_junk')::uuid;
+  tokens uuid[];
+begin
+  select array_agg(toggle_token order by id) into tokens from public.shopping_list_items where product_id = p_junk;
+  assert public.delete_product(p_junk, 'Biscoito errado') = jsonb_build_object('deleted', p_junk, 'pantry', 1, 'list', 1, 'barcodes', 1),
+    'deletes and says what lost the link: the open pantry item, the open list item and the barcode';
+  assert not exists (select 1 from public.products where id = p_junk), 'the product is gone';
+  assert (select count(*) from public.pantry_items where name = 'Biscoito' and product_id is null) = 2, 'both pantry rows stay, without the product';
+  assert (select count(*) from public.shopping_list_items where name = 'Biscoito' and product_id is null) = 2,
+    'the open and the archived list items stay, without the product';
+  assert (select array_agg(toggle_token order by id) from public.shopping_list_items where name = 'Biscoito') = tokens,
+    'the list items keep their toggle token';
+  assert (select count(*) from public.purchase_history where name = 'Biscoito errado' and product_id is null) = 1,
+    'the purchase history row stays, without the product';
+  assert not exists (select 1 from public.product_aliases where alias = 'BISC ERRADO'), 'the alias is gone';
+  assert not exists (select 1 from public.list_item_links where name_key = 'biscoito errado'), 'the list link is gone';
+  assert not exists (select 1 from public.product_barcodes where gtin = '07891000100103'), 'the barcode is gone';
+  assert not exists (select 1 from public.product_distinct_pairs where p_junk in (product_a, product_b)), 'the pair is gone';
+  assert not exists (select 1 from public.product_store_codes where store_code = 'B123'), 'the market code that was not ambiguous left with it';
+  assert (select product_id is null and ambiguous and learned_from = 'TOMATE KG' from public.product_store_codes where store_code = '1'),
+    'the ambiguous market code stays, without a product';
+  assert not exists (select 1 from public.match_store_codes('11222333000181', array['1'])), 'and still gives no product in that market';
+  assert exists (select 1 from public.products where id = current_setting('test.dp_other')::uuid), 'the other product of the pair stays';
+  begin
+    perform public.delete_product(p_junk, 'Biscoito errado');
+    raise exception 'FAIL: deleted the same product twice';
+  exception when no_data_found then null;
+  end;
+end $$;
+reset role;
+do $$
+begin
+  assert (select count(*) from public.shopping_list_item_tombstones) = current_setting('test.dp_tombstones')::bigint,
+    'a set null is an update: no tombstone is written';
+end $$;
+
+-- Dalva: a marca ambígua continua valendo depois que o produto dela saiu. Outra nota no mesmo mercado com o
+-- código 1 dá outro produto à linha, e o código continua sem valer.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_dp1', false) \gset
+do $$
+declare
+  s uuid;
+  r uuid;
+  i uuid;
+  p_cebola uuid;
+begin
+  select id into s from public.stores where cnpj = '11222333000181';
+  insert into public.receipts (store_id, purchased_at, source) values (s, '2026-11-03 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, store_code, unit_price, total_price) values (r, 'CEBOLA KG', '1', 6, 3)
+    returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i,
+    'new_product', jsonb_build_object('name', 'Cebola', 'category', 'hortifruti'))));
+  select id into p_cebola from public.products where name = 'Cebola';
+  assert (select product_id = p_cebola and ambiguous from public.product_store_codes where store_code = '1'),
+    'the code gets the new product and stays ambiguous';
+  assert not exists (select 1 from public.match_store_codes('11222333000181', array['1'])), 'and still gives no product';
+
+  -- Quem grava direto pela API: a linha ambígua sem produto fica; a que deixa de ser ambígua sem produto, ou nasce
+  -- assim, sai.
+  insert into public.product_store_codes (store_cnpj, store_code, product_id, learned_from, ambiguous) values ('11222333000181', 'Z1', null, 'Z', true);
+  assert exists (select 1 from public.product_store_codes where store_code = 'Z1'), 'an ambiguous code without a product stays';
+  update public.product_store_codes set ambiguous = false where store_code = 'Z1';
+  assert not exists (select 1 from public.product_store_codes where store_code = 'Z1'), 'no longer ambiguous and without a product: it goes';
+  insert into public.product_store_codes (store_cnpj, store_code, product_id, learned_from, ambiguous) values ('11222333000181', 'Z2', null, 'Z', false);
+  assert not exists (select 1 from public.product_store_codes where store_code = 'Z2'), 'a code born without a product and not ambiguous goes';
+
+  -- O rascunho deixou de ter o produto: aí sai, e sem ligação nenhuma. Sem nome, não há conferência.
+  update public.receipt_items set product_id = null where product_id = current_setting('test.dp_review')::uuid;
+  assert public.delete_product(current_setting('test.dp_review')::uuid, 'Feijão')
+    = jsonb_build_object('deleted', current_setting('test.dp_review')::uuid, 'pantry', 0, 'list', 0, 'barcodes', 0),
+    'once the draft line lost it, the product leaves';
+  assert (public.delete_product(current_setting('test.dp_free')::uuid))->>'deleted' = current_setting('test.dp_free'), 'without a name, no check';
+end $$;
+
+-- Dora exclui o produto dela, com o mesmo nome; o da Dalva já não existia, e o resto da Dalva fica.
+select set_config('request.jwt.claim.sub', :'user_dp3', false) \gset
+do $$
+declare
+  p uuid;
+  r uuid;
+  s uuid;
+begin
+  assert (public.delete_product(current_setting('test.dp_dora')::uuid, 'Biscoito errado'))->>'deleted' = current_setting('test.dp_dora'),
+    'D deletes her own product';
+  assert (select count(*) from public.products) = 0, 'D has no products left';
+
+  -- A casa da Dora vai sair pelos caminhos do banco: um produto num rascunho, um código de mercado comum e um
+  -- ambíguo.
+  insert into public.stores (name, cnpj) values ('Mercado da Dora', '22333444000155') returning id into s;
+  insert into public.products (name, category) values ('Leite', 'laticinios') returning id into p;
+  insert into public.receipts (store_id, status) values (s, 'draft') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit_price, total_price, product_id) values (r, 'LEITE 1L', 5, 5, p);
+  insert into public.product_store_codes (store_cnpj, store_code, product_id, learned_from) values ('22333444000155', 'L1', p, 'LEITE 1L');
+  insert into public.product_store_codes (store_cnpj, store_code, product_id, learned_from, ambiguous) values ('22333444000155', 'L2', p, 'LEITE', true);
+end $$;
+select set_config('request.jwt.claim.sub', :'user_dp1', false) \gset
+do $$
+begin
+  assert (select array_agg(name order by name) from public.products) = array['Arroz 5kg', 'Biscoito recheado', 'Café', 'Cebola'],
+    'Dalva keeps her other products';
+end $$;
+-- A última moradora sai e a casa é apagada: o gatilho de products fica de fora (quem apaga é o banco) e o dos
+-- códigos roda em qualquer ordem das duas cascatas (casa → produtos → código, casa → código).
+select set_config('request.jwt.claim.sub', :'user_dp3', false) \gset
+do $$
+begin
+  assert (public.leave_household(public.current_household_id(), true))->>'status' = 'deleted', 'D, the last member, deletes her house';
+end $$;
+reset role;
+do $$
+declare
+  hh uuid := current_setting('test.hh_dp3_id')::uuid;
+begin
+  assert not exists (select 1 from public.households where id = hh), 'the house is gone';
+  assert not exists (select 1 from public.products where household_id = hh), 'with its products';
+  assert not exists (select 1 from public.receipts where household_id = hh), 'its receipts';
+  assert not exists (select 1 from public.receipt_items where household_id = hh), 'and their lines';
+  assert not exists (select 1 from public.product_store_codes where household_id = hh), 'and both market codes';
+end $$;
+
+-- "São diferentes" se desfaz por qualquer morador: é um delete da linha, pela RLS da casa.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_dp1', false) \gset
+do $$
+begin
+  insert into public.product_distinct_pairs (product_a, product_b) values (
+    least(current_setting('test.dp_other')::uuid, current_setting('test.dp_bought')::uuid),
+    greatest(current_setting('test.dp_other')::uuid, current_setting('test.dp_bought')::uuid));
+end $$;
+select set_config('request.jwt.claim.sub', :'user_dp2', false) \gset
+do $$
+declare
+  a uuid := least(current_setting('test.dp_other')::uuid, current_setting('test.dp_bought')::uuid);
+  b uuid := greatest(current_setting('test.dp_other')::uuid, current_setting('test.dp_bought')::uuid);
+  n integer;
+begin
+  with gone as (delete from public.product_distinct_pairs where product_a = a and product_b = b returning *) select count(*) into n from gone;
+  assert n = 1, 'another member undoes the pair, and gets it back';
+  with gone as (delete from public.product_distinct_pairs where product_a = a and product_b = b returning *) select count(*) into n from gone;
+  assert n = 0, 'undoing again gets nothing back';
+end $$;
+reset role;
+
+-- ---------------------------------------------------------------------------
 \echo '• preços compartilhados: o que entra, o que nunca entra, quem lê e quem não alcança a tabela'
 -- Paula e Quico compram no mesmo atacado, em São Paulo; Saulo também, numa
 -- leitura que veio sem o nome da loja. Rita já comprou o mesmo arroz (tem o
@@ -4578,6 +5509,10 @@ end $$;
 -- O banco da Supabase roda em UTC: o dia tem de sair de São Paulo, não do fuso da sessão.
 set time zone 'UTC';
 select set_config('test.sp_today', ((now() at time zone 'America/Sao_Paulo')::date)::text, false) \gset
+-- A semana de hoje (a segunda-feira dela). As datas desta seção contam dela, nunca de hoje: as regras da lista aberta
+-- (20261124181819_shared_prices_open.sql) são por semana, e o resultado não pode depender do dia da semana em que o
+-- teste roda. Os blocos de quem entrou leem esta config: shared_week não é dos clientes.
+select set_config('test.sp_week', public.shared_week(current_setting('test.sp_today')::date)::text, false) \gset
 
 do $$
 begin
@@ -4616,7 +5551,8 @@ select public.create_household('Casa da Paula', 'Paula') \gset
 do $$
 declare
   today constant date := current_setting('test.sp_today')::date;
-  d constant date := today - 10;
+  -- Uma sexta-feira de três semanas atrás.
+  d constant date := current_setting('test.sp_week')::date - 17;
   ata constant text := '11222333000181';
   s_ata uuid;
   s_other uuid;
@@ -4837,15 +5773,15 @@ begin
     select r, g, 'ITEM NO TETO ' || g, 'graos', 'un', 1 + g / 100.0, 1 + g / 100.0 from generate_series(1, 300) as g;
   perform pg_temp.confirm_as_read(r, '[]');
 
-  -- A compra de HOJE (QR code): entra na base, mas ninguém a lê antes de amanhã.
+  -- A compra de HOJE (QR code): entra na base, mas ninguém a lê antes da segunda-feira que vem.
   insert into public.receipts (store_id, access_key, source)
     values (s_ata, '352610' || ata || repeat('0', 23) || '9', 'qrcode') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'CAFE PILAO 500G', 'cafe_cha', 'un', 18.90, 18.90);
   perform pg_temp.confirm_as_read(r, '[]');
 
-  -- A compra de ONTEM confirmada hoje (QR code, noutro mercado de São Paulo): o que segura a linha é o dia da
-  -- GRAVAÇÃO, não o da compra. Também só amanhã.
+  -- A compra de ONTEM confirmada hoje (QR code, noutro mercado de São Paulo): o que segura a linha é a semana da
+  -- GRAVAÇÃO, não o dia da compra. Também só na segunda-feira que vem.
   insert into public.receipts (store_id, purchased_at, access_key, source)
     values (s_other, (today - 1 + time '19:00') at time zone 'America/Sao_Paulo', '352610' || '99888777000166' || repeat('0', 23) || '4', 'qrcode')
     returning id into r;
@@ -4858,12 +5794,16 @@ reset role;
 do $$
 declare
   today constant date := current_setting('test.sp_today')::date;
-  d constant date := today - 10;
+  week constant date := current_setting('test.sp_week')::date;
+  d constant date := week - 17;
   ata constant text := '11222333000181';
 begin
-  -- Tudo o que foi gravado hoje passa a ser lido amanhã, seja a compra de há 10 dias, de ontem ou de hoje.
-  assert (select count(*) from public.shared_prices where visible_on <> today + 1) = 0,
-    'every row written today becomes readable tomorrow, whatever its purchase day';
+  -- Tudo o que foi gravado nesta semana passa a ser lido na segunda-feira que vem, seja a compra de há três semanas,
+  -- de ontem ou de hoje.
+  assert (select count(*) from public.shared_prices where visible_on <> week + 7) = 0,
+    'every row written this week becomes readable next Monday, whatever its purchase day';
+  assert (select bool_and(extract(isodow from visible_on) = 1 and visible_on > today and visible_on <= today + 7) from public.shared_prices),
+    'a Monday, after today, within a week';
   -- Do QR: o arroz (uma linha, o preço da última), a banana e a maçã, no dia de São Paulo das 22:30, com o
   -- estado da chave. Da foto: o leite, no dia da 00:30, sem estado. E os três itens da nota sem remédio.
   assert (select array_agg(item_key || ' ' || unit || ' ' || seen_on || ' ' || unit_price || ' ' || coalesce(store_uf, '-') order by item_key)
@@ -4906,8 +5846,9 @@ begin
   -- O atacado, o outro mercado, a loja de nome comprido, as 300 do teto, os quatro leites e os quatro Pague Menos.
   assert (select count(*) from public.shared_prices) = 8 + 2 + 1 + 300 + 4 + 4, 'nothing else was shared';
 
-  -- O dia vira só para a banana: como se a nota da Paula tivesse sido confirmada ontem, a linha já pode ser lida.
-  update public.shared_prices set visible_on = today where item_key = 'BANANA PRATA';
+  -- A semana vira só para a banana: como se a nota da Paula tivesse sido confirmada na semana passada, a linha já pode
+  -- ser lida.
+  update public.shared_prices set visible_on = week where item_key = 'BANANA PRATA';
 end $$;
 
 -- Quico: o mesmo arroz e a mesma banana, no mesmo atacado, no mesmo dia de compra, por outros preços e com
@@ -4917,7 +5858,7 @@ select set_config('request.jwt.claim.sub', :'user_q', false) \gset
 select public.create_household('Casa do Quico', 'Quico') \gset
 do $$
 declare
-  d constant date := current_setting('test.sp_today')::date - 10;
+  d constant date := current_setting('test.sp_week')::date - 17;
   ata constant text := '11222333000181';
   s uuid;
   r uuid;
@@ -4940,18 +5881,19 @@ reset role;
 do $$
 declare
   today constant date := current_setting('test.sp_today')::date;
+  week constant date := current_setting('test.sp_week')::date;
   ata constant text := '11222333000181';
 begin
   assert (select count(*) from public.shared_prices where item_key = 'ARROZ T JOAO 5KG') = 1, 'two households, same item, store and day: ONE row';
-  -- O arroz foi gravado hoje pela Paula: ninguém leu ainda, e vale a última gravação, preço e nome (uma
-  -- confirmação honesta conserta uma falsa), mesmo sendo compra de há 10 dias. O dia em que passa a ser lida
+  -- O arroz foi gravado nesta semana pela Paula: ninguém leu ainda, e vale a última gravação, preço e nome (uma
+  -- confirmação honesta conserta uma falsa), mesmo sendo compra de há três semanas. O dia em que passa a ser lida
   -- não anda.
   assert (select unit_price || ' ' || store_name || ' ' || visible_on from public.shared_prices where item_key = 'ARROZ T JOAO 5KG')
-    = '23.5000 ATACADAO MOOCA LJ 12 ' || (today + 1), 'a row nobody can read yet takes the newer write, and its day of becoming readable stays';
+    = '23.5000 ATACADAO MOOCA LJ 12 ' || (week + 7), 'a row nobody can read yet takes the newer write, and its day of becoming readable stays';
   -- A banana já pode ser lida: se mudasse, quem a observa saberia que outra casa acabou de confirmar uma
   -- nota. A MESMA confirmação que trocou o arroz a deixa como está: preço, nome, estado e dia.
   assert (select unit_price || ' ' || store_name || ' ' || store_uf || ' ' || visible_on from public.shared_prices where item_key = 'BANANA PRATA')
-    = '6.9900 ATACADAO MOOCA 35 ' || today, 'a row that is already readable never changes';
+    = '6.9900 ATACADAO MOOCA 35 ' || week, 'a row that is already readable never changes';
   -- O café de hoje no atacado: a última gravação, e o estado que a foto não traz continua o que a linha já tinha.
   assert (select count(*) from public.shared_prices where item_key = 'CAFE PILAO 500G' and store_cnpj = ata) = 1, 'today too: ONE row';
   assert (select unit_price || ' ' || store_name || ' ' || store_uf || ' ' || seen_on from public.shared_prices where item_key = 'CAFE PILAO 500G' and store_cnpj = ata)
@@ -4989,11 +5931,13 @@ begin
   assert (select count(*) from public.shared_latest_prices()) = 0, 'a household without that description sees nothing';
 end $$;
 
--- As linhas para a leitura, postas direto (como servidor): o arroz em vários mercados, dias e estados.
+-- As linhas para a leitura, postas direto (como servidor): o arroz em vários mercados, semanas e estados.
 reset role;
 do $$
 declare
   today constant date := current_setting('test.sp_today')::date;
+  -- A segunda-feira desta semana. week - 7 é a da semana passada, week - 14 a da retrasada.
+  week constant date := current_setting('test.sp_week')::date;
   ata constant text := '11222333000181';
 begin
   assert (select unit_price || ' ' || store_name from public.shared_prices where item_key = 'CAFE PILAO 500G' and store_cnpj = ata) = '20.0000 ATACADAO MOOCA LJ 12',
@@ -5001,39 +5945,42 @@ begin
   assert (select store_name || ' ' || coalesce(store_uf, '-') from public.shared_prices where item_key = 'MACARRAO RENATA 500G') = 'CNPJ ' || ata || ' -',
     'and on a new row it is accepted';
 
-  -- A última coluna é o dia em que a linha passa a ser lida: o seguinte ao da gravação. Quase todas como a
-  -- nota confirmada no próprio dia da compra; as outras são o que se testa.
+  -- A última coluna é o dia em que a linha passa a ser lida: a segunda-feira depois da semana da gravação. Quase todas
+  -- como a nota confirmada na própria semana da compra; as outras são o que se testa.
   insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
-    -- No atacado: a de há 3 dias é mais nova que a de há 6 (as duas já podem ser lidas) e que a de há 10;
-    -- outra unidade é outra linha.
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 6, 22.00, today - 5),
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 3, 24.10, today - 2),
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'kg', today - 5, 4.80, today - 4),
-    -- Ninguém lê ainda: a compra de anteontem e a de ontem gravadas HOJE (o que conta é o dia da gravação), a
-    -- de hoje, e uma de amanhã. Mais novas e mais baratas que a de há 3 dias, que continua sendo a que se vê.
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 2, 2.00, today + 1),
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 1, 1.50, today + 1),
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today, 1.00, today + 1),
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today + 1, 0.50, today + 2),
-    -- Os 90 dias contam do dia da COMPRA: há 91 dias é velho demais, mesmo gravado há pouco (a nota
-    -- confirmada com atraso). Há exatamente 90: ainda vale (e é o mais barato de São Paulo).
-    ('99888777000166', '35', 'SUPER OUTRO', 'ARROZ T JOAO 5KG', 'un', today - 91, 10.00, today - 5),
-    ('60000000000108', '35', 'MERCADO SP 8', 'ARROZ T JOAO 5KG', 'un', today - 90, 15.00, today - 89),
+    -- No atacado: a da semana passada (terça) é mais nova que a da retrasada (terça) e que a de três semanas atrás;
+    -- outra unidade é outra linha (sexta da retrasada).
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', week - 13, 22.00, week - 7),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', week - 6, 24.10, week),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'kg', week - 10, 4.80, week - 7),
+    -- Ninguém lê ainda: a compra de sábado e a de domingo passados gravadas NESTA semana (o que conta é a semana da
+    -- gravação), a de hoje, e uma de amanhã. Mais novas e mais baratas que a de terça passada, que continua sendo a
+    -- que se vê.
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', week - 2, 2.00, week + 7),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', week - 1, 1.50, week + 7),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today, 1.00, week + 7),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today + 1, 0.50, week + 8),
+    -- As 13 semanas contam da semana da COMPRA, de segunda a segunda: o domingo antes delas é velho demais, mesmo
+    -- gravado há pouco (a nota confirmada com atraso). A segunda-feira em que elas começam ainda vale (e é o mais
+    -- barato de São Paulo).
+    ('99888777000166', '35', 'SUPER OUTRO', 'ARROZ T JOAO 5KG', 'un', week - 92, 10.00, week - 7),
+    ('60000000000108', '35', 'MERCADO SP 8', 'ARROZ T JOAO 5KG', 'un', week - 91, 15.00, week - 84),
     -- No Rio e num mercado sem estado (só fotos): mais baratos, mas não para quem compra em São Paulo.
-    ('60000000000201', '33', 'MERCADO RJ', 'ARROZ T JOAO 5KG', 'un', today - 2, 9.00, today - 1),
-    ('60000000000301', null, 'MERCADO SEM ESTADO', 'ARROZ T JOAO 5KG', 'un', today - 2, 8.00, today - 1),
-    -- Gravada ontem, lida a partir de hoje: o primeiro dia em que aparece.
-    ('60000000000101', '35', 'MERCADO SP 1', 'ARROZ T JOAO 5KG', 'kg', today - 4, 5.10, today),
-    -- No MERCADO SP 2 (22 reais há 2 dias, logo abaixo): uma linha mais nova sem estado (nota lida por foto),
-    -- que para quem não compra ali não conta, e uma de hoje, que ninguém lê.
-    ('60000000000102', null, 'MERCADO SP 2', 'ARROZ T JOAO 5KG', 'un', today - 1, 1.50, today),
-    ('60000000000102', '35', 'MERCADO SP 2', 'ARROZ T JOAO 5KG', 'un', today, 1.00, today + 1),
-    -- Na padaria que vai ser mercado da Rita: sem estado, há exatamente 90 dias (vale); e há 91 (velho demais).
-    ('12345678000195', null, 'PADARIA DA RITA', 'ARROZ T JOAO 5KG', 'un', today - 90, 14.00, today - 89),
-    ('12345678000195', '35', 'PADARIA DA RITA', 'ARROZ T JOAO 5KG', 'kg', today - 91, 3.00, today - 90);
-  -- Sete mercados de São Paulo, de 21 a 27 reais.
+    ('60000000000201', '33', 'MERCADO RJ', 'ARROZ T JOAO 5KG', 'un', week - 5, 9.00, week),
+    ('60000000000301', null, 'MERCADO SEM ESTADO', 'ARROZ T JOAO 5KG', 'un', week - 5, 8.00, week),
+    -- Gravada na semana passada, lida a partir desta segunda: a primeira semana em que aparece.
+    ('60000000000101', '35', 'MERCADO SP 1', 'ARROZ T JOAO 5KG', 'kg', week - 4, 5.10, week),
+    -- No MERCADO SP 2 (22 reais na semana retrasada, logo abaixo): uma linha mais nova sem estado (nota lida por
+    -- foto), que para quem não compra ali não conta, e uma de hoje, que ninguém lê.
+    ('60000000000102', null, 'MERCADO SP 2', 'ARROZ T JOAO 5KG', 'un', week - 2, 1.50, week),
+    ('60000000000102', '35', 'MERCADO SP 2', 'ARROZ T JOAO 5KG', 'un', today, 1.00, week + 7),
+    -- Na padaria que vai ser mercado da Rita: sem estado, na segunda-feira em que as 13 semanas começam (vale); e no
+    -- domingo antes (velho demais).
+    ('12345678000195', null, 'PADARIA DA RITA', 'ARROZ T JOAO 5KG', 'un', week - 91, 14.00, week - 84),
+    ('12345678000195', '35', 'PADARIA DA RITA', 'ARROZ T JOAO 5KG', 'kg', week - 92, 3.00, week - 91);
+  -- Sete mercados de São Paulo, de 21 a 27 reais, na quarta-feira da semana retrasada.
   insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
-    select '6000000000010' || g, '35', 'MERCADO SP ' || g, 'ARROZ T JOAO 5KG', 'un', today - 2, 20 + g, today - 1 from generate_series(1, 7) as g;
+    select '6000000000010' || g, '35', 'MERCADO SP ' || g, 'ARROZ T JOAO 5KG', 'un', week - 12, 20 + g, week - 7 from generate_series(1, 7) as g;
 
   -- A linha nunca pode ser lida no dia da compra, nem antes: o banco recusa, venha de onde vier.
   begin
@@ -5051,6 +5998,7 @@ select public.create_household('Casa da Rita', 'Rita') \gset
 do $$
 declare
   today constant date := current_setting('test.sp_today')::date;
+  week constant date := current_setting('test.sp_week')::date;
   ata constant text := '11222333000181';
   s_ata uuid;
   s_bakery uuid;
@@ -5062,22 +6010,29 @@ declare
 begin
   assert (select count(*) from public.shared_latest_prices()) = 0, 'a household without the description sees nothing';
 
-  -- Um membro grava os próprios produtos, apelidos e mercados (é a regra de sempre). Sem nota confirmada
-  -- nenhuma, ainda assim não vê nada.
+  -- Um membro grava os próprios produtos, apelidos e mercados (é a regra de sempre). Sem nota confirmada nenhuma, já
+  -- vê os preços dos mercados dela (não há mais a porta da primeira nota); dos outros, nada: ela não tem estado.
   insert into public.products (name, category) values ('Arroz', 'graos') returning id into p;
   insert into public.product_aliases (alias, product_id) values ('ARROZ T JOAO 5KG', p);
   insert into public.stores (name, cnpj) values ('Atacadão da Rita', ata) returning id into s_ata;
-  assert (select count(*) from public.shared_latest_prices()) = 0, 'a household with no confirmed receipt sees nothing';
+  assert (select array_agg(store_cnpj || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by unit) from public.shared_latest_prices())
+    = array[ata || ' kg 4.8000 ' || (week - 14) || ' true', ata || ' un 24.1000 ' || (week - 7) || ' true'],
+    'with no receipt at all: her own stores; nothing from other stores without a state';
+  -- O local da casa dá o estado: com São Paulo nele, também os outros mercados do estado.
+  insert into public.household_location (label, latitude, longitude, source, state_code) values ('Mooca, São Paulo', -23.55, -46.6, 'cep', '35');
+  assert (select count(*) from public.shared_latest_prices() where not mine) = 6, 'the state of the house place opens the other stores of her state';
+  delete from public.household_location;
+  assert (select count(*) from public.shared_latest_prices() where not mine) = 0, 'and without it they are gone';
 
-  -- Com uma nota confirmada (digitada, que não compartilha nada): os preços do atacado, que é mercado dela.
+  -- Com uma nota confirmada (digitada, que não compartilha nada): o mesmo, os preços do atacado, que é mercado dela.
   -- Dos outros mercados, nada: ela não tem nota lida em estado nenhum.
   insert into public.receipts (source) values ('manual') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
     values (r, 'arroz t.joão 5kg', 'un', 26.00, 26.00) returning id into i;
   perform pg_temp.confirm_as_read(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
   assert (select array_agg(store_cnpj || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by unit) from public.shared_latest_prices())
-    = array[ata || ' kg 4.8000 ' || (today - 5) || ' true', ata || ' un 24.1000 ' || (today - 3) || ' true'],
-    'in her own stores: the newest READABLE row per store and unit, never one written today (whatever its purchase day) or dated ahead; nothing from other stores without a state';
+    = array[ata || ' kg 4.8000 ' || (week - 14) || ' true', ata || ' un 24.1000 ' || (week - 7) || ' true'],
+    'in her own stores: the newest READABLE row per store and unit, with the Monday of its week, never one written this week (whatever its purchase day) or dated ahead; nothing from other stores without a state';
   select * into seen from public.shared_latest_prices() where unit = 'un';
   assert seen.product_id = p and seen.store_name = 'ATACADAO MOOCA' and seen.store_uf = '35', 'her product, the store name and state as shared';
   -- O que volta é só isso: nada de casa, pessoa, nota ou hora, nem o dia em que a linha passou a ser lida
@@ -5107,17 +6062,18 @@ begin
   perform pg_temp.confirm_as_read(r, '[]');
   assert (select array_agg(store_name || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by mine desc, unit, unit_price) from public.shared_latest_prices())
     = array[
-      'ATACADAO MOOCA kg 4.8000 ' || (today - 5) || ' true',
-      'PADARIA DA RITA un 14.0000 ' || (today - 90) || ' true',
-      'ATACADAO MOOCA un 24.1000 ' || (today - 3) || ' true',
-      'MERCADO SP 1 kg 5.1000 ' || (today - 4) || ' false',
-      'MERCADO SP 8 un 15.0000 ' || (today - 90) || ' false',
-      'MERCADO SP 1 un 21.0000 ' || (today - 2) || ' false',
-      'MERCADO SP 2 un 22.0000 ' || (today - 2) || ' false',
-      'MERCADO SP 3 un 23.0000 ' || (today - 2) || ' false',
-      'MERCADO SP 4 un 24.0000 ' || (today - 2) || ' false'
+      'ATACADAO MOOCA kg 4.8000 ' || (week - 14) || ' true',
+      'PADARIA DA RITA un 14.0000 ' || (week - 91) || ' true',
+      'ATACADAO MOOCA un 24.1000 ' || (week - 7) || ' true',
+      'MERCADO SP 1 kg 5.1000 ' || (week - 7) || ' false',
+      'MERCADO SP 8 un 15.0000 ' || (week - 91) || ' false',
+      'MERCADO SP 1 un 21.0000 ' || (week - 14) || ' false',
+      'MERCADO SP 2 un 22.0000 ' || (week - 14) || ' false',
+      'MERCADO SP 3 un 23.0000 ' || (week - 14) || ' false',
+      'MERCADO SP 4 un 24.0000 ' || (week - 14) || ' false'
     ],
-    'her own stores first, then the 5 cheapest of her state per product and unit; 90 days still count, 91 do not';
+    'her own stores first, then the 5 cheapest of her state per product and unit; 13 whole weeks count, the Sunday before does not';
+  assert (select bool_and(extract(isodow from seen_on) = 1) from public.shared_latest_prices()), 'the reader gives only Mondays, never a day';
 
   -- Outra descrição do mesmo produto, e o café como outro produto (um membro grava os próprios apelidos; só a
   -- chave exata recebe preço: é informação de mercado, e não há como listar a tabela).
@@ -5129,8 +6085,10 @@ begin
   exception when check_violation then null;
   end;
   -- O café foi comprado HOJE por três casas no atacado, e ONTEM no SUPER OUTRO, numa nota confirmada hoje; e
-  -- há arroz gravado hoje no atacado, de hoje e de dias que já passaram: quem pergunta hoje não vê nenhum.
-  assert (select count(*) from public.shared_latest_prices() where product_id = c or seen_on >= today) = 0, 'nothing bought or written today is visible today';
+  -- há arroz gravado nesta semana no atacado, de hoje e de dias que já passaram: quem pergunta nesta semana não vê
+  -- nenhum.
+  assert (select count(*) from public.shared_latest_prices() where product_id = c or seen_on >= week) = 0,
+    'nothing bought or written this week is visible this week';
   perform set_config('test.sp_product_c', c::text, false);
 
   -- O macarrão que o Saulo gravou hoje com o nome inventado e sem estado: a Rita confirma, no mesmo dia, uma
@@ -5144,26 +6102,27 @@ end $$;
 reset role;
 do $$
 declare
-  today constant date := current_setting('test.sp_today')::date;
+  week constant date := current_setting('test.sp_week')::date;
 begin
-  -- A outra descrição do mesmo produto, mais nova, no MERCADO SP 1: é ela o preço do produto ali.
+  -- A outra descrição do mesmo produto, de uma semana mais nova, no MERCADO SP 1: é ela o preço do produto ali.
   insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
-    values ('60000000000101', '35', 'MERCADO SP 1', 'ARROZ TIO JOAO TP1 5KG', 'un', today - 1, 25.00, today);
+    values ('60000000000101', '35', 'MERCADO SP 1', 'ARROZ TIO JOAO TP1 5KG', 'un', week - 2, 25.00, week);
   -- A linha que ainda não pode ser lida aceita o nome de verdade e o estado no lugar do nome inventado e do
-  -- estado vazio (e o preço mais novo): é a nota de ontem com leitura ruim, consertada no mesmo dia.
+  -- estado vazio (e o preço mais novo): é a nota de ontem com leitura ruim, consertada na mesma semana.
   assert (select unit_price || ' ' || store_name || ' ' || store_uf || ' ' || visible_on from public.shared_prices where item_key = 'MACARRAO RENATA 500G')
-    = '4.2900 Atacadão da Rita 35 ' || (today + 1), 'before it is readable, the real name and the state replace the placeholder';
+    = '4.2900 Atacadão da Rita 35 ' || (week + 7), 'before it is readable, the real name and the state replace the placeholder';
 
-  -- O dia vira para o café. A linha da compra de ontem (SUPER OUTRO), gravada hoje, passa a poder ser lida
-  -- sem mudar em mais nada; a da compra de "hoje" no atacado passa a ser de ontem.
-  update public.shared_prices set visible_on = today where item_key = 'CAFE PILAO 500G' and store_cnpj = '99888777000166';
-  update public.shared_prices set seen_on = today - 1, visible_on = today where item_key = 'CAFE PILAO 500G' and store_cnpj = '11222333000181';
+  -- A semana vira para o café: as duas linhas passam a ser compras de sábado passado, gravadas na semana passada, e
+  -- podem ser lidas sem mudar em mais nada.
+  update public.shared_prices set seen_on = week - 2, visible_on = week where item_key = 'CAFE PILAO 500G' and store_cnpj = '99888777000166';
+  update public.shared_prices set seen_on = week - 2, visible_on = week where item_key = 'CAFE PILAO 500G' and store_cnpj = '11222333000181';
 end $$;
 
 set role authenticated;
 do $$
 declare
   today constant date := current_setting('test.sp_today')::date;
+  week constant date := current_setting('test.sp_week')::date;
   ata constant text := '11222333000181';
   p constant uuid := current_setting('test.sp_product_r')::uuid;
   c constant uuid := current_setting('test.sp_product_c')::uuid;
@@ -5186,44 +6145,47 @@ begin
 
   assert (select array_agg(store_name || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by mine desc, unit, unit_price, seen_on desc) from public.shared_latest_prices())
     = array[
-      'ATACADAO MOOCA kg 4.8000 ' || (today - 5) || ' true',
-      'PADARIA DA RITA un 14.0000 ' || (today - 90) || ' true',
-      -- O café, a partir do dia seguinte: com o preço e o nome da última gravação.
-      'ATACADAO MOOCA LJ 12 un 20.0000 ' || (today - 1) || ' true',
-      'ATACADAO MOOCA un 24.1000 ' || (today - 3) || ' true',
-      'MERCADO SP 1 kg 5.1000 ' || (today - 4) || ' false',
-      'MERCADO SP 8 un 15.0000 ' || (today - 90) || ' false',
-      -- O café comprado ontem no SUPER OUTRO: no dia em que foi confirmado não aparecia; virado o dia, aparece.
-      'SUPER OUTRO un 17.9000 ' || (today - 1) || ' false',
-      'MERCADO SP 2 un 22.0000 ' || (today - 2) || ' false',
-      'MERCADO SP 3 un 23.0000 ' || (today - 2) || ' false',
-      'MERCADO SP 4 un 24.0000 ' || (today - 2) || ' false',
-      -- A descrição mais nova é o preço do produto no MERCADO SP 1; empatado com o MERCADO SP 5, fica o visto por último.
-      'MERCADO SP 1 un 25.0000 ' || (today - 1) || ' false'
+      'ATACADAO MOOCA kg 4.8000 ' || (week - 14) || ' true',
+      'PADARIA DA RITA un 14.0000 ' || (week - 91) || ' true',
+      -- O café, a partir da segunda-feira depois da semana da gravação: com o preço e o nome da última gravação.
+      'ATACADAO MOOCA LJ 12 un 20.0000 ' || (week - 7) || ' true',
+      'ATACADAO MOOCA un 24.1000 ' || (week - 7) || ' true',
+      'MERCADO SP 1 kg 5.1000 ' || (week - 7) || ' false',
+      'MERCADO SP 8 un 15.0000 ' || (week - 91) || ' false',
+      -- O café comprado no SUPER OUTRO: na semana em que foi confirmado não aparecia; virada a semana, aparece.
+      'SUPER OUTRO un 17.9000 ' || (week - 7) || ' false',
+      'MERCADO SP 2 un 22.0000 ' || (week - 14) || ' false',
+      'MERCADO SP 3 un 23.0000 ' || (week - 14) || ' false',
+      'MERCADO SP 4 un 24.0000 ' || (week - 14) || ' false',
+      -- A descrição da semana mais nova é o preço do produto no MERCADO SP 1; empatado com o MERCADO SP 5, fica o da
+      -- semana mais nova.
+      'MERCADO SP 1 un 25.0000 ' || (week - 7) || ' false'
     ],
-    'one row per product, store and unit: the newest among the descriptions of the product; a row shows from the day after it was written';
+    'one row per product, store and unit: the newest week among the descriptions of the product; a row shows from the Monday after the week it was written';
   assert (select bool_and(product_id in (p, c)) from public.shared_latest_prices()), 'always for a product of the caller';
 
   -- O que a casa já sabe fica de fora, aqui mesmo no banco: com preço PRÓPRIO do produto num mercado dela com
-  -- aquele CNPJ, no mesmo dia ou depois, a linha é a compra dela ou notícia mais velha. Uma compra de há 5
-  -- dias (digitada: preço próprio é o de qualquer nota) tira a linha de há 5 dias, em qualquer unidade, e
-  -- deixa a de há 3.
+  -- aquele CNPJ, na mesma semana ou depois, a linha é a compra dela ou notícia mais velha. Pela SEMANA, não pelo dia:
+  -- comparar com o dia exato deixaria um membro descobrir o dia da linha comum. Uma compra na quarta-feira da semana
+  -- retrasada (digitada: preço próprio é o de qualquer nota) tira a linha da sexta-feira daquela semana, em qualquer
+  -- unidade, e deixa a da semana passada.
   insert into public.receipts (store_id, purchased_at, source)
-    values (s_ata, (today - 5 + time '10:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
+    values (s_ata, (week - 12 + time '10:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
     values (r, 'arroz a granel', 'un', 23.00, 23.00) returning id into i;
   perform pg_temp.confirm_as_read(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
   assert (select array_agg(store_name || ' ' || unit || ' ' || unit_price order by unit_price) from public.shared_latest_prices() where mine and product_id = p)
     = array['PADARIA DA RITA un 14.0000', 'ATACADAO MOOCA un 24.1000'],
-    'an own purchase on the same day or later hides the row, in that store only; an older one does not';
-  -- O dia da compra é o de São Paulo: às 23:30 de há 4 dias (em UTC já é o dia seguinte) ainda é mais velha
-  -- que a linha de há 3.
+    'an own purchase in the same week (even on an earlier day) or later hides the row, in that store only; an older one does not';
+  -- O dia da compra é o de São Paulo: às 23:30 do domingo da semana retrasada (em UTC já é segunda-feira) ainda é da
+  -- semana antes da linha da semana passada.
   insert into public.receipts (store_id, purchased_at, source)
-    values (s_ata, (today - 4 + time '23:30') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
+    values (s_ata, (week - 8 + time '23:30') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
     values (r, 'arroz a granel', 'un', 23.00, 23.00) returning id into i;
   perform pg_temp.confirm_as_read(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
   assert (select count(*) from public.shared_latest_prices() where mine and product_id = p and store_cnpj = ata) = 1, 'the day of the own purchase is the São Paulo day';
+  assert (select bool_and(extract(isodow from seen_on) = 1) from public.shared_latest_prices()), 'still only Mondays';
   -- A compra de ontem tira o que sobrava do arroz no atacado. Só daquele produto, naquele mercado: o café
   -- dali (visto ontem também) e os outros mercados continuam.
   insert into public.receipts (store_id, purchased_at, source)
@@ -5409,7 +6371,7 @@ reset role;
 alter table public.shared_prices drop constraint test_refuses_item;
 do $$
 declare
-  d constant date := current_setting('test.sp_today')::date - 10;
+  d constant date := current_setting('test.sp_week')::date - 17;
 begin
   assert (select count(*) from public.shared_prices where item_key in ('ITEM QUE EMPERRA', 'SABAO OMO 1KG')) = 0,
     'nothing of the receipt whose share failed, not even the line that would pass';
@@ -9808,6 +10770,703 @@ end $$;
 delete from public.households where id in (current_setting('test.nc_house_1')::uuid, current_setting('test.nc_house_2')::uuid);
 
 -- ---------------------------------------------------------------------------
+\echo '• nota confirmada: trocar o produto de um item e incluir o que a leitura perdeu'
+-- Rui confirma uma nota do QR code com um item no produto errado (o arroz como feijão) e outro sem produto, e depois
+-- troca o produto e inclui o item que a leitura perdeu, como o app faz. Rita, de outra casa, não alcança nada dele.
+\set user_cr1 '00000000-0000-0000-0000-0000000003c1'
+\set user_cr2 '00000000-0000-0000-0000-0000000003c2'
+reset role;
+insert into auth.users (id) values (:'user_cr1'), (:'user_cr2');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_cr2', false) \gset
+select set_config('test.cr_house_2', (public.create_household('Casa da Rita', 'Rita')).id::text, false) \gset
+do $$
+declare
+  r uuid;
+  i uuid;
+  p uuid;
+begin
+  insert into public.products (name, category) values ('Café da Rita', 'cafe_cha') returning id into p;
+  insert into public.receipts (purchased_at, source) values (now(), 'manual') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 0, 'CAFE RITA 500G', 1, 'un', 18, 18) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
+  perform set_config('test.cr_r2', r::text, false);
+  perform set_config('test.cr_i2', i::text, false);
+  perform set_config('test.cr_p2', p::text, false);
+end $$;
+
+select set_config('request.jwt.claim.sub', :'user_cr1', false) \gset
+select set_config('test.cr_house_1', (public.create_household('Casa do Rui', 'Rui')).id::text, false) \gset
+-- As validades padrão das categorias, como o app manda (CATEGORY_SHELF_LIFE_DAYS).
+select set_config('test.cr_map', '{"hortifruti":7,"carnes":3,"peixes":2,"laticinios":20,"ovos":21,"padaria":5,"graos":180,"congelados":90,"frios":10,"doces":120,"snacks":90,"temperos":365,"oleos":365,"bebidas":180,"alcoolicas":null,"cafe_cha":180,"limpeza":null,"higiene":null,"papel":null,"bebe":null,"pet":null,"medicamentos":365,"suplementos":365,"primeiros_socorros":null,"outros":null}', false) \gset
+do $$
+declare
+  bought constant date := (now() at time zone 'America/Sao_Paulo')::date - 2;
+  cnpj constant text := '55666777000188';
+  s uuid;
+  r uuid;
+  p uuid;
+  i uuid;
+begin
+  insert into public.stores (name, cnpj) values ('Mercado do Rui', cnpj) returning id into s;
+  perform set_config('test.cr_store', s::text, false);
+  insert into public.stores (name) values ('Quitanda sem CNPJ') returning id into s;
+  perform set_config('test.cr_store_plain', s::text, false);
+  insert into public.products (name, category) values ('Arroz', 'graos') returning id into p;
+  perform set_config('test.cr_arroz', p::text, false);
+  insert into public.products (name, category) values ('Feijão', 'graos') returning id into p;
+  perform set_config('test.cr_feijao', p::text, false);
+  insert into public.products (name, category) values ('Leite', 'laticinios') returning id into p;
+  perform set_config('test.cr_leite', p::text, false);
+  insert into public.products (name, category, shelf_life_days) values ('Leite Ninho', 'laticinios', 30) returning id into p;
+  perform set_config('test.cr_ninho', p::text, false);
+  insert into public.products (name, category) values ('Detergente', 'limpeza') returning id into p;
+  perform set_config('test.cr_det', p::text, false);
+  insert into public.products (name, category) values ('Ovos', 'ovos') returning id into p;
+  perform set_config('test.cr_ovos', p::text, false);
+  insert into public.products (name, category) values ('Ovos caipira', 'ovos') returning id into p;
+  perform set_config('test.cr_caipira', p::text, false);
+  insert into public.products (name, category) values ('Ovomaltine', 'bebidas') returning id into p;
+  perform set_config('test.cr_ovomaltine', p::text, false);
+  insert into public.products (name, category) values ('Frango', 'carnes') returning id into p;
+  perform set_config('test.cr_frango', p::text, false);
+  insert into public.products (name, category) values ('Carne moída', 'carnes') returning id into p;
+  perform set_config('test.cr_moida', p::text, false);
+
+  insert into public.receipts (store_id, purchased_at, access_key, source, total)
+    values (current_setting('test.cr_store')::uuid, (bought + time '10:00') at time zone 'America/Sao_Paulo',
+      '352610' || cnpj || repeat('0', 23) || '1', 'qrcode', 90.00)
+    returning id into r;
+  perform set_config('test.cr_receipt', r::text, false);
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, store_code, quantity, unit, unit_price, total_price)
+    values (r, 0, 'ARROZ TJ 5KG', 'graos', '250474', 1, 'un', 25, 25) returning id into i;
+  perform set_config('test.cr_i_arroz', i::text, false);
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, store_code, quantity, unit, unit_price, total_price)
+    values (r, 1, 'LEITE ITALAC 1L', 'laticinios', '7891000100103', 2, 'un', 5, 10) returning id into i;
+  perform set_config('test.cr_i_leite', i::text, false);
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, store_code, quantity, unit, unit_price, total_price)
+    values (r, 2, 'DET YPE 500ML', 'limpeza', '7896098900208', 1, 'un', 3, 3) returning id into i;
+  perform set_config('test.cr_i_det', i::text, false);
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, quantity, unit, unit_price, total_price, pack_count)
+    values (r, 3, 'OVOS BRANCOS', 'ovos', 1, 'un', 15, 15, 12) returning id into i;
+  perform set_config('test.cr_i_ovos', i::text, false);
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, quantity, unit, unit_price, total_price)
+    values (r, 4, 'FRANGO COXA KG', 'carnes', 1, 'kg', 20, 20) returning id into i;
+  perform set_config('test.cr_i_frango', i::text, false);
+  -- Outra nota confirmada da casa, vazia, e um rascunho, para as recusas.
+  insert into public.receipts (store_id, purchased_at, source) values (current_setting('test.cr_store')::uuid, now(), 'manual')
+    returning id into r;
+  perform set_config('test.cr_r_other', r::text, false);
+  perform public.confirm_receipt(r, '[]');
+  insert into public.receipts (store_id, purchased_at, source) values (current_setting('test.cr_store')::uuid, now(), 'manual')
+    returning id into r;
+  perform set_config('test.cr_draft', r::text, false);
+  insert into public.receipt_items (receipt_id, position, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 0, 'ARROZ RASCUNHO', 1, 'un', 20, 20) returning id into i;
+  perform set_config('test.cr_i_draft', i::text, false);
+end $$;
+
+reset role;
+set role service_role;
+do $$
+declare
+  bought constant date := (now() at time zone 'America/Sao_Paulo')::date - 2;
+  cnpj constant text := '55666777000188';
+  rid uuid;
+begin
+  insert into public.receipt_reads (household_id, source, access_key, store_cnpj, store_name, purchased_on, lines)
+    values (current_setting('test.cr_house_1')::uuid, 'qrcode', '352610' || cnpj || repeat('0', 23) || '1', cnpj, 'MERCADO DO RUI LTDA', bought,
+      jsonb_build_array(
+        jsonb_build_object('description', 'ARROZ TJ 5KG', 'unit', 'un', 'unit_price', 25),
+        jsonb_build_object('description', 'LEITE ITALAC 1L', 'unit', 'un', 'unit_price', 5)))
+    returning id into rid;
+  perform set_config('test.cr_read', rid::text, false);
+end $$;
+
+reset role;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_cr1', false) \gset
+do $$
+declare
+  bought constant date := (now() at time zone 'America/Sao_Paulo')::date - 2;
+  r constant uuid := current_setting('test.cr_receipt')::uuid;
+begin
+  update public.receipts set read_id = current_setting('test.cr_read')::uuid where id = r;
+  -- O arroz confirmado como feijão (com uma validade de 5 dias, para a troca refazer), o leite certo, o detergente sem
+  -- produto, os ovos sem despensa e o frango (a despensa dele vem abaixo, à mão, com o congelador).
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', current_setting('test.cr_i_arroz')::uuid, 'product_id', current_setting('test.cr_feijao')::uuid,
+      'pantry', jsonb_build_object('name', 'Feijão', 'category', 'graos', 'purchased_on', bought, 'expires_on', bought + 5, 'expiry_source', 'categoria')),
+    jsonb_build_object('id', current_setting('test.cr_i_leite')::uuid, 'product_id', current_setting('test.cr_leite')::uuid,
+      'pantry', jsonb_build_object('name', 'Leite', 'category', 'laticinios', 'purchased_on', bought, 'expires_on', bought + 20, 'expiry_source', 'categoria')),
+    jsonb_build_object('id', current_setting('test.cr_i_det')::uuid),
+    jsonb_build_object('id', current_setting('test.cr_i_ovos')::uuid, 'product_id', current_setting('test.cr_ovos')::uuid),
+    jsonb_build_object('id', current_setting('test.cr_i_frango')::uuid, 'product_id', current_setting('test.cr_frango')::uuid)));
+  -- O frango na despensa: um no congelador, um que já estava vencido quando foi congelado, e um descongelado.
+  insert into public.pantry_items (product_id, name, category, quantity, unit, purchased_on, expires_on, expiry_source,
+      receipt_item_id, frozen_on, thawed_on, freeze_kind, fresh_expires_on, fresh_expiry_source)
+    values
+      (current_setting('test.cr_frango')::uuid, 'Frango', 'carnes', 1, 'kg', bought, null, 'congelado',
+        current_setting('test.cr_i_frango')::uuid, bought, null, 'frango', bought + 5, 'categoria'),
+      (current_setting('test.cr_frango')::uuid, 'Frango', 'carnes', 1, 'kg', bought, bought + 1, 'categoria',
+        current_setting('test.cr_i_frango')::uuid, bought + 2, null, 'frango', bought + 1, 'categoria'),
+      (current_setting('test.cr_frango')::uuid, 'Frango', 'carnes', 1, 'kg', bought, bought + 4, 'descongelado',
+        current_setting('test.cr_i_frango')::uuid, bought, bought + 1, 'frango', null, null);
+  -- Uma ligação da lista com o produto de antes: nenhuma troca mexe nela.
+  insert into public.list_item_links (name_key, product_id) values ('arroz', current_setting('test.cr_feijao')::uuid);
+end $$;
+
+-- O que nenhuma correção pode mudar: a base comum, as ligações da lista e a validade aprendida dos produtos.
+reset role;
+select set_config('test.cr_shared', (
+  select md5(coalesce(string_agg(sp::text, '|' order by sp.store_cnpj, sp.item_key, sp.unit, sp.seen_on), '')) from public.shared_prices sp
+), false) \gset
+select set_config('test.cr_links', (
+  select string_agg(k.name_key || '>' || k.product_id, ',' order by k.name_key, k.product_id)
+  from public.list_item_links k where k.household_id = current_setting('test.cr_house_1')::uuid
+), false) \gset
+select set_config('test.cr_shelf', (
+  select string_agg(p.name || ':' || coalesce(p.shelf_life_days::text, '-'), ',' order by p.name)
+  from public.products p where p.household_id = current_setting('test.cr_house_1')::uuid
+), false) \gset
+do $$
+begin
+  assert (select count(*) from public.shared_prices where item_key in ('ARROZ TJ 5KG', 'LEITE ITALAC 1L') and store_cnpj = '55666777000188') = 2,
+    'the confirmation shared the two read lines';
+  assert (select count(*) from public.receipt_reads where household_id = current_setting('test.cr_house_1')::uuid) = 0,
+    'and the read is gone';
+  assert (select product_id from public.product_aliases where alias = 'ARROZ TJ 5KG') = current_setting('test.cr_feijao')::uuid,
+    'the confirmation taught the wrong product to the alias';
+  assert (select product_id = current_setting('test.cr_feijao')::uuid and learned_from = 'ARROZ TJ 5KG' and not ambiguous
+          from public.product_store_codes where store_code = '250474'), 'and to the market code';
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_cr1', false) \gset
+do $$
+declare
+  bought constant date := (now() at time zone 'America/Sao_Paulo')::date - 2;
+  r constant uuid := current_setting('test.cr_receipt')::uuid;
+  a constant uuid := current_setting('test.cr_i_arroz')::uuid;
+  arroz constant uuid := current_setting('test.cr_arroz')::uuid;
+  feijao constant uuid := current_setting('test.cr_feijao')::uuid;
+  map constant jsonb := current_setting('test.cr_map')::jsonb;
+  result jsonb;
+  before text;
+begin
+  -- 1. O arroz passa do feijão para o arroz: a linha, o histórico de preço, o apelido, o código e a despensa.
+  result := public.change_receipt_item_product(r, a, feijao, arroz, null, map, null);
+  assert result = jsonb_build_object('product_id', arroz, 'changed', true, 'pantry', 1), 'the change answers what it did: ' || result;
+  assert (select product_id from public.receipt_items where id = a) = arroz, 'the line is on Arroz';
+  assert exists (select 1 from public.price_observations where receipt_id = r and product_id = arroz and unit_price = 25),
+    'the price history shows the purchase under Arroz';
+  assert not exists (select 1 from public.price_observations where receipt_id = r and product_id = feijao),
+    'and no longer under Feijão';
+  assert (select product_id from public.product_aliases where alias = 'ARROZ TJ 5KG') = arroz, 'the alias points to Arroz';
+  assert (select product_id = arroz and learned_from = 'ARROZ TJ 5KG' and not ambiguous
+          from public.product_store_codes where store_code = '250474'), 'the market code points to Arroz, not ambiguous';
+  assert (select product_id = arroz and name = 'Arroz' and category = 'graos' and expires_on = bought + 180 and expiry_source = 'categoria'
+          from public.pantry_items where receipt_item_id = a), 'the pantry entry is Arroz, with the category''s estimate redone';
+
+  -- 2. A mesma troca de novo (a resposta que se perdeu): nada muda.
+  select string_agg(x, '|') into before from (
+    select (select ri::text from public.receipt_items ri where ri.id = a) as x
+    union all select string_agg(pa::text, ',' order by pa.alias) from public.product_aliases pa where pa.household_id = current_setting('test.cr_house_1')::uuid
+    union all select string_agg(c::text, ',' order by c.store_code) from public.product_store_codes c where c.household_id = current_setting('test.cr_house_1')::uuid
+    union all select string_agg(b::text, ',' order by b.gtin) from public.product_barcodes b where b.household_id = current_setting('test.cr_house_1')::uuid
+    union all select string_agg(pi::text, ',' order by pi.id) from public.pantry_items pi where pi.receipt_item_id = a
+  ) s;
+  result := public.change_receipt_item_product(r, a, feijao, arroz, null, map, null);
+  assert result = jsonb_build_object('product_id', arroz, 'changed', false, 'pantry', 0), 'the repeated change writes nothing: ' || result;
+  assert before = (select string_agg(x, '|') from (
+    select (select ri::text from public.receipt_items ri where ri.id = a) as x
+    union all select string_agg(pa::text, ',' order by pa.alias) from public.product_aliases pa where pa.household_id = current_setting('test.cr_house_1')::uuid
+    union all select string_agg(c::text, ',' order by c.store_code) from public.product_store_codes c where c.household_id = current_setting('test.cr_house_1')::uuid
+    union all select string_agg(b::text, ',' order by b.gtin) from public.product_barcodes b where b.household_id = current_setting('test.cr_house_1')::uuid
+    union all select string_agg(pi::text, ',' order by pi.id) from public.pantry_items pi where pi.receipt_item_id = a
+  ) s), 'the line, the aliases, the codes and the pantry are as they were';
+
+  -- 3. A tela que ainda mostrava o feijão: NK018, nada muda, e o produto novo pedido não nasce.
+  begin
+    perform public.change_receipt_item_product(r, a, feijao, current_setting('test.cr_leite')::uuid, null, map, null);
+    raise exception 'a stale expected product must be refused';
+  exception when sqlstate 'NK018' then
+    assert sqlerrm = 'receipt item changed', 'NK018 says the item changed';
+  end;
+  begin
+    perform public.change_receipt_item_product(r, a, feijao, null, jsonb_build_object('name', 'Arroz integral nunca criado', 'category', 'graos'), map, null);
+    raise exception 'a stale expected product must be refused (new product)';
+  exception when sqlstate 'NK018' then null;
+  end;
+  assert not exists (select 1 from public.products where name = 'Arroz integral nunca criado'), 'a refused change creates no product';
+  assert (select product_id from public.receipt_items where id = a) = arroz, 'and the line stays on Arroz';
+
+  -- 4. A despensa renomeada à mão, com a validade digitada: o produto, o nome e a categoria seguem a troca; a data fica.
+  update public.pantry_items set name = 'Arroz do mês', category = 'outros', expires_on = bought + 365, expiry_source = 'manual'
+    where receipt_item_id = a;
+  result := public.change_receipt_item_product(r, a, arroz, feijao, null, map, null);
+  assert (result ->> 'changed')::boolean and (result ->> 'pantry')::integer = 1, 'the change moves the renamed entry';
+  assert (select product_id = feijao and name = 'Feijão' and category = 'graos' and expires_on = bought + 365 and expiry_source = 'manual'
+          from public.pantry_items where receipt_item_id = a), 'the pantry takes the product''s name and category, and keeps the typed date';
+
+  -- 5. A compra já usada passa também.
+  update public.pantry_items set consumed_at = now() where receipt_item_id = a;
+  result := public.change_receipt_item_product(r, a, feijao, arroz, null, map, null);
+  assert (result ->> 'pantry')::integer = 1, 'the consumed entry counts';
+  assert (select product_id = arroz and name = 'Arroz' and consumed_at is not null from public.pantry_items where receipt_item_id = a),
+    'the consumed entry moves, still consumed';
+
+  -- 6. O apelido que uma nota seguinte ensinou a um terceiro produto fica com ele; o que ninguém ensinou nasce.
+  update public.product_aliases set product_id = current_setting('test.cr_ovomaltine')::uuid where alias = 'ARROZ TJ 5KG';
+  perform public.change_receipt_item_product(r, a, arroz, feijao, null, map, null);
+  assert (select product_id from public.product_aliases where alias = 'ARROZ TJ 5KG') = current_setting('test.cr_ovomaltine')::uuid,
+    'an alias on a third product stays there';
+  delete from public.product_aliases where alias = 'ARROZ TJ 5KG';
+  perform public.change_receipt_item_product(r, a, feijao, arroz, null, map, null);
+  assert (select product_id from public.product_aliases where alias = 'ARROZ TJ 5KG') = arroz, 'a missing alias is taught';
+
+  -- 7. O código de mercado: aprendido de outra descrição no produto de antes, fica ambíguo (e no produto novo, com esta
+  -- descrição); ambíguo continua ambíguo; o de um terceiro produto fica.
+  update public.product_store_codes set learned_from = 'ARROZ OUTRA DESCRICAO' where store_code = '250474';
+  perform public.change_receipt_item_product(r, a, arroz, feijao, null, map, null);
+  assert (select ambiguous and product_id = feijao and learned_from = 'ARROZ TJ 5KG' from public.product_store_codes where store_code = '250474'),
+    'a code learned from another description becomes ambiguous';
+  perform public.change_receipt_item_product(r, a, feijao, arroz, null, map, null);
+  assert (select ambiguous and product_id = arroz from public.product_store_codes where store_code = '250474'), 'an ambiguous code stays ambiguous';
+  update public.product_store_codes set product_id = current_setting('test.cr_ovomaltine')::uuid, ambiguous = false, learned_from = 'OVOMALTINE'
+    where store_code = '250474';
+  perform public.change_receipt_item_product(r, a, arroz, feijao, null, map, null);
+  assert (select product_id = current_setting('test.cr_ovomaltine')::uuid and not ambiguous and learned_from = 'OVOMALTINE'
+          from public.product_store_codes where store_code = '250474'), 'a code on a third product is left alone';
+  perform public.change_receipt_item_product(r, a, feijao, arroz, null, map, null);
+end $$;
+
+do $$
+declare
+  bought constant date := (now() at time zone 'America/Sao_Paulo')::date - 2;
+  r constant uuid := current_setting('test.cr_receipt')::uuid;
+  l constant uuid := current_setting('test.cr_i_leite')::uuid;
+  d constant uuid := current_setting('test.cr_i_det')::uuid;
+  leite constant uuid := current_setting('test.cr_leite')::uuid;
+  ninho constant uuid := current_setting('test.cr_ninho')::uuid;
+  det constant uuid := current_setting('test.cr_det')::uuid;
+  ovomaltine constant uuid := current_setting('test.cr_ovomaltine')::uuid;
+  map constant jsonb := current_setting('test.cr_map')::jsonb;
+  result jsonb;
+  codes integer;
+begin
+  -- 9. O detergente, que ficou sem produto: o apelido, o código e o de barras nascem; despensa não nasce.
+  result := public.change_receipt_item_product(r, d, null, det, null, map, null);
+  assert result = jsonb_build_object('product_id', det, 'changed', true, 'pantry', 0), 'the line without a product gets one: ' || result;
+  assert (select product_id from public.product_aliases where alias = 'DET YPE 500ML') = det, 'its alias is taught';
+  assert (select product_id = det and learned_from = 'DET YPE 500ML' and not ambiguous
+          from public.product_store_codes where store_code = '7896098900208'), 'its market code is taught';
+  assert (select product_id from public.product_barcodes where gtin = '07896098900208') = det, 'its barcode is taught';
+  assert not exists (select 1 from public.pantry_items where receipt_item_id = d), 'and no pantry entry is born';
+
+  -- 15 e 8. O leite passa para o Leite Ninho (validade aprendida de 30 dias): a despensa conta 30 dias, e o código e o
+  -- de barras passam.
+  result := public.change_receipt_item_product(r, l, leite, ninho, null, map, null);
+  assert (select product_id = ninho and name = 'Leite Ninho' and expires_on = bought + 30 and expiry_source = 'produto'
+          from public.pantry_items where receipt_item_id = l), 'a product''s learned shelf life gives the produto estimate';
+  assert (select product_id from public.product_barcodes where gtin = '07891000100103') = ninho, 'the barcode moves';
+  assert (select product_id from public.product_store_codes where store_code = '7891000100103') = ninho, 'and the market code';
+  -- Uma categoria fora do mapa deixa a data e a origem.
+  result := public.change_receipt_item_product(r, l, ninho, leite, null, map - 'laticinios', null);
+  assert (select product_id = leite and expires_on = bought + 30 and expiry_source = 'produto'
+          from public.pantry_items where receipt_item_id = l), 'a category missing from the map keeps the date and its source';
+  result := public.change_receipt_item_product(r, l, leite, ninho, null, map, null);
+  result := public.change_receipt_item_product(r, l, ninho, leite, null, map, null);
+  assert (select product_id = leite and expires_on = bought + 20 and expiry_source = 'categoria'
+          from public.pantry_items where receipt_item_id = l), 'back on Leite, the category''s 20 days';
+  -- O de barras de um terceiro produto fica com ele.
+  update public.product_barcodes set product_id = ovomaltine where gtin = '07891000100103';
+  perform public.change_receipt_item_product(r, l, leite, ninho, null, map, null);
+  assert (select product_id from public.product_barcodes where gtin = '07891000100103') = ovomaltine, 'a barcode on a third product stays';
+  -- Na nota corrigida para o mercado sem CNPJ: nenhum código de mercado nasce, e o de barras passa.
+  update public.product_barcodes set product_id = ninho where gtin = '07891000100103';
+  update public.receipts set store_id = current_setting('test.cr_store_plain')::uuid where id = r and status = 'confirmed';
+  select count(*) into codes from public.product_store_codes;
+  perform public.change_receipt_item_product(r, l, ninho, leite, null, map, null);
+  assert (select count(*) from public.product_store_codes) = codes, 'without a CNPJ no market code is created';
+  assert (select product_id from public.product_store_codes where store_code = '7891000100103') = ninho,
+    'and the one learned under the old CNPJ stays there';
+  assert (select product_id from public.product_barcodes where gtin = '07891000100103') = leite, 'the barcode still moves';
+  update public.receipts set store_id = current_setting('test.cr_store')::uuid where id = r and status = 'confirmed';
+end $$;
+
+do $$
+declare
+  r constant uuid := current_setting('test.cr_receipt')::uuid;
+  o constant uuid := current_setting('test.cr_i_ovos')::uuid;
+  a constant uuid := current_setting('test.cr_i_arroz')::uuid;
+  ovos constant uuid := current_setting('test.cr_ovos')::uuid;
+  caipira constant uuid := current_setting('test.cr_caipira')::uuid;
+  arroz constant uuid := current_setting('test.cr_arroz')::uuid;
+  ovomaltine constant uuid := current_setting('test.cr_ovomaltine')::uuid;
+  map constant jsonb := current_setting('test.cr_map')::jsonb;
+  result jsonb;
+  products_before integer;
+begin
+  -- 14. A contagem da embalagem é dos ovos: num produto de outra categoria ela sai; entre ovos, fica.
+  perform public.change_receipt_item_product(r, o, ovos, ovomaltine, null, map, null);
+  assert (select pack_count from public.receipt_items where id = o) is null, 'the egg count leaves a product that is not eggs';
+  perform public.change_receipt_item_product(r, o, ovomaltine, ovos, null, map, null);
+  assert (select pack_count from public.receipt_items where id = o) is null, 'and does not come back';
+  update public.receipt_items set pack_count = 12 where id = o;
+  perform public.change_receipt_item_product(r, o, ovos, caipira, null, map, null);
+  assert (select pack_count from public.receipt_items where id = o) = 12, 'between egg products it stays';
+
+  -- 10. O produto novo pelo nome: o de um produto da casa (em outra caixa) é ele; um nome novo nasce com a categoria pedida.
+  select count(*) into products_before from public.products;
+  result := public.change_receipt_item_product(r, a, arroz, null, jsonb_build_object('name', 'FEIJão', 'category', 'outros'), map, null);
+  assert (result ->> 'product_id')::uuid = current_setting('test.cr_feijao')::uuid, 'a new name that the household has is that product';
+  assert (select count(*) from public.products) = products_before, 'and no product is created';
+  result := public.change_receipt_item_product(r, a, current_setting('test.cr_feijao')::uuid, null,
+    jsonb_build_object('name', '  Arroz agulhinha  ', 'category', 'graos'), map, null);
+  assert (select name = 'Arroz agulhinha' and category = 'graos' from public.products where id = (result ->> 'product_id')::uuid),
+    'a new name creates the product, trimmed, with the category sent';
+  perform set_config('test.cr_agulhinha', result ->> 'product_id', false);
+  begin
+    perform public.change_receipt_item_product(r, a, (result ->> 'product_id')::uuid, arroz,
+      jsonb_build_object('name', 'Arroz', 'category', 'graos'), map, null);
+    raise exception 'both choices must be refused';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    perform public.change_receipt_item_product(r, a, (result ->> 'product_id')::uuid, null, null, map, null);
+    raise exception 'no choice must be refused';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    perform public.change_receipt_item_product(r, a, (result ->> 'product_id')::uuid, arroz, null, '[]'::jsonb, null);
+    raise exception 'a map that is not an object must be refused';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    perform public.change_receipt_item_product(r, a, (result ->> 'product_id')::uuid, arroz, null, null, null);
+    raise exception 'a missing map must be refused';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    perform public.change_receipt_item_product(r, a, (result ->> 'product_id')::uuid, arroz, null, map, 'sorvete');
+    raise exception 'an unknown freeze kind must be refused';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    perform public.change_receipt_item_product(r, a, (result ->> 'product_id')::uuid, null, jsonb_build_object('name', '   '), map, null);
+    raise exception 'a blank new name must be refused';
+  exception when sqlstate '22023' then null;
+  end;
+  perform public.change_receipt_item_product(r, a, (result ->> 'product_id')::uuid, arroz, null, map, null);
+
+  -- 11. As recusas na nota da própria casa: o rascunho (NK019), a linha de outra nota e o produto que não existe.
+  begin
+    perform public.change_receipt_item_product(current_setting('test.cr_draft')::uuid, current_setting('test.cr_i_draft')::uuid,
+      null, arroz, null, map, null);
+    raise exception 'a draft must be refused';
+  exception when sqlstate 'NK019' then
+    assert sqlerrm = 'receipt not confirmed', 'NK019 says the receipt is not confirmed';
+  end;
+  assert (select product_id from public.receipt_items where id = current_setting('test.cr_i_draft')::uuid) is null, 'the draft line is untouched';
+  begin
+    perform public.change_receipt_item_product(r, current_setting('test.cr_i_draft')::uuid, null, arroz, null, map, null);
+    raise exception 'a line of another receipt must be refused';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'item not found', 'a line of another receipt is not found: ' || sqlerrm;
+  end;
+  begin
+    perform public.change_receipt_item_product(r, a, arroz, gen_random_uuid(), null, map, null);
+    raise exception 'an unknown product must be refused';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'product not found', 'an unknown product is not found: ' || sqlerrm;
+  end;
+  assert (select product_id from public.receipt_items where id = a) = arroz, 'nothing changed';
+end $$;
+
+-- O congelador: a compra no congelador segue o tipo do produto novo; a que já estava vencida quando foi congelada e a
+-- descongelada ficam com as datas delas.
+do $$
+declare
+  bought constant date := (now() at time zone 'America/Sao_Paulo')::date - 2;
+  r constant uuid := current_setting('test.cr_receipt')::uuid;
+  f constant uuid := current_setting('test.cr_i_frango')::uuid;
+  frango constant uuid := current_setting('test.cr_frango')::uuid;
+  moida constant uuid := current_setting('test.cr_moida')::uuid;
+  map constant jsonb := current_setting('test.cr_map')::jsonb;
+  result jsonb;
+begin
+  assert (select expires_on from public.pantry_items where receipt_item_id = f and expiry_source = 'congelado') = bought + 90,
+    'the frozen chicken has the freezer date (90 days)';
+  result := public.change_receipt_item_product(r, f, frango, moida, null, map, 'carne_moida');
+  assert (result ->> 'pantry')::integer = 3, 'the three entries move';
+  assert (select count(*) from public.pantry_items where receipt_item_id = f and product_id = moida and name = 'Carne moída' and category = 'carnes') = 3,
+    'all three take the new product';
+  assert (select freeze_kind = 'carne_moida' and frozen_on = bought and thawed_on is null and expires_on = bought + 60 and expiry_source = 'congelado'
+                 and fresh_expires_on = bought + 3 and fresh_expiry_source = 'categoria'
+          from public.pantry_items where receipt_item_id = f and frozen_on = bought and thawed_on is null),
+    'in the freezer: the new kind''s date from the same freezing day, and the fresh estimate redone';
+  assert (select freeze_kind = 'carne_moida' and frozen_on = bought + 2 and expires_on = bought + 1 and expiry_source = 'categoria'
+                 and fresh_expires_on = bought + 1 and fresh_expiry_source = 'categoria'
+          from public.pantry_items where receipt_item_id = f and frozen_on = bought + 2),
+    'the entry already past its date when frozen keeps its dates';
+  assert (select freeze_kind = 'frango' and frozen_on = bought and thawed_on = bought + 1 and expires_on = bought + 4 and expiry_source = 'descongelado'
+          from public.pantry_items where receipt_item_id = f and thawed_on is not null),
+    'the thawed entry keeps its dates and kind';
+  -- Sem tipo do produto novo, a compra fica no congelador com o de antes.
+  result := public.change_receipt_item_product(r, f, moida, current_setting('test.cr_arroz')::uuid, null, map, null);
+  assert (select freeze_kind = 'carne_moida' and expires_on = bought + 60 and expiry_source = 'congelado'
+          from public.pantry_items where receipt_item_id = f and frozen_on = bought and thawed_on is null),
+    'without a kind for the new product, the frozen entry keeps the old kind';
+  perform public.change_receipt_item_product(r, f, current_setting('test.cr_arroz')::uuid, frango, null, map, 'frango');
+end $$;
+
+-- 12. Rita, de outra casa: a nota do Rui é 'receipt not found'; na nota dela, o produto do Rui é 'product not found'.
+select set_config('request.jwt.claim.sub', :'user_cr2', false) \gset
+do $$
+declare
+  map constant jsonb := current_setting('test.cr_map')::jsonb;
+begin
+  begin
+    perform public.change_receipt_item_product(current_setting('test.cr_receipt')::uuid, current_setting('test.cr_i_arroz')::uuid,
+      current_setting('test.cr_arroz')::uuid, current_setting('test.cr_feijao')::uuid, null, map, null);
+    raise exception 'another household''s receipt must not be found';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'receipt not found', 'another household''s receipt: ' || sqlerrm;
+  end;
+  begin
+    perform public.change_receipt_item_product(current_setting('test.cr_r2')::uuid, current_setting('test.cr_i2')::uuid,
+      current_setting('test.cr_p2')::uuid, current_setting('test.cr_feijao')::uuid, null, map, null);
+    raise exception 'another household''s product must not be found';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'product not found', 'another household''s product: ' || sqlerrm;
+  end;
+  begin
+    perform public.add_confirmed_receipt_item(current_setting('test.cr_receipt')::uuid, jsonb_build_object(
+      'id', gen_random_uuid(), 'raw_description', 'INVASOR', 'quantity', 1, 'unit', 'un', 'unit_price', 1, 'total_price', 1,
+      'new_product', jsonb_build_object('name', 'Invasor', 'category', 'outros')));
+    raise exception 'another household''s receipt must not be found (add)';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'receipt not found', 'another household''s receipt (add): ' || sqlerrm;
+  end;
+  begin
+    perform public.add_confirmed_receipt_item(current_setting('test.cr_r2')::uuid, jsonb_build_object(
+      'id', gen_random_uuid(), 'raw_description', 'FEIJAO DO RUI', 'quantity', 1, 'unit', 'un', 'unit_price', 1, 'total_price', 1,
+      'product_id', current_setting('test.cr_feijao')::uuid));
+    raise exception 'another household''s product must not be found (add)';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'product not found', 'another household''s product (add): ' || sqlerrm;
+  end;
+  assert (select count(*) from public.receipt_items where receipt_id = current_setting('test.cr_r2')::uuid) = 1, 'Rita''s receipt got nothing';
+  assert (select product_id from public.receipt_items where id = current_setting('test.cr_i2')::uuid) = current_setting('test.cr_p2')::uuid,
+    'and her line is untouched';
+end $$;
+
+reset role;
+do $$
+begin
+  assert (select product_id from public.receipt_items where id = current_setting('test.cr_i_arroz')::uuid) = current_setting('test.cr_arroz')::uuid,
+    'Rita changed nothing in Rui''s receipt';
+  assert not exists (select 1 from public.products where name = 'Invasor'), 'and created no product';
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_cr1', false) \gset
+do $$
+declare
+  bought constant date := (now() at time zone 'America/Sao_Paulo')::date - 2;
+  r constant uuid := current_setting('test.cr_receipt')::uuid;
+  feijao constant uuid := current_setting('test.cr_feijao')::uuid;
+  arroz constant uuid := current_setting('test.cr_arroz')::uuid;
+  map constant jsonb := current_setting('test.cr_map')::jsonb;
+  x constant uuid := gen_random_uuid();
+  y constant uuid := gen_random_uuid();
+  z constant uuid := gen_random_uuid();
+  w constant uuid := gen_random_uuid();
+  v constant uuid := gen_random_uuid();
+  item jsonb;
+  result jsonb;
+  last_position integer;
+  products_before integer;
+begin
+  select max(position) into last_position from public.receipt_items where receipt_id = r;
+  -- 16. O feijão que a leitura perdeu, com a despensa: no fim da nota, sem código, genérico nem sugestão; a despensa
+  -- com a quantidade e a unidade da linha; nenhum apelido nasce.
+  item := jsonb_build_object('id', x, 'raw_description', 'FEIJAO CARIOCA 1KG', 'quantity', 2, 'unit', 'un', 'unit_price', 7.9, 'total_price', 15.8,
+    'product_id', feijao,
+    'pantry', jsonb_build_object('name', 'Feijão', 'category', 'graos', 'purchased_on', bought, 'expires_on', bought + 180, 'expiry_source', 'categoria'));
+  result := public.add_confirmed_receipt_item(r, item);
+  assert (result ->> 'added')::boolean and (result ->> 'same')::boolean and (result ->> 'item_id')::uuid = x
+         and (result ->> 'product_id')::uuid = feijao and result ->> 'pantry_item_id' is not null, 'the item is added: ' || result;
+  assert (select position = last_position + 1 and store_code is null and generic_name is null and suggested_name is null
+                 and suggested_category is null and product_id = feijao and quantity = 2 and unit = 'un' and unit_price = 7.9 and total_price = 15.8
+          from public.receipt_items where id = x), 'the line goes at the end, with the person''s text only';
+  assert (select product_id = feijao and name = 'Feijão' and category = 'graos' and quantity = 2 and unit = 'un' and purchased_on = bought
+                 and expires_on = bought + 180 and expiry_source = 'categoria' and frozen_on is null
+          from public.pantry_items where receipt_item_id = x), 'the pantry entry has the line''s quantity and unit';
+  assert not exists (select 1 from public.product_aliases where alias = 'FEIJAO CARIOCA 1KG'), 'no alias is taught';
+  assert exists (select 1 from public.price_observations where receipt_id = r and product_id = feijao and unit_price = 7.9),
+    'the added line is in the price history';
+
+  -- 17. O mesmo id de novo: com o mesmo conteúdo, `same`; com outro valor ou sem a despensa, não; e nada muda. Em outra
+  -- nota, o id já usado é 23505.
+  result := public.add_confirmed_receipt_item(r, item);
+  assert not (result ->> 'added')::boolean and (result ->> 'same')::boolean, 'the same request again is the same: ' || result;
+  result := public.add_confirmed_receipt_item(r, item || jsonb_build_object('total_price', 16.8));
+  assert not (result ->> 'added')::boolean and not (result ->> 'same')::boolean, 'another value is not the same';
+  result := public.add_confirmed_receipt_item(r, item - 'pantry');
+  assert not (result ->> 'added')::boolean and not (result ->> 'same')::boolean, 'without the pantry is not the same';
+  result := public.add_confirmed_receipt_item(r, jsonb_set(item, '{pantry,frozen_on}', to_jsonb(bought)));
+  assert not (result ->> 'added')::boolean and not (result ->> 'same')::boolean, 'frozen is not the same';
+  assert (select count(*) from public.receipt_items where id = x) = 1 and (select total_price from public.receipt_items where id = x) = 15.8,
+    'still one line, as it was';
+  assert (select count(*) from public.pantry_items where receipt_item_id = x) = 1, 'and one pantry entry';
+  begin
+    perform public.add_confirmed_receipt_item(current_setting('test.cr_r_other')::uuid, item);
+    raise exception 'an id used in another receipt must be refused';
+  exception when sqlstate '23505' then null;
+  end;
+
+  -- 18. O produto novo: nasce, ou é o da casa com o mesmo nome em outra caixa; sem a despensa, nada vai para lá.
+  result := public.add_confirmed_receipt_item(r, jsonb_build_object('id', y, 'raw_description', 'ESPONJA 3M', 'quantity', 1, 'unit', 'un',
+    'unit_price', 4.5, 'total_price', 4.5, 'new_product', jsonb_build_object('name', 'Esponja', 'category', 'limpeza')));
+  assert (select name = 'Esponja' and category = 'limpeza' from public.products where id = (result ->> 'product_id')::uuid), 'a new product is created';
+  assert not exists (select 1 from public.pantry_items where receipt_item_id = y), 'without pantry, no pantry entry';
+  select count(*) into products_before from public.products;
+  result := public.add_confirmed_receipt_item(r, jsonb_build_object('id', z, 'raw_description', 'FEIJAO PRETO', 'quantity', 1, 'unit', 'kg',
+    'unit_price', 9, 'total_price', 9, 'new_product', jsonb_build_object('name', 'feijão', 'category', 'outros')));
+  assert (result ->> 'product_id')::uuid = feijao and (select count(*) from public.products) = products_before,
+    'a new name the household has is that product';
+
+  -- A carne que a leitura perdeu, marcada "Congelei": o congelador vem junto, e a validade é a do tipo.
+  result := public.add_confirmed_receipt_item(r, jsonb_build_object('id', w, 'raw_description', 'ALCATRA', 'quantity', 1, 'unit', 'kg',
+    'unit_price', 45, 'total_price', 45, 'product_id', current_setting('test.cr_moida')::uuid,
+    'pantry', jsonb_build_object('name', 'Carne moída', 'category', 'carnes', 'purchased_on', bought, 'expires_on', bought + 60,
+      'expiry_source', 'congelado', 'frozen_on', bought, 'freeze_kind', 'carne_moida', 'fresh_expires_on', bought + 3, 'fresh_expiry_source', 'categoria')));
+  assert (select frozen_on = bought and freeze_kind = 'carne_moida' and expires_on = bought + 60 and expiry_source = 'congelado'
+                 and fresh_expires_on = bought + 3 and fresh_expiry_source = 'categoria' and thawed_on is null
+          from public.pantry_items where receipt_item_id = w), 'the frozen line goes into the freezer';
+  result := public.add_confirmed_receipt_item(r, jsonb_build_object('id', w, 'raw_description', 'ALCATRA', 'quantity', 1, 'unit', 'kg',
+    'unit_price', 45, 'total_price', 45, 'product_id', current_setting('test.cr_moida')::uuid,
+    'pantry', jsonb_build_object('name', 'Carne moída', 'category', 'carnes', 'purchased_on', bought, 'expires_on', bought + 60,
+      'expiry_source', 'congelado', 'frozen_on', bought, 'freeze_kind', 'carne_moida', 'fresh_expires_on', bought + 3, 'fresh_expiry_source', 'categoria')));
+  assert not (result ->> 'added')::boolean and (result ->> 'same')::boolean, 'the frozen request again is the same';
+
+  -- 19. Sem valor, ou sem quantidade: 22023, e nada entra.
+  begin
+    perform public.add_confirmed_receipt_item(r, jsonb_build_object('id', gen_random_uuid(), 'raw_description', 'BRINDE', 'quantity', 1,
+      'unit', 'un', 'unit_price', 0, 'total_price', 0, 'product_id', feijao));
+    raise exception 'a zero value must be refused';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    perform public.add_confirmed_receipt_item(r, jsonb_build_object('id', gen_random_uuid(), 'raw_description', 'SEM QUANTIDADE', 'quantity', 0,
+      'unit', 'un', 'unit_price', 1, 'total_price', 1, 'product_id', feijao));
+    raise exception 'a zero quantity must be refused';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    perform public.add_confirmed_receipt_item(r, jsonb_build_object('id', gen_random_uuid(), 'raw_description', '  ', 'quantity', 1,
+      'unit', 'un', 'unit_price', 1, 'total_price', 1, 'product_id', feijao));
+    raise exception 'a blank description must be refused';
+  exception when sqlstate '22023' then null;
+  end;
+  assert not exists (select 1 from public.receipt_items where raw_description in ('BRINDE', 'SEM QUANTIDADE')), 'nothing was added';
+
+  -- 20. O rascunho (NK019) e o produto que não existe.
+  begin
+    perform public.add_confirmed_receipt_item(current_setting('test.cr_draft')::uuid, jsonb_build_object('id', gen_random_uuid(),
+      'raw_description', 'NO RASCUNHO', 'quantity', 1, 'unit', 'un', 'unit_price', 1, 'total_price', 1, 'product_id', feijao));
+    raise exception 'a draft must be refused (add)';
+  exception when sqlstate 'NK019' then null;
+  end;
+  begin
+    perform public.add_confirmed_receipt_item(r, jsonb_build_object('id', gen_random_uuid(),
+      'raw_description', 'PRODUTO SUMIDO', 'quantity', 1, 'unit', 'un', 'unit_price', 1, 'total_price', 1, 'product_id', gen_random_uuid()));
+    raise exception 'an unknown product must be refused (add)';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'product not found', 'an unknown product (add): ' || sqlerrm;
+  end;
+  assert not exists (select 1 from public.receipt_items where raw_description in ('NO RASCUNHO', 'PRODUTO SUMIDO')), 'nothing was added';
+
+  -- 20b. Trocar o produto de uma linha incluída: ela não ensinou apelido (o texto é da pessoa), e nenhum passa nem nasce
+  -- dela. O texto que o app sugere é o nome do produto ("Feijão"), e o apelido FEIJAO que uma nota impressa ensinou ao
+  -- feijão fica com ele; o texto digitado de outra linha incluída não vira apelido do produto novo.
+  assert (select bool_and(added_after_confirmation) from public.receipt_items where id in (x, y, z, w)), 'the added lines are marked';
+  assert not exists (select 1 from public.receipt_items where receipt_id = r and position <= last_position and added_after_confirmation),
+    'the lines that came through the confirmation are not';
+  insert into public.product_aliases (alias, product_id) values (public.normalize_alias('Feijão'), feijao)
+    on conflict (household_id, alias) do update set product_id = excluded.product_id;
+  result := public.add_confirmed_receipt_item(r, jsonb_build_object('id', v, 'raw_description', 'Feijão', 'quantity', 1, 'unit', 'un',
+    'unit_price', 8, 'total_price', 8, 'product_id', feijao));
+  result := public.change_receipt_item_product(r, v, feijao, arroz, null, map, null);
+  assert (result ->> 'changed')::boolean and (select product_id from public.receipt_items where id = v) = arroz, 'the added line changes product';
+  assert (select product_id from public.product_aliases where alias = public.normalize_alias('Feijão')) = feijao,
+    'the alias a printed receipt taught stays with its product';
+  result := public.change_receipt_item_product(r, x, feijao, arroz, null, map, null);
+  assert (result ->> 'changed')::boolean and (select product_id from public.pantry_items where receipt_item_id = x) = arroz,
+    'the other added line changes product, pantry included';
+  assert not exists (select 1 from public.product_aliases where alias = 'FEIJAO CARIOCA 1KG'), 'and no alias is born from typed text';
+end $$;
+
+-- 21 e 13. Nada disso chegou à base comum, nem às ligações da lista, nem à validade aprendida dos produtos.
+reset role;
+do $$
+begin
+  assert (
+    select md5(coalesce(string_agg(sp::text, '|' order by sp.store_cnpj, sp.item_key, sp.unit, sp.seen_on), '')) from public.shared_prices sp
+  ) = current_setting('test.cr_shared'),
+    'changing a product and adding a line on a confirmed receipt share nothing';
+  assert (select count(*) from public.receipt_reads where household_id = current_setting('test.cr_house_1')::uuid) = 0,
+    'there is no read to share again';
+  assert (select string_agg(k.name_key || '>' || k.product_id, ',' order by k.name_key, k.product_id)
+          from public.list_item_links k where k.household_id = current_setting('test.cr_house_1')::uuid) = current_setting('test.cr_links'),
+    'the list links are untouched';
+  assert (select string_agg(p.name || ':' || coalesce(p.shelf_life_days::text, '-'), ',' order by p.name)
+          from public.products p
+          where p.household_id = current_setting('test.cr_house_1')::uuid and p.name not in ('Arroz agulhinha', 'Esponja'))
+    = current_setting('test.cr_shelf'),
+    'no product learned a shelf life';
+end $$;
+
+-- 22. Quem chama: só os moradores, e com os direitos deles.
+do $$
+declare
+  fn text;
+begin
+  foreach fn in array array[
+    'public.receipt_corrections_available()',
+    'public.change_receipt_item_product(uuid, uuid, uuid, uuid, jsonb, jsonb, text)',
+    'public.add_confirmed_receipt_item(uuid, jsonb)'] loop
+    assert has_function_privilege('authenticated', fn, 'execute'), fn || ': members call it';
+    assert not has_function_privilege('anon', fn, 'execute'), fn || ': anon does not';
+    assert not has_function_privilege('public', fn, 'execute'), fn || ': nor everyone (PUBLIC)';
+    assert (select not prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = fn::regprocedure),
+      fn || ': runs as the caller, with an empty search_path';
+  end loop;
+  assert exists (select 1 from pg_indexes where indexname = 'pantry_items_receipt_item_idx'), 'the pantry is found by its receipt line';
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_cr1', false) \gset
+do $$
+begin
+  assert public.receipt_corrections_available(), 'a member hears that the corrections are available';
+end $$;
+reset role;
+\echo '  (a corrida com merge_products não roda aqui: fica conferido que as duas funções travam os produtos for key share antes da nota)'
+do $$
+begin
+  assert (select prosrc like '%order by p.id for key share;%select * into r from public.receipts where id = p_receipt_id for update;%'
+          from pg_proc where oid = 'public.change_receipt_item_product(uuid, uuid, uuid, uuid, jsonb, jsonb, text)'::regprocedure),
+    'the change locks the products (for key share, by id) before the receipt';
+  assert (select prosrc like '%for key share;%select * into r from public.receipts where id = p_receipt_id for update;%'
+          from pg_proc where oid = 'public.add_confirmed_receipt_item(uuid, jsonb)'::regprocedure),
+    'and so does the add';
+end $$;
+delete from public.households where id in (current_setting('test.cr_house_1')::uuid, current_setting('test.cr_house_2')::uuid);
+
+-- ---------------------------------------------------------------------------
 \echo '• Termos: cada pessoa grava e lê só o próprio aceite, uma vez por versão'
 \set user_t1 '00000000-0000-0000-0000-0000000001b1'
 \set user_t2 '00000000-0000-0000-0000-0000000001b2'
@@ -10818,11 +12477,28 @@ begin
     and not exists (select 1 from public.product_barcodes where product_id in (p_nanica, p_desnatado)), 'nothing points to the gone ones';
   assert (select count(*) from public.product_store_codes) = 2 and (select count(*) from public.product_barcodes) = 2, 'nothing was lost';
 
-  delete from public.products where id = p_banana;
+  -- A banana tem linhas de nota: um delete direto pela API esbarra no gatilho products_keep_receipt_lines
+  -- (20261123130646_delete_product.sql), e nada sai.
+  begin
+    delete from public.products where id = p_banana;
+    raise exception 'FAIL: a product with receipt lines left by a direct delete';
+  exception when sqlstate 'NK016' then null;
+  end;
+  assert exists (select 1 from public.product_store_codes where store_code = '250474')
+    and exists (select 1 from public.product_barcodes where gtin = '00000096385074'), 'the refused delete kept the codes';
+end $$;
+-- Como dona da tabela (como a cascata da casa apagada), o produto sai e as linhas de nota ficam sem ele.
+reset role;
+delete from public.products where id = current_setting('test.sc_banana')::uuid;
+do $$
+begin
+  -- O 250474 não é ambíguo: sai com o produto (product_store_codes_forget_unlinked).
   assert not exists (select 1 from public.product_store_codes where store_code = '250474')
     and not exists (select 1 from public.product_barcodes where gtin = '00000096385074'), 'a deleted product takes its codes';
-  assert (select count(*) from public.product_store_codes) = 1, 'and only its codes';
+  assert (select count(*) from public.product_store_codes where household_id = current_setting('test.hh_sc1')::uuid) = 1, 'and only its codes';
 end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_sc1', false) \gset
 
 -- O mercadinho que usa o mesmo código para itens diferentes (o 1 para todo o hortifruti a granel): o código
 -- fica ambíguo e deixa de valer; vale o código de barras, depois o apelido de cada descrição.
@@ -12503,11 +14179,12 @@ end $$;
 reset role;
 do $$
 declare
-  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  -- A segunda-feira desta semana: a linha da quarta-feira passada já pode ser lida (a leitura é por semana).
+  week constant date := public.shared_week((now() at time zone 'America/Sao_Paulo')::date);
 begin
   insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
-    ('44555666000122', '25', 'SUPERMERCADO OUTRO LTDA', 'LEITE ITALAC 1L', 'un', today - 2, 5.19, today - 1),
-    ('44555666000203', '25', 'MERCADO SEM PADRAO LTDA', 'LEITE ITALAC 1L', 'un', today - 2, 5.29, today - 1);
+    ('44555666000122', '25', 'SUPERMERCADO OUTRO LTDA', 'LEITE ITALAC 1L', 'un', week - 5, 5.19, week),
+    ('44555666000203', '25', 'MERCADO SEM PADRAO LTDA', 'LEITE ITALAC 1L', 'un', week - 5, 5.29, week);
   insert into public.store_names (cnpj, name, source, reviewed_at, receita_status)
     values ('44555666000122', 'Outro Super', 'revisao', now(), 'sem_fantasia');
 end $$;
@@ -12750,32 +14427,34 @@ begin
   perform set_config('test.g_milk_c', milk::text, false);
 end $$;
 
--- A base comum: o mesmo leite (o mesmo código) com outras descrições, em vários mercados.
+-- A base comum: o mesmo leite (o mesmo código) com outras descrições, em vários mercados. As datas contam da
+-- segunda-feira desta semana (week), como na seção de cima: a leitura é por semana.
 reset role;
 do $$
 declare
-  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  week constant date := public.shared_week((now() at time zone 'America/Sao_Paulo')::date);
   g constant text := '07891000100103';
 begin
   insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on, gtin) values
     -- No mercado da Bia, lida por foto (sem estado): só o código leva a ela.
-    ('62000000000202', null, 'MERCADO DA BIA', 'LT INTEG PIRACANJUBA 1L', 'un', today - 2, 5.49, today - 1, g),
-    -- Também no mercado da Bia, pelo código: uma gravada hoje (a mais nova, que ninguém lê ainda) e uma de 91 dias
-    -- (noutra unidade, para não perder para a mais nova).
-    ('62000000000202', null, 'MERCADO DA BIA', 'LEITE PIRAC HOJE', 'un', today - 1, 4.30, today + 1, g),
-    ('62000000000202', null, 'MERCADO DA BIA', 'LEITE PIRAC ANTIGO', 'l', today - 91, 4.40, today - 90, g),
+    ('62000000000202', null, 'MERCADO DA BIA', 'LT INTEG PIRACANJUBA 1L', 'un', week - 5, 5.49, week, g),
+    -- Também no mercado da Bia, pelo código: uma gravada nesta semana (a mais nova, que ninguém lê ainda) e uma de
+    -- antes das 13 semanas (noutra unidade, para não perder para a mais nova).
+    ('62000000000202', null, 'MERCADO DA BIA', 'LEITE PIRAC HOJE', 'un', week - 2, 4.30, week + 7, g),
+    ('62000000000202', null, 'MERCADO DA BIA', 'LEITE PIRAC ANTIGO', 'l', week - 92, 4.40, week - 91, g),
     -- No mercado do Caco, sem estado: só o código ligado por ele leva a ela, nunca o da Bia.
-    ('62000000000606', null, 'MERCADO DO CACO', 'LEITE PIRAC INT 1L', 'un', today - 2, 5.09, today - 1, g),
+    ('62000000000606', null, 'MERCADO DO CACO', 'LEITE PIRAC INT 1L', 'un', week - 5, 5.09, week, g),
     -- Em Z1, pelo código (5,29) e, no mesmo dia, pela descrição da Bia sem código (5,19): sai uma, a mais barata.
-    ('62000000000303', '35', 'OUTRO MERCADO SP', 'LEITE PIRAC INT 1L', 'un', today - 3, 5.29, today - 2, g),
-    ('62000000000303', '35', 'OUTRO MERCADO SP', 'LEITE PIRACANJUBA INTEGRAL', 'un', today - 3, 5.19, today - 2, null),
+    ('62000000000303', '35', 'OUTRO MERCADO SP', 'LEITE PIRAC INT 1L', 'un', week - 6, 5.29, week, g),
+    ('62000000000303', '35', 'OUTRO MERCADO SP', 'LEITE PIRACANJUBA INTEGRAL', 'un', week - 6, 5.19, week, null),
     -- Em Z2, a mesma linha pelos dois caminhos (a descrição da Bia E o código): uma vez só.
-    ('62000000000404', '35', 'MERCADO DOS DOIS', 'LEITE PIRACANJUBA INTEGRAL', 'un', today - 2, 5.39, today - 1, g),
+    ('62000000000404', '35', 'MERCADO DOS DOIS', 'LEITE PIRACANJUBA INTEGRAL', 'un', week - 5, 5.39, week, g),
     -- No Rio: não é do estado de ninguém aqui.
-    ('62000000000505', '33', 'MERCADO RJ', 'LEITE PIRAC INT 1L', 'un', today - 2, 4.00, today - 1, g),
-    -- Gravada hoje (ninguém lê ainda) e velha demais.
-    ('62000000000707', '35', 'MERCADO DE HOJE', 'LEITE PIRAC INT 1L', 'un', today - 1, 4.10, today + 1, g),
-    ('62000000000808', '35', 'MERCADO ANTIGO', 'LEITE PIRAC INT 1L', 'un', today - 91, 4.20, today - 90, g);
+    ('62000000000505', '33', 'MERCADO RJ', 'LEITE PIRAC INT 1L', 'un', week - 5, 4.00, week, g),
+    -- Gravada nesta semana (ninguém lê ainda) e velha demais.
+    ('62000000000707', '35', 'MERCADO DE HOJE', 'LEITE PIRAC INT 1L', 'un', week - 2, 4.10, week + 7, g),
+    ('62000000000808', '35', 'MERCADO ANTIGO', 'LEITE PIRAC INT 1L', 'un', week - 92, 4.20, week - 91, g);
+  perform set_config('test.g_week', week::text, false);
 end $$;
 
 set role authenticated;
@@ -12783,15 +14462,16 @@ select set_config('request.jwt.claim.sub', :'user_g2', false) \gset
 do $$
 declare
   today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  week constant date := current_setting('test.g_week')::date;
   milk constant uuid := current_setting('test.g_milk_b')::uuid;
   r uuid;
   i uuid;
 begin
   assert (select array_agg(store_cnpj || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by mine desc, store_cnpj) from public.shared_latest_prices())
     = array[
-      '62000000000202 5.4900 ' || (today - 2) || ' true',
-      '62000000000303 5.1900 ' || (today - 3) || ' false',
-      '62000000000404 5.3900 ' || (today - 2) || ' false'
+      '62000000000202 5.4900 ' || (week - 7) || ' true',
+      '62000000000303 5.1900 ' || (week - 7) || ' false',
+      '62000000000404 5.3900 ' || (week - 7) || ' false'
     ],
     'by the barcode: her product with another description, in her store and in another store of her state, once per store';
   assert (select bool_and(product_id = milk) from public.shared_latest_prices()), 'always her product';
@@ -13155,6 +14835,502 @@ reset role;
 delete from public.shared_prices where store_cnpj like '6300000000%';
 delete from public.households where name in ('Casa do Ernesto', 'Casa da Fia');
 delete from auth.users where id in (:'user_pk1', :'user_pk2');
+
+-- ---------------------------------------------------------------------------
+\echo '• preços compartilhados: a lista aberta (as descrições e os preços de qualquer item dos estados da casa, pela semana)'
+-- Olga não tem nota nenhuma, só o local da casa em São Paulo; Pedro não tem estado. As linhas da base são postas direto
+-- (como o servidor), com as datas contadas da segunda-feira desta semana (week): o resultado não depende do dia em que
+-- o teste roda. A e B são mercados de outras casas; o 101 é o mercado da Olga.
+\set user_op1 '00000000-0000-0000-0000-000000000371'
+\set user_op2 '00000000-0000-0000-0000-000000000372'
+reset role;
+insert into auth.users (id) values (:'user_op1'), (:'user_op2');
+truncate public.shared_prices;
+set time zone 'UTC';
+select set_config('test.op_today', ((now() at time zone 'America/Sao_Paulo')::date)::text, false) \gset
+select set_config('test.op_week', public.shared_week(current_setting('test.op_today')::date)::text, false) \gset
+
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+  a constant text := '64000000000201';
+  b constant text := '64000000000202';
+  c constant text := '64000000000203';
+begin
+  -- A semana é a da ISO: segunda a domingo.
+  assert public.shared_week(date '2026-11-23') = date '2026-11-23' and public.shared_week(date '2026-11-29') = date '2026-11-23'
+    and public.shared_week(date '2026-11-30') = date '2026-11-30' and public.shared_week(date '2027-01-01') = date '2026-12-28',
+    'shared_week is the Monday of the ISO week';
+  assert to_regclass('public.shared_prices_first_word_idx') is not null and to_regclass('public.shared_prices_second_word_idx') is not null,
+    'the open search has its two indexes';
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
+    -- O mesmo leite em dois mercados e semanas (vista 2 vezes), e outro em três mercados (num deles duas vezes na
+    -- mesma semana: conta uma).
+    (a, '35', 'MERCADO A', 'LEITE DESN ITALAC 1L', 'un', week - 5, 4.59, week),
+    (b, '35', 'MERCADO B', 'LEITE DESN ITALAC 1L', 'un', week - 12, 4.79, week - 7),
+    (a, '35', 'MERCADO A', 'LEITE INT ITALAC 1L', 'un', week - 6, 4.99, week),
+    (a, '35', 'MERCADO A', 'LEITE INT ITALAC 1L', 'un', week - 4, 4.89, week),
+    (b, '35', 'MERCADO B', 'LEITE INT ITALAC 1L', 'un', week - 12, 5.09, week - 7),
+    (c, '35', 'MERCADO C', 'LEITE INT ITALAC 1L', 'un', week - 19, 5.19, week - 14),
+    -- O item na segunda palavra (pela busca "s"), e na terceira (não volta).
+    (a, '35', 'MERCADO A', 'CX LEITE NINHO', 'un', week - 5, 6.00, week),
+    (a, '35', 'MERCADO A', 'BEBIDA LACTEA LEITE', 'un', week - 5, 3.00, week),
+    -- Do Rio (outro estado), gravada nesta semana (ninguém lê ainda), antes das 13 semanas, e no primeiro dia delas.
+    ('64000000000204', '33', 'MERCADO RJ', 'LEITE RJ 1L', 'un', week - 5, 3.50, week),
+    (a, '35', 'MERCADO A', 'LEITE FUTURO 1L', 'un', week - 2, 3.10, week + 7),
+    (a, '35', 'MERCADO A', 'LEITE VELHO 1L', 'un', week - 92, 3.20, week - 91),
+    (a, '35', 'MERCADO A', 'LEITE BORDA 1L', 'un', week - 91, 3.30, week - 84),
+    -- Um número comprido (um CPF, um telefone) na descrição: nunca sai. Um número curto sai.
+    (a, '35', 'MERCADO A', 'LEITE ENCOMENDA 123 456 789 01', 'un', week - 5, 3.40, week),
+    (a, '35', 'MERCADO A', 'PAO 11987654321', 'un', week - 5, 1.00, week),
+    (a, '35', 'MERCADO A', 'ARROZ 5KG 2', 'un', week - 5, 22.00, week),
+    (b, '35', 'MERCADO B', 'ARROZ 5KG 2', 'un', week - 5, 22.50, week),
+    (a, '35', 'MERCADO A', 'ZEBU CARNE 1KG', 'kg', week - 5, 39.90, week);
+  -- Setenta arrozes: a busca do arroz é cortada em 60, a do zebu (que viria depois na ordem alfabética) não perde nada.
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
+    select a, '35', 'MERCADO A', 'ARROZ T' || g || ' 5KG', 'un', week - 5, 20 + g / 10.0, week from generate_series(1, 70) as g;
+end $$;
+
+-- Olga: o local da casa em São Paulo, e nenhuma nota.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_op1', false) \gset
+select public.create_household('Casa da Olga', 'Olga') \gset
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+  answer jsonb;
+  items constant jsonb := $j$[
+    {"f": ["LEITE", "LEITES", "LT", "LTE"], "s": ["LEITE", "LEITES", "LTE"], "x": ["DESNATADO"]},
+    {"f": ["ZEBU"], "s": [], "x": []},
+    {"f": ["ARROZ", "ARROZES"], "s": [], "x": []},
+    {"f": ["PAO", "PAES"], "s": [], "x": []},
+    {"f": ["XYZZY"], "s": [], "x": []}
+  ]$j$;
+begin
+  perform set_config('test.op_house_o', public.current_household_id()::text, false);
+  -- O estado é gravado com o local, e só um código de estado do IBGE entra.
+  insert into public.household_location (label, latitude, longitude, source, state_code) values ('Mooca, São Paulo', -23.55, -46.60, 'cep', '35');
+  assert (select state_code from public.household_location) = '35', 'the house state is saved with the place';
+  begin
+    update public.household_location set state_code = '99';
+    raise exception 'FAIL: a state code that is no state';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.household_location set state_code = 'SP';
+    raise exception 'FAIL: the abbreviation instead of the IBGE code';
+  exception when check_violation then null;
+  end;
+  insert into public.stores (name, cnpj) values ('MERCADO DA OLGA', '64000000000101');
+
+  answer := public.shared_item_keys(items);
+  assert jsonb_array_length(answer) = 5, 'one answer per search entry, in order';
+  assert answer -> 0 = jsonb_build_object('k', jsonb_build_array(
+      jsonb_build_array('LEITE DESN ITALAC 1L', 'un', (week - 7)::text, 2),
+      jsonb_build_array('LEITE INT ITALAC 1L', 'un', (week - 7)::text, 3),
+      jsonb_build_array('CX LEITE NINHO', 'un', (week - 7)::text, 1),
+      jsonb_build_array('LEITE BORDA 1L', 'un', (week - 91)::text, 1)), 'more', false),
+    'by the first word and the second; first the keys that spell the other words of the item ("DESN" for "desnatado"), '
+    'then the most seen in (store, week), the newest week; never the third word, another state, a row not readable yet, '
+    'one before the 13 weeks or one with a long number: ' || (answer -> 0)::text;
+  assert answer -> 1 = ('{"k": [["ZEBU CARNE 1KG", "kg", "' || (week - 7) || '", 1]], "more": false}')::jsonb,
+    'the cut is per entry, never alphabetical over the call: zebu keeps its key';
+  assert jsonb_array_length(answer -> 2 -> 'k') = 60 and (answer -> 2 -> 'more')::boolean
+    and answer -> 2 -> 'k' -> 0 = jsonb_build_array('ARROZ 5KG 2', 'un', (week - 7)::text, 2),
+    'and the rice entry gets its 60 best keys and says there were more (a short number stays in a key)';
+  assert answer -> 3 = '{"k": [], "more": false}' and answer -> 4 = '{"k": [], "more": false}',
+    'a key with 8 digits in a row is never returned, and words that match nothing answer an empty entry';
+  assert (select bool_and(jsonb_array_length(k) = 4 and jsonb_typeof(k -> 0) = 'string' and jsonb_typeof(k -> 1) = 'string'
+                          and jsonb_typeof(k -> 2) = 'string' and jsonb_typeof(k -> 3) = 'number'
+                          and extract(isodow from (k ->> 2)::date) = 1)
+            from jsonb_array_elements(answer) e (v) cross join lateral jsonb_array_elements(e.v -> 'k') k),
+    'each key is exactly [key, unit, Monday of its newest week, store-weeks], never a day';
+  perform set_config('test.op_items', items::text, false);
+end $$;
+
+-- Os preços dos grupos. O mercado A tem nome padrão.
+reset role;
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+  d constant text := '64000000000205';
+begin
+  insert into public.store_names (cnpj, name, source, reviewed_at, receita_status) values ('64000000000201', 'Mercado A Padrão', 'revisao', now(), 'sem_fantasia');
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on, pack_unit, pack_amount, pack_of) values
+    -- No mercado da Olga: é dela (mine), e conta sempre.
+    ('64000000000101', '35', 'MERCADO DA OLGA', 'LEITE INT ITALAC 1L', 'un', week - 5, 5.50, week, null, null, null),
+    -- Duas descrições do mesmo feijão no mesmo mercado e semana: a de terça a 10,00 e a de quinta a 9,00.
+    (d, '35', 'MERCADO D', 'FEIJAO PRETO 1KG', 'un', week - 13, 10.00, week - 7, null, null, null),
+    (d, '35', 'MERCADO D', 'FEIJAO PRETO KICALDO 1KG', 'un', week - 11, 9.00, week - 7, null, null, null),
+    -- A lata (tamanho lido 350 ml), o fardo com a descrição da lata (sem tamanho lido) e a caixa de 12 com a mesma
+    -- descrição (tamanho lido 12 x 350 ml).
+    ('64000000000201', '35', 'MERCADO A', 'CERV SKOL LT 350ML', 'un', week - 5, 3.49, week, 'l', 0.35, null),
+    ('64000000000202', '35', 'MERCADO B', 'CERV SKOL LT 350ML', 'un', week - 5, 39.90, week, null, null, null),
+    ('64000000000203', '35', 'MERCADO C', 'CERV SKOL LT 350ML', 'un', week - 5, 41.90, week, 'l', 4.2, 12),
+    -- O alho a granel (por kg) no mercado A, a cabeça solta com a mesma descrição (por unidade) no B, e a bandeja de
+    -- 200 g no C.
+    ('64000000000201', '35', 'MERCADO A', 'ALHO', 'kg', week - 5, 30.00, week, null, null, null),
+    ('64000000000202', '35', 'MERCADO B', 'ALHO', 'un', week - 5, 2.50, week, null, null, null),
+    ('64000000000203', '35', 'MERCADO C', 'ALHO 200G', 'un', week - 5, 7.90, week, 'kg', 0.2, null);
+  -- Sete mercados com o mesmo macarrão: dos que não são da casa, só os 5 mais baratos.
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
+    select '6400000000030' || g, '35', 'MERCADO E' || g, 'MACARRAO SETE 500G', 'un', week - 5, 3 + g / 10.0, week from generate_series(1, 7) as g;
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_op1', false) \gset
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+  answer jsonb;
+  r uuid;
+  i uuid;
+  p uuid;
+begin
+  answer := public.shared_item_prices($j$[
+    {"k": ["LEITE DESN ITALAC 1L", "LEITE INT ITALAC 1L"]},
+    {"k": ["LEITE INT ITALAC 1L", "LEITE DESN ITALAC 1L"]},
+    {"k": ["MACARRAO SETE 500G"]}
+  ]$j$);
+  assert (select array_agg(format('%s %s %s %s %s %s %s', v ->> 0, v ->> 1, v ->> 2, v ->> 4, v ->> 5, v ->> 6, v ->> 7)
+                             order by o)
+            from jsonb_array_elements(answer) with ordinality e (v, o))
+    = array[
+      '0 64000000000101 MERCADO DA OLGA un 5.5000 ' || (week - 7) || ' true',
+      '0 64000000000201 Mercado A Padrão un 4.5900 ' || (week - 7) || ' false',
+      '0 64000000000202 MERCADO B un 4.7900 ' || (week - 14) || ' false',
+      '0 64000000000203 MERCADO C un 5.1900 ' || (week - 21) || ' false',
+      '1 64000000000101 MERCADO DA OLGA un 5.5000 ' || (week - 7) || ' true',
+      '1 64000000000201 Mercado A Padrão un 4.5900 ' || (week - 7) || ' false',
+      '1 64000000000202 MERCADO B un 4.7900 ' || (week - 14) || ' false',
+      '1 64000000000203 MERCADO C un 5.1900 ' || (week - 21) || ' false',
+      '2 64000000000301 MERCADO E1 un 3.1000 ' || (week - 7) || ' false',
+      '2 64000000000302 MERCADO E2 un 3.2000 ' || (week - 7) || ' false',
+      '2 64000000000303 MERCADO E3 un 3.3000 ' || (week - 7) || ' false',
+      '2 64000000000304 MERCADO E4 un 3.4000 ' || (week - 7) || ' false',
+      '2 64000000000305 MERCADO E5 un 3.5000 ' || (week - 7) || ' false'
+    ],
+    'per group, store and unit: the newest week, the cheapest in it (any key of the group); the household''s stores always, '
+    'the 5 cheapest others; the standard store name; two groups with the same keys both answer: ' || answer::text;
+  assert (select bool_and(jsonb_array_length(v) = 11 and jsonb_typeof(v -> 0) = 'number' and jsonb_typeof(v -> 5) = 'number'
+                          and jsonb_typeof(v -> 7) = 'boolean' and extract(isodow from (v ->> 6)::date) = 1)
+            from jsonb_array_elements(answer) e (v)),
+    'each row is [group, cnpj, name, state, unit, price, Monday, mine, pack_unit, pack_amount, pack_of], never a day';
+
+  -- O dia não escolhe: as duas descrições da mesma semana dão a mais barata, seja ela a de terça ou a de quinta.
+  assert (select array_agg((v ->> 5) || ' ' || (v ->> 6)) from jsonb_array_elements(public.shared_item_prices(
+            '[{"k": ["FEIJAO PRETO 1KG", "FEIJAO PRETO KICALDO 1KG"]}]')) e (v))
+    = array['9.0000 ' || (week - 14)], 'within a week the cheapest wins, never the later day';
+
+  -- O tamanho esperado do grupo: a linha por unidade com outro tamanho lido fica de fora; a sem tamanho lido fica.
+  assert (select array_agg((v ->> 1) || ' ' || (v ->> 5) || ' ' || coalesce(v ->> 8, '-') || ' ' || coalesce(v ->> 9, '-') || ' ' || coalesce(v ->> 10, '-') order by v ->> 1)
+            from jsonb_array_elements(public.shared_item_prices('[{"k": ["CERV SKOL LT 350ML"], "p": {"u": "l", "a": 0.35}}]')) e (v))
+    = array['64000000000201 3.4900 l 0.350000 -', '64000000000202 39.9000 - - -'],
+    'with the expected size, a unit row whose server size is another is left out; one without a server size stays, '
+    'and each row carries its size';
+  assert (select count(*) from jsonb_array_elements(public.shared_item_prices('[{"k": ["CERV SKOL LT 350ML"]}]'))) = 3,
+    'without it, every row';
+  assert (select (v ->> 1) || ' ' || (v ->> 8) || ' ' || (v ->> 9) || ' ' || (v ->> 10)
+            from jsonb_array_elements(public.shared_item_prices('[{"k": ["CERV SKOL LT 350ML"], "p": {"u": "l", "a": 4.2, "o": 12}}]')) e (v)
+            where v ->> 1 = '64000000000203') = '64000000000203 l 4.200000 12',
+    'the expected size with "of how many" matches the case of 12';
+
+  -- As só a peso ("w"): a descrição entra pelo que é vendido a peso, sem trazer a linha por unidade que o app não
+  -- escolheu (a cabeça solta do B levaria o tamanho da bandeja); em "k", toda unidade.
+  assert (select array_agg((v ->> 1) || ' ' || (v ->> 4) || ' ' || (v ->> 5) order by v ->> 1)
+            from jsonb_array_elements(public.shared_item_prices('[{"k": ["ALHO 200G"], "w": ["ALHO"], "p": {"u": "kg", "a": 0.2}}]')) e (v))
+    = array['64000000000201 kg 30.0000', '64000000000203 un 7.9000'],
+    'a weight-only key brings its weight rows and never its unit rows';
+  assert (select array_agg((v ->> 1) || ' ' || (v ->> 4) order by v ->> 1)
+            from jsonb_array_elements(public.shared_item_prices('[{"k": [], "w": ["ALHO"]}]')) e (v))
+    = array['64000000000201 kg'], 'a group of weight-only keys alone';
+  assert (select array_agg((v ->> 1) || ' ' || (v ->> 4) order by v ->> 1)
+            from jsonb_array_elements(public.shared_item_prices('[{"k": ["ALHO", "ALHO 200G"]}]')) e (v))
+    = array['64000000000201 kg', '64000000000202 un', '64000000000203 un'], 'in "k", every unit';
+
+  -- A compra da própria casa, pela SEMANA: o feijão que ela comprou no mercado dela na quarta-feira da semana
+  -- retrasada esconde a linha da sexta-feira daquela semana ali, e não a do mercado A.
+  insert into public.receipts (store_id, purchased_at, source)
+    values ((select id from public.stores where cnpj = '64000000000101'), (week - 12 + time '10:00') at time zone 'America/Sao_Paulo', 'manual')
+    returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
+    values (r, 'FEIJAO CARIOCA 1KG', 'un', 7.50, 7.50) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'new_product', jsonb_build_object('name', 'Feijão', 'category', 'graos'))));
+  assert (select count(*) from public.product_aliases where alias = 'FEIJAO CARIOCA 1KG') = 1, 'the description became an alias of hers';
+  perform set_config('test.op_receipt', r::text, false);
+end $$;
+reset role;
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+begin
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
+    ('64000000000101', '35', 'MERCADO DA OLGA', 'FEIJAO CARIOCA 1KG', 'un', week - 10, 7.00, week - 7),
+    ('64000000000201', '35', 'MERCADO A', 'FEIJAO CARIOCA 1KG', 'un', week - 10, 7.10, week - 7);
+end $$;
+set role authenticated;
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+  items constant jsonb := current_setting('test.op_items')::jsonb;
+begin
+  assert (select array_agg((v ->> 1) || ' ' || (v ->> 5) || ' ' || (v ->> 7)) from jsonb_array_elements(public.shared_item_prices(
+            '[{"k": ["FEIJAO CARIOCA 1KG"]}]')) e (v))
+    = array['64000000000201 7.1000 false'],
+    'an own purchase of that description in that store, in the same week (on an earlier day) or later, hides the row there';
+  -- Uma notícia de depois (a semana passada) volta.
+  reset role;
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
+    values ('64000000000101', '35', 'MERCADO DA OLGA', 'FEIJAO CARIOCA 1KG', 'un', week - 5, 7.20, week);
+  set role authenticated;
+  assert (select array_agg((v ->> 1) || ' ' || (v ->> 5) || ' ' || (v ->> 7) order by v ->> 1) from jsonb_array_elements(public.shared_item_prices(
+            '[{"k": ["FEIJAO CARIOCA 1KG"]}]')) e (v))
+    = array['64000000000101 7.2000 true', '64000000000201 7.1000 false'],
+    'a row of a later week stays';
+
+  -- O caminho do produto também, pela semana: com o apelido do feijão preto, o mesmo mercado e semana dão o mais barato.
+  insert into public.products (name, category) values ('Feijão preto', 'graos');
+  insert into public.product_aliases (alias, product_id) values ('FEIJAO PRETO 1KG', (select id from public.products where name = 'Feijão preto'));
+  reset role;
+  update public.shared_prices set unit_price = 9.00 where item_key = 'FEIJAO PRETO 1KG';
+  update public.shared_prices set unit_price = 10.00, item_key = 'FEIJAO PRETO 1KG', seen_on = week - 11 where item_key = 'FEIJAO PRETO KICALDO 1KG';
+  update public.shared_prices set seen_on = week - 13 where item_key = 'FEIJAO PRETO 1KG' and unit_price = 9.00;
+  set role authenticated;
+  assert (select array_agg(unit_price || ' ' || seen_on) from public.shared_latest_prices() where store_cnpj = '64000000000205')
+    = array['9.0000 ' || (week - 14)], 'the product path: tuesday at 9,00 and thursday at 10,00 give 9,00';
+  reset role;
+  update public.shared_prices set seen_on = week - 9 where item_key = 'FEIJAO PRETO 1KG' and unit_price = 9.00;
+  update public.shared_prices set seen_on = week - 12 where item_key = 'FEIJAO PRETO 1KG' and unit_price = 10.00;
+  set role authenticated;
+  assert (select array_agg(unit_price || ' ' || seen_on) from public.shared_latest_prices() where store_cnpj = '64000000000205')
+    = array['9.0000 ' || (week - 14)], 'and swapping their days gives 9,00 again';
+  assert (select bool_and(extract(isodow from seen_on) = 1) from public.shared_latest_prices()), 'the product path gives only Mondays';
+
+  -- O cabeçalho com a casa de outra pessoa: nenhuma casa, nada.
+  perform set_config('request.headers', json_build_object('x-household-id', '00000000-0000-0000-0000-000000000000')::text, true);
+  assert public.current_household_id() is null, 'a forged household header gives no household';
+  assert public.shared_item_keys(items) = '[{"k": [], "more": false}, {"k": [], "more": false}, {"k": [], "more": false}, {"k": [], "more": false}, {"k": [], "more": false}]',
+    'with no household, an empty answer per entry';
+  assert public.shared_item_prices('[{"k": ["LEITE INT ITALAC 1L"]}]') = '[]', 'and no prices';
+end $$;
+
+-- Pedro: sem nota e sem local, sem estado nenhum. Não lê nada da lista aberta, nem muda o local da Olga.
+select set_config('request.jwt.claim.sub', :'user_op2', false) \gset
+select public.create_household('Casa do Pedro', 'Pedro') \gset
+do $$
+declare
+  items constant jsonb := current_setting('test.op_items')::jsonb;
+  n integer;
+begin
+  assert public.shared_item_keys(items) = '[{"k": [], "more": false}, {"k": [], "more": false}, {"k": [], "more": false}, {"k": [], "more": false}, {"k": [], "more": false}]',
+    'no state: an empty answer per entry';
+  assert public.shared_item_prices('[{"k": ["LEITE INT ITALAC 1L"]}]') = '[]', 'no state: no prices';
+  update public.household_location set state_code = '33' where household_id = current_setting('test.op_house_o')::uuid;
+  get diagnostics n = row_count;
+  assert n = 0, 'another household''s place cannot be changed';
+
+  -- A forma: tudo o que não é a forma certa é 22023, antes de ler qualquer coisa.
+  declare
+    bad jsonb;
+  begin
+    foreach bad in array array[
+      '{}'::jsonb, '[]', (select jsonb_agg(jsonb_build_object('f', jsonb_build_array('A'), 's', '[]'::jsonb, 'x', '[]'::jsonb)) from generate_series(1, 41)),
+      '[{"f": ["A"], "s": []}]', '[{"f": [], "s": [], "x": []}]',
+      (select jsonb_build_array(jsonb_build_object('f', jsonb_agg('A' || g), 's', '[]'::jsonb, 'x', '[]'::jsonb)) from generate_series(1, 25) g),
+      '[{"f": ["leite"], "s": [], "x": []}]', '[{"f": ["LEITE INTEGRAL"], "s": [], "x": []}]', '[{"f": [null], "s": [], "x": []}]',
+      '[{"f": ["A"], "s": [], "x": ["B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N"]}]', '["A"]'
+    ] loop
+      begin
+        perform public.shared_item_keys(bad);
+        raise exception 'FAIL: shared_item_keys took %', bad;
+      exception when invalid_parameter_value then null;
+      end;
+    end loop;
+    foreach bad in array array[
+      '{}'::jsonb, '[]', (select jsonb_agg(jsonb_build_object('k', jsonb_build_array('A'))) from generate_series(1, 41)),
+      '[{"x": 1}]', (select jsonb_build_array(jsonb_build_object('k', jsonb_agg('A' || g))) from generate_series(1, 61) g),
+      '[{"k": ["arroz"]}]', jsonb_build_array(jsonb_build_object('k', jsonb_build_array(repeat('A', 201)))), '[{"k": []}]',
+      '[{"k": ["A"], "p": "5kg"}]', '[{"k": ["A"], "p": {"u": "g", "a": 500}}]', '[{"k": ["A"], "p": {"u": "kg", "a": 0}}]',
+      '[{"k": ["A"], "p": {"u": "kg", "a": "5"}}]', '[{"k": ["A"], "p": {"u": "un", "a": 12, "o": 2}}]',
+      '[{"k": ["A"], "p": {"u": "un", "a": 1}}]', '[{"k": ["A"], "p": {"u": "l", "a": 4.2, "o": 1}}]',
+      '[{"k": ["A"], "p": {"u": "l", "a": 700, "o": 2000}}]', '[{"k": ["A"], "p": {"u": "kg", "a": 100001}}]',
+      -- As só a peso ("w"): uma lista de chaves normalizadas, fora de "k", com as de "k" no máximo 60 e no mínimo 1.
+      '[{"k": [], "w": []}]', '[{"k": ["A"], "w": "B"}]', '[{"k": ["A"], "w": null}]', '[{"k": ["A"], "w": [1]}]',
+      '[{"k": ["A"], "w": ["b"]}]', '[{"k": ["A"], "w": ["A"]}]', '[{"w": ["A"]}]',
+      (select jsonb_build_array(jsonb_build_object('k', jsonb_agg('A' || g) filter (where g <= 30), 'w', jsonb_agg('A' || g) filter (where g > 30)))
+         from generate_series(1, 61) g)
+    ] loop
+      begin
+        perform public.shared_item_prices(bad);
+        raise exception 'FAIL: shared_item_prices took %', bad;
+      exception when invalid_parameter_value then null;
+      end;
+    end loop;
+  end;
+end $$;
+
+-- Sem entrar, nenhuma das duas.
+set role anon;
+do $$
+begin
+  perform public.shared_item_keys('[{"f": ["LEITE"], "s": [], "x": []}]');
+  raise exception 'FAIL: anon searched the keys';
+exception when insufficient_privilege then null;
+end $$;
+do $$
+begin
+  perform public.shared_item_prices('[{"k": ["LEITE"]}]');
+  raise exception 'FAIL: anon read the open prices';
+exception when insufficient_privilege then null;
+end $$;
+reset role;
+do $$
+declare
+  who text;
+  fn text;
+begin
+  foreach fn in array array['public.shared_item_keys(jsonb)', 'public.shared_item_prices(jsonb)'] loop
+    assert not has_function_privilege('public', fn, 'execute'), format('%s is not open to everyone', fn);
+    assert not has_function_privilege('anon', fn, 'execute'), format('anon cannot execute %s', fn);
+    assert has_function_privilege('authenticated', fn, 'execute'), format('a signed-in person can execute %s', fn);
+    assert (select prosecdef from pg_proc where oid = fn::regprocedure), format('%s is security definer', fn);
+    assert (select provolatile from pg_proc where oid = fn::regprocedure) = 's', format('%s is stable', fn);
+    assert (select proconfig from pg_proc where oid = fn::regprocedure) @> array['search_path=""'], format('%s has its search_path set', fn);
+  end loop;
+  foreach fn in array array['public.shared_household_states(uuid)', 'public.shared_week(date)'] loop
+    foreach who in array array['public', 'anon', 'authenticated'] loop
+      assert not has_function_privilege(who, fn, 'execute'), format('%s cannot execute %s', who, fn);
+    end loop;
+  end loop;
+  assert not (select prosecdef from pg_proc where oid = 'public.shared_household_states(uuid)'::regprocedure),
+    'the states of a household are read as the caller (only the definer readers call it)';
+  -- Com o search_path, como toda função; as leituras escrevem a semana de cada linha com date_trunc, e as duas dão a
+  -- mesma segunda-feira (três anos de dias, com as viradas de ano da semana ISO).
+  assert (select proconfig @> array['search_path=""'] and provolatile = 'i' from pg_proc where oid = 'public.shared_week(date)'::regprocedure),
+    'shared_week is immutable and has its search_path set';
+  assert (select bool_and(public.shared_week(d::date) = date_trunc('week', d::date::timestamp)::date)
+            from generate_series(date '2025-12-01', date '2028-12-31', interval '1 day') d),
+    'shared_week and the per-row date_trunc of the readers give the same Monday';
+end $$;
+
+-- A limpeza diária (forget_old_shared_prices): sai o que fica antes da primeira semana da janela das leituras
+-- (shared_week(hoje) - 91), que nenhuma leitura devolve mais; a primeira semana inteira fica. Num bloco desfeito no
+-- fim, sobre linhas postas direto, para não mexer no que os blocos abaixo leem.
+do $$
+declare
+  who text;
+  fn constant text := 'public.forget_old_shared_prices()';
+begin
+  -- Cada papel por si: nenhum cliente executa a limpeza (o pg_cron roda como dono).
+  foreach who in array array['public', 'anon', 'authenticated'] loop
+    assert not has_function_privilege(who, fn, 'execute'), format('%s cannot execute %s', who, fn);
+  end loop;
+  assert (select prosecdef from pg_proc where oid = fn::regprocedure), 'the cleanup is security definer';
+  assert (select proconfig from pg_proc where oid = fn::regprocedure) @> array['search_path=""'], 'the cleanup has its search_path set';
+end $$;
+begin;
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+  since constant date := week - 91;
+begin
+  truncate public.shared_prices;
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
+    -- Fora da janela: o domingo antes da primeira semana, uma semana antes, e uma compra velha gravada nesta semana
+    -- (uma nota antiga confirmada agora, que ainda nem é legível).
+    ('64000000000901', '35', 'X', 'DOMINGO ANTES', 'un', since - 1, 1.00, since + 6),
+    ('64000000000901', '35', 'X', 'SEMANA ANTES', 'un', since - 7, 1.00, since),
+    ('64000000000901', '35', 'X', 'VELHA GRAVADA AGORA', 'un', since - 30, 1.00, week + 7),
+    -- Dentro: a segunda-feira e o domingo da primeira semana da janela, e a semana passada.
+    ('64000000000901', '35', 'X', 'BORDA SEGUNDA', 'un', since, 1.00, since + 7),
+    ('64000000000901', '35', 'X', 'BORDA DOMINGO', 'un', since + 6, 1.00, since + 7),
+    ('64000000000901', '35', 'X', 'SEMANA PASSADA', 'un', week - 3, 1.00, week);
+  assert public.forget_old_shared_prices() = 3, 'the three rows before the window go';
+  assert (select array_agg(item_key order by item_key) from public.shared_prices)
+    = array['BORDA DOMINGO', 'BORDA SEGUNDA', 'SEMANA PASSADA'], 'the first week of the window and what is after it stay';
+  assert public.forget_old_shared_prices() = 0, 'run again, nothing else goes';
+end $$;
+-- A borda é a mesma das leituras: a linha da segunda-feira da primeira semana ainda é lida, a do domingo antes não.
+do $$
+declare
+  since constant date := current_setting('test.op_week')::date - 91;
+begin
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
+    ('64000000000901', '35', 'X', 'LEITE LIMPEZA DENTRO 1L', 'un', since, 1.00, since + 7),
+    ('64000000000901', '35', 'X', 'LEITE LIMPEZA FORA 1L', 'un', since - 1, 1.00, since + 6);
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_op1', false) \gset
+do $$
+declare
+  answer jsonb := public.shared_item_keys('[{"f": ["LEITE"], "s": [], "x": []}]');
+begin
+  assert exists (select 1 from jsonb_array_elements(answer -> 0 -> 'k') k where k ->> 0 = 'LEITE LIMPEZA DENTRO 1L'),
+    'the reads still return the first Monday of the window: ' || answer::text;
+  assert not exists (select 1 from jsonb_array_elements(answer -> 0 -> 'k') k where k ->> 0 = 'LEITE LIMPEZA FORA 1L'),
+    'and never the Sunday before it';
+  -- Um cliente não roda a limpeza.
+  begin
+    perform public.forget_old_shared_prices();
+    raise exception 'FAIL: a member ran the cleanup';
+  exception when insufficient_privilege then
+    null;
+  end;
+end $$;
+reset role;
+do $$
+begin
+  assert public.forget_old_shared_prices() = 1, 'the cleanup takes the row the reads no longer return';
+  assert exists (select 1 from public.shared_prices where item_key = 'LEITE LIMPEZA DENTRO 1L')
+    and not exists (select 1 from public.shared_prices where item_key = 'LEITE LIMPEZA FORA 1L'),
+    'and keeps the one they still do';
+end $$;
+rollback;
+
+-- A mudança única da migração: o que foi gravado nesta semana (o visible_on de antes é o dia da gravação + 1) espera a
+-- próxima segunda-feira, já legível ou não; o gravado em semanas anteriores fica como está. Aplicada de novo aqui,
+-- sobre linhas postas direto, e tudo desfeito no fim; aplicada mais uma vez, não muda nada.
+begin;
+-- Os avisos de "já existe" do if not exists, na segunda aplicação, não interessam aqui.
+set local client_min_messages = warning;
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+begin
+  truncate public.shared_prices;
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
+    ('64000000000901', '35', 'X', 'GRAVADA NESTA SEGUNDA', 'un', week - 10, 1.00, week + 1),
+    ('64000000000901', '35', 'X', 'GRAVADA NO DOMINGO', 'un', week - 10, 1.00, week),
+    ('64000000000901', '35', 'X', 'GRAVADA ANTES', 'un', week - 10, 1.00, week - 3);
+end $$;
+\ir ../../supabase/migrations/20261124181819_shared_prices_open.sql
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+begin
+  assert (select array_agg(item_key || ' ' || visible_on order by item_key) from public.shared_prices)
+    = array['GRAVADA ANTES ' || (week - 3), 'GRAVADA NESTA SEGUNDA ' || (week + 7), 'GRAVADA NO DOMINGO ' || week],
+    'what was written this week waits for next Monday; what was written before stays readable';
+end $$;
+\ir ../../supabase/migrations/20261124181819_shared_prices_open.sql
+do $$
+declare
+  week constant date := current_setting('test.op_week')::date;
+begin
+  assert (select array_agg(item_key || ' ' || visible_on order by item_key) from public.shared_prices)
+    = array['GRAVADA ANTES ' || (week - 3), 'GRAVADA NESTA SEGUNDA ' || (week + 7), 'GRAVADA NO DOMINGO ' || week],
+    'applied again, it changes nothing';
+  assert (select prosecdef from pg_proc where oid = 'public.share_receipt_prices()'::regprocedure)
+    and (select proconfig from pg_proc where oid = 'public.share_receipt_prices()'::regprocedure) @> array['search_path=""', 'lock_timeout=200ms'],
+    'the trigger function keeps its attributes';
+end $$;
+rollback;
+
+delete from public.shared_prices where store_cnpj like '6400000000%';
+delete from public.store_names where cnpj = '64000000000201';
+delete from public.households where name in ('Casa da Olga', 'Casa do Pedro');
+delete from auth.users where id in (:'user_op1', :'user_op2');
+reset time zone;
 
 -- ---------------------------------------------------------------------------
 \echo '• Recados: a pessoa manda (pelo Nuke ou em Configurações), só quem mantém o app lê, e a conta apagada leva os recados dela'
@@ -13534,6 +15710,211 @@ do $$
 begin
   assert not exists (select 1 from public.app_feedback), 'the rollback left no recado';
   assert not exists (select 1 from public.app_admins), 'and nobody is an admin';
+end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• prazos de troca: o que a casa mudou e a última compra de cada item'
+-- A tabela não tem FK para products (item_key é a chave da tabela do app): o bloco que confere quem aponta para
+-- products não muda, e merge_products e delete_product não a tocam.
+reset role;
+select set_config('request.jwt.claim.sub', '', false) \gset
+do $$
+declare
+  p text;
+  f constant text := 'public.long_cycle_purchases(text[], timestamptz)';
+begin
+  assert (select relrowsecurity from pg_class where oid = 'public.long_cycle_settings'::regclass), 'long_cycle_settings has RLS on';
+  -- Cada privilégio por si: com uma lista, has_table_privilege é verdade com qualquer um deles.
+  foreach p in array array['select', 'insert', 'update', 'delete', 'truncate'] loop
+    assert not has_table_privilege('anon', 'public.long_cycle_settings', p), 'anon has no ' || p || ' on long_cycle_settings';
+  end loop;
+  foreach p in array array['select', 'insert', 'update', 'delete'] loop
+    assert has_table_privilege('authenticated', 'public.long_cycle_settings', p), 'members need ' || p || ' on long_cycle_settings';
+    assert has_table_privilege('service_role', 'public.long_cycle_settings', p), 'service_role needs ' || p || ' on long_cycle_settings';
+  end loop;
+  foreach p in array array['truncate', 'references', 'trigger'] loop
+    assert not has_table_privilege('authenticated', 'public.long_cycle_settings', p), 'members have no ' || p || ' on long_cycle_settings';
+  end loop;
+  assert has_function_privilege('authenticated', f, 'execute'), 'members call ' || f;
+  assert not has_function_privilege('anon', f, 'execute'), 'anon cannot call ' || f;
+  assert not has_function_privilege('public', f, 'execute'), 'public cannot call ' || f;
+  assert not exists (
+    select 1 from pg_proc pr, aclexplode(pr.proacl) a where pr.oid = f::regprocedure and a.grantee = 0
+  ), 'public has no grant on ' || f;
+  assert (select not prosecdef and provolatile = 's' and proconfig = array['search_path=""'] from pg_proc where oid = f::regprocedure),
+    f || ' runs as the caller, only reads, with a fixed search_path';
+  assert not exists (
+    select 1 from pg_constraint where conrelid = 'public.long_cycle_settings'::regclass and contype = 'f'
+      and confrelid <> 'public.households'::regclass
+  ), 'the only foreign key is the household';
+end $$;
+
+-- O resto roda numa transação desfeita no fim: nada fica para os blocos de depois.
+begin;
+\set user_lc1 '00000000-0000-0000-0000-0000000007c1'
+\set user_lc2 '00000000-0000-0000-0000-0000000007c2'
+\set user_lc3 '00000000-0000-0000-0000-0000000007c3'
+insert into auth.users (id) values (:'user_lc1'), (:'user_lc2'), (:'user_lc3');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_lc1', false) \gset
+select set_config('test.lc_house', (public.create_household('Casa da Lia', 'Lia')).id::text, false) \gset
+select invite_code as lc_invite from public.households where id = current_setting('test.lc_house')::uuid \gset
+select set_config('request.jwt.claim.sub', :'user_lc2', false) \gset
+select public.join_household(:'lc_invite', 'Leo') \gset
+select set_config('request.jwt.claim.sub', :'user_lc3', false) \gset
+select set_config('test.lc_other', (public.create_household('Casa do Caco', 'Caco')).id::text, false) \gset
+
+-- Lia: o prazo da casa, o "não sugerir" e o "Já troquei", cada um na sua coluna.
+select set_config('request.jwt.claim.sub', :'user_lc1', false) \gset
+do $$
+declare
+  k text;
+  d date;
+  n integer;
+begin
+  insert into public.long_cycle_settings (item_key, every_months) values ('escova_dente', 2);
+  assert (select household_id from public.long_cycle_settings where item_key = 'escova_dente') = current_setting('test.lc_house')::uuid,
+    'the row belongs to the open household';
+  -- O upsert do app: só a coluna mudada, o resto fica.
+  insert into public.long_cycle_settings (item_key, off) values ('escova_dente', true)
+    on conflict (household_id, item_key) do update set off = excluded.off;
+  assert (select every_months = 2 and off and replaced_on is null from public.long_cycle_settings where item_key = 'escova_dente'),
+    'a partial upsert keeps the other columns';
+  update public.long_cycle_settings set replaced_on = current_date where item_key = 'escova_dente';
+  assert (select replaced_on = current_date from public.long_cycle_settings where item_key = 'escova_dente'), 'replaced_on today';
+
+  -- Os limites passam.
+  insert into public.long_cycle_settings (item_key, every_months, replaced_on) values ('vassoura', 1, date '2000-01-01');
+  insert into public.long_cycle_settings (item_key, every_months, replaced_on) values ('travesseiro', 24, date '2100-12-31');
+  insert into public.long_cycle_settings (item_key) values (repeat('a', 40));
+
+  -- E o que passa deles não.
+  foreach n in array array[0, 25] loop
+    begin
+      insert into public.long_cycle_settings (item_key, every_months) values ('chupeta', n);
+      raise exception 'FAIL: every_months % accepted', n;
+    exception when check_violation then null;
+    end;
+  end loop;
+  foreach k in array array['Escova', '', '1abc', repeat('a', 41), 'escova-dente'] loop
+    begin
+      insert into public.long_cycle_settings (item_key) values (k);
+      raise exception 'FAIL: item_key % accepted', k;
+    exception when check_violation then null;
+    end;
+  end loop;
+  foreach d in array array[date '1999-12-31', date '2101-01-01'] loop
+    begin
+      insert into public.long_cycle_settings (item_key, replaced_on) values ('chupeta', d);
+      raise exception 'FAIL: replaced_on % accepted', d;
+    exception when check_violation then null;
+    end;
+  end loop;
+  begin
+    insert into public.long_cycle_settings (item_key) values ('escova_dente');
+    raise exception 'FAIL: a second row of the same item';
+  exception when unique_violation then null;
+  end;
+end $$;
+
+-- Leo, da mesma casa, vê e muda.
+select set_config('request.jwt.claim.sub', :'user_lc2', false) \gset
+do $$
+begin
+  assert (select count(*) from public.long_cycle_settings) = 4, 'B sees the household rows';
+  update public.long_cycle_settings set every_months = 6 where item_key = 'escova_dente';
+  assert found, 'B updates a row of the household';
+end $$;
+
+-- Caco, de outra casa, não alcança nada.
+select set_config('request.jwt.claim.sub', :'user_lc3', false) \gset
+do $$
+begin
+  assert (select count(*) from public.long_cycle_settings) = 0, 'C sees no foreign rows';
+  update public.long_cycle_settings set off = true;
+  assert not found, 'C updates nothing';
+  delete from public.long_cycle_settings;
+  assert not found, 'C deletes nothing';
+  begin
+    insert into public.long_cycle_settings (household_id, item_key) values (current_setting('test.lc_house')::uuid, 'vassoura');
+    raise exception 'FAIL: C wrote into another household';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+reset role;
+do $$
+begin
+  assert (select every_months from public.long_cycle_settings
+          where household_id = current_setting('test.lc_house')::uuid and item_key = 'escova_dente') = 6, 'B''s change stays';
+  assert (select count(*) from public.long_cycle_settings where household_id = current_setting('test.lc_house')::uuid) = 4,
+    'C changed nothing of A''s household';
+end $$;
+
+-- A última compra de cada nome: as fixações entram como dona (o histórico não tem insert para o app), com a casa e as
+-- datas escolhidas (quem pagou a nota é a Lia, da casa).
+select set_config('request.jwt.claim.sub', :'user_lc1', false) \gset
+do $$
+declare
+  hh constant uuid := current_setting('test.lc_house')::uuid;
+  l uuid;
+  r uuid;
+  p uuid;
+begin
+  insert into public.purchase_history (household_id, name, category, bought_at) values
+    (hh, 'Escova de dente', 'higiene', now() - interval '100 days'),
+    (hh, 'Escova de dente', 'higiene', now() - interval '10 days'),
+    (hh, 'Pasta de dente', 'higiene', now() - interval '5 days'),
+    (hh, 'ESC DENT COLGATE', 'higiene', now() - interval '5 years');
+  insert into public.shopping_lists (household_id, name) values (hh, 'Mercado') returning id into l;
+  insert into public.shopping_list_items (household_id, list_id, name, category, checked_at) values
+    (hh, l, 'Travesseiro Nasa', 'outros', now() - interval '20 days');
+  insert into public.shopping_list_items (household_id, list_id, name, category) values (hh, l, 'Vassoura', 'limpeza');
+  insert into public.products (household_id, name, category) values (hh, 'Escova Dental Colgate', 'higiene') returning id into p;
+  insert into public.receipts (household_id, status, purchased_at) values (hh, 'confirmed', now() - interval '30 days') returning id into r;
+  insert into public.receipt_items (household_id, receipt_id, raw_description, product_id, unit_price, total_price)
+    values (hh, r, 'ESC DENTAL COLGATE', p, 9.9, 9.9);
+  insert into public.products (household_id, name, category) values (hh, 'Escova Oral-B', 'higiene') returning id into p;
+  insert into public.receipts (household_id, purchased_at) values (hh, now() - interval '3 days') returning id into r;
+  insert into public.receipt_items (household_id, receipt_id, raw_description, product_id, unit_price, total_price)
+    values (hh, r, 'ESC ORAL B', p, 12, 12);
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_lc1', false) \gset
+do $$
+declare
+  rows jsonb := (
+    select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb)
+      from public.long_cycle_purchases(array['escova', 'esc', 'travesseiro', 'vassoura'], now() - interval '48 months') x
+  );
+  dates timestamptz[];
+begin
+  assert jsonb_array_length(rows) = 3, 'three names: ' || rows::text;
+  assert (select count(*) from jsonb_array_elements(rows) e where e ->> 'name' = 'Escova de dente') = 1, 'one row per name';
+  assert (select (e ->> 'bought_at')::timestamptz between now() - interval '10 days 1 minute' and now() - interval '9 days 23 hours'
+            from jsonb_array_elements(rows) e where e ->> 'name' = 'Escova de dente'), 'the newest purchase of the name';
+  assert (select e ->> 'source' = 'list' and e ->> 'category' = 'outros' from jsonb_array_elements(rows) e where e ->> 'name' = 'Travesseiro Nasa'),
+    'the item in the cart counts, as a list purchase';
+  assert (select e ->> 'source' = 'receipt' and (e ->> 'product_id') is not null
+            from jsonb_array_elements(rows) e where e ->> 'name' = 'Escova Dental Colgate'),
+    'the line of a confirmed receipt counts by its product name';
+  assert not exists (select 1 from jsonb_array_elements(rows) e where e ->> 'name' in ('Pasta de dente', 'Vassoura', 'Escova Oral-B', 'ESC DENT COLGATE')),
+    'another first word, an unchecked item, a draft and a purchase older than the window are left out';
+  select array_agg((e ->> 'bought_at')::timestamptz order by ord) into dates from jsonb_array_elements(rows) with ordinality as t(e, ord);
+  assert dates[1] >= dates[2] and dates[2] >= dates[3], 'newest first';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_lc3', false) \gset
+do $$
+begin
+  assert not exists (select 1 from public.long_cycle_purchases(array['escova', 'esc', 'travesseiro', 'vassoura'], now() - interval '48 months')),
+    'another household reads nothing';
+end $$;
+reset role;
+rollback;
+
+do $$
+begin
+  assert not exists (select 1 from public.long_cycle_settings), 'the rollback left no setting';
+  assert not exists (select 1 from auth.users where id = '00000000-0000-0000-0000-0000000007c1'), 'nor the test accounts';
 end $$;
 
 \echo 'OK — todos os testes do banco passaram'

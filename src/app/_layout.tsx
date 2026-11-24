@@ -193,6 +193,7 @@ function AppNavigator() {
                 <Stack.Screen name="avisos" options={{ title: 'Avisos' }} />
                 <Stack.Screen name="perfil" options={{ title: 'Perfil' }} />
                 <Stack.Screen name="recado" options={{ title: 'Mandar recado' }} />
+                <Stack.Screen name="trocas" options={{ title: 'Prazos de troca' }} />
                 <Stack.Screen name="moderacao" options={{ title: 'Nomes dos mercados' }} />
                 {/* A prévia do começo de uma conta nova, para quem mantém o app (Configurações → Manutenção do app). */}
                 <Stack.Screen name="primeira-vez" options={{ title: 'Prévia do começo' }} />

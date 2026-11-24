@@ -2,11 +2,26 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
+import { useFreezePantryItems, useFreezer, useThawPantryItems } from '@/data/freezer';
 import { useConsumePantryItems, usePantry, useTakeOneFromPantry } from '@/data/home';
 import { useAddToPantryList, useProducts, useShoppingLists } from '@/data/market';
-import { formatShortDate, todayISO } from '@/domain/dates';
+import { deviceDayError, formatShortDate, todayISO } from '@/domain/dates';
+import {
+  FREEZER_DAY_PURPOSE,
+  FREEZER_SECTION,
+  freezeChoices,
+  freezeKindOf,
+  freezeNotice,
+  frozenSheetText,
+  hasFreezerFields,
+  THAW_ACTION,
+  thawedFormLine,
+  thawedSuffix,
+  thawNotice,
+  type FreezeKind,
+} from '@/domain/freezer';
 import { genericItem } from '@/domain/genericItem';
-import { describeExpiry, expiryStatus, groupPantry, takeOne, type ExpiryStatus, type PantryGroup } from '@/domain/pantry';
+import { describeLots, expiryBadge, expiryStatus, groupPantry, takeOne, type ExpiryStatus, type PantryGroup } from '@/domain/pantry';
 import { listsFor, newListKind } from '@/domain/pantryList';
 import { formatQuantity } from '@/domain/money';
 import { errorMessage } from '@/lib/supabase';
@@ -27,22 +42,38 @@ import {
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
-const SECTIONS: { kind: ExpiryStatus['kind']; title: string; tone: Tone }[] = [
-  { kind: 'vencido', title: 'Vencidos', tone: 'danger' },
-  { kind: 'vence_logo', title: 'Vencem em breve', tone: 'warning' },
-  { kind: 'ok', title: 'Em dia', tone: 'primary' },
-  { kind: 'sem_validade', title: 'Sem validade', tone: 'neutral' },
+// Na ordem da tela. O que está no congelador fica numa seção só, qualquer que seja a validade (também a que já
+// tinha passado quando foi congelado): é o lugar dele, e o selo diz a validade.
+type SectionKind = ExpiryStatus['kind'] | 'congelado';
+const SECTIONS: { kind: SectionKind; title: string }[] = [
+  { kind: 'vencido', title: 'Vencidos' },
+  { kind: 'vence_logo', title: 'Vencem em breve' },
+  { kind: 'ok', title: 'Em dia' },
+  { kind: 'congelado', title: FREEZER_SECTION },
+  { kind: 'sem_validade', title: 'Sem validade' },
 ];
+
+/** A cor do selo da validade certa; a estimada é neutra (expiryBadge). */
+const STATUS_TONE: Record<ExpiryStatus['kind'], Tone> = { vencido: 'danger', vence_logo: 'warning', ok: 'primary', sem_validade: 'neutral' };
 
 type Group = PantryGroup<PantryItem>;
 
 /** "2 un", "0,75 kg e 2 un". */
 const describeTotals = (group: Group) => group.totals.map((t) => formatQuantity(t.quantity, t.unit)).join(' e ');
 
-/** "Compras: 2 set (1 un), 27 set (1 un) e 3 out (1 un)." */
-function describeLots(group: Group): string {
-  const parts = group.lots.map((lot) => `${formatShortDate(lot.purchased_on)} (${formatQuantity(lot.quantity, lot.unit)})`);
-  return `Compras: ${parts.slice(0, -1).join(', ')} e ${parts[parts.length - 1]}.`;
+/** O subtítulo da linha: quanto há, quantas compras e, na compra que decide a validade, quando saiu do congelador. */
+function rowSubtitle(group: Group, today: string): string {
+  const base = group.lots.length > 1 ? `${describeTotals(group)} · ${group.lots.length} compras` : describeTotals(group);
+  return group.thawedOn ? `${base}${thawedSuffix(group.thawedOn, today)}` : base;
+}
+
+/** O texto do menu do grupo: as compras, a descongelada e, no congelador, o que descongelar hoje faria. */
+function sheetMessage(group: Group, today: string): string | undefined {
+  const parts: string[] = [];
+  if (group.lots.length > 1) parts.push(describeLots(group, today));
+  else if (group.lots[0]?.thawed_on) parts.push(thawedFormLine(group.lots[0].thawed_on, today));
+  if (group.frozen) parts.push(frozenSheetText(group.lots, today));
+  return parts.join(' ') || undefined;
 }
 
 /**
@@ -63,6 +94,9 @@ export function PantryPanel() {
   const takeOneFrom = useTakeOneFromPantry();
   const lists = useShoppingLists();
   const addToList = useAddToPantryList();
+  const freezer = useFreezer();
+  const freeze = useFreezePantryItems();
+  const thaw = useThawPantryItems();
   const [selected, setSelected] = useState<Group | null>(null);
   // "Escolher a lista": o segundo menu, com as listas abertas em que o item cabe. `consume`: "Acabou" (dá baixa)
   // ou "Está acabando" (o item continua na despensa).
@@ -99,6 +133,50 @@ export function PantryPanel() {
     } catch (err) {
       onError(err);
     }
+  }
+
+  /** "Congelar": as compras do grupo, no dia escolhido (o banco não congela antes da compra). */
+  async function freezeGroup(group: Group, kind: FreezeKind, frozenOn: string) {
+    const clock = deviceDayError(today, FREEZER_DAY_PURPOSE);
+    if (clock) return notify(clock.title, clock.message);
+    const ids = group.lots.map((lot) => lot.id);
+    try {
+      const notice = freezeNotice(group.name, ids.length, await freeze.mutateAsync({ ids, kind, frozenOn }), today);
+      notify(notice.title, notice.message);
+    } catch (err) {
+      onError(err);
+    }
+  }
+
+  /** "Descongelei": o grupo inteiro sai do congelador hoje. */
+  async function thawGroup(group: Group) {
+    const clock = deviceDayError(today, FREEZER_DAY_PURPOSE);
+    if (clock) return notify(clock.title, clock.message);
+    const ids = group.lots.map((lot) => lot.id);
+    try {
+      const notice = thawNotice(group.name, ids.length, await thaw.mutateAsync({ ids, thawedOn: today }), today);
+      notify(notice.title, notice.message);
+    } catch (err) {
+      onError(err);
+    }
+  }
+
+  /**
+   * As ações do congelador no menu. No congelador: "Descongelei", sempre (a linha só está aqui depois da migração).
+   * Fora dele: congelar, só com o congelador no banco, um tipo que vai ao congelador e compras que trazem as colunas
+   * dele (a cópia guardada de antes desta versão, não: congelaria o que talvez já esteja no congelador).
+   */
+  function freezerActions(group: Group): SheetAction[] {
+    if (group.frozen) return [{ label: THAW_ACTION, icon: 'snowflake-off', onPress: () => void thawGroup(group) }];
+    if (freezer.available !== true || !group.lots.every(hasFreezerFields)) return [];
+    const newest = group.lots[group.lots.length - 1];
+    const kind = freezeKindOf([group.name, newest.name], group.category, newest.unit);
+    if (!kind) return [];
+    return freezeChoices(group.lots, today).map((choice) => ({
+      label: choice.label,
+      icon: 'snowflake' as const,
+      onPress: () => void freezeGroup(group, kind, choice.frozenOn),
+    }));
   }
 
   function groupActions(group: Group): SheetAction[] {
@@ -138,6 +216,7 @@ export function PantryPanel() {
         onPress: () => takeOneFrom.mutate(take, { onError }),
       });
     }
+    actions.push(...freezerActions(group));
     actions.push({
       label: several ? 'Consumido / descartado (tudo)' : 'Consumido / descartado',
       icon: 'check',
@@ -176,10 +255,10 @@ export function PantryPanel() {
   if (pantry.isError) return <ErrorNotice error={pantry.error} onRetry={() => pantry.refetch()} />;
 
   const productNames = new Map((products.data ?? []).map((p) => [p.id, p.name]));
-  const withStatus = groupPantry(pantry.data, productNames).map((group) => ({
-    group,
-    status: expiryStatus(group.expiresOn, today),
-  }));
+  const withStatus = groupPantry(pantry.data, productNames).map((group) => {
+    const status = expiryStatus(group.expiresOn, today);
+    return { group, status, section: (group.frozen ? 'congelado' : status.kind) as SectionKind };
+  });
 
   return (
     <View style={styles.gap}>
@@ -191,27 +270,32 @@ export function PantryPanel() {
         />
       ) : (
         SECTIONS.map((section) => {
-          const rows = withStatus.filter((r) => r.status.kind === section.kind);
+          const rows = withStatus.filter((r) => r.section === section.kind);
           if (!rows.length) return null;
           return (
             <Section key={section.kind} title={`${section.title} (${rows.length})`}>
               <ListCard>
-                {rows.map(({ group, status }) => (
-                  <ListRow
-                    key={group.key}
-                    left={<CategoryIcon category={group.category} name={group.name} />}
-                    title={group.name}
-                    subtitle={
-                      group.lots.length > 1 ? `${describeTotals(group)} · ${group.lots.length} compras` : describeTotals(group)
-                    }
-                    right={status.kind === 'sem_validade' ? null : <Badge label={describeExpiry(status)} tone={section.tone} />}
-                    onPress={() => {
-                      // O menu diz qual é a última lista: confere as listas de novo enquanto ele abre.
-                      lists.refetch?.();
-                      setSelected(group);
-                    }}
-                  />
-                ))}
+                {rows.map(({ group, status }) => {
+                  const subtitle = rowSubtitle(group, today);
+                  // A validade estimada (pela categoria, pelo congelador, depois de descongelar) é neutra, com "~";
+                  // a vermelha e a laranja ficam para a que alguém digitou ou o produto aprendeu.
+                  const badge = expiryBadge(status, group.expiryEstimated);
+                  return (
+                    <ListRow
+                      key={group.key}
+                      left={<CategoryIcon category={group.category} name={group.name} />}
+                      title={group.name}
+                      subtitle={subtitle}
+                      right={badge ? <Badge label={badge.label} tone={badge.estimated ? 'neutral' : STATUS_TONE[status.kind]} /> : null}
+                      accessibilityLabel={badge ? `${group.name}, ${subtitle}, ${badge.accessibilityLabel}` : undefined}
+                      onPress={() => {
+                        // O menu diz qual é a última lista: confere as listas de novo enquanto ele abre.
+                        lists.refetch?.();
+                        setSelected(group);
+                      }}
+                    />
+                  );
+                })}
               </ListCard>
             </Section>
           );
@@ -221,7 +305,7 @@ export function PantryPanel() {
         visible={Boolean(selected)}
         onClose={() => setSelected(null)}
         title={selected?.name}
-        message={selected && selected.lots.length > 1 ? describeLots(selected) : undefined}
+        message={selected ? sheetMessage(selected, today) : undefined}
         actions={selected ? groupActions(selected) : []}
       />
       <ActionSheet

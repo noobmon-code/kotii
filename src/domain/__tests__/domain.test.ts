@@ -6,6 +6,7 @@ import { CATEGORIES, compareByAisle, getCategory } from '../categories';
 import { choreGoneOnSave, choreStatus, describeChoreStatus, describeRecurrence, isChoreGone, isChoreGoneOnSave } from '../chores';
 import {
   addDays,
+  deviceDayError,
   diffDays,
   formatBRDate,
   formatShortDate,
@@ -13,6 +14,7 @@ import {
   parseBRDate,
   toISODate,
 } from '../dates';
+import { hasAnyWord } from '../nameWords';
 import {
   describeCourse,
   describeFrequency,
@@ -27,7 +29,7 @@ import {
   type MedicationSchedule,
 } from '../medications';
 import { formatBRL, parseDecimal, parseMoney, parseTypingAmount } from '../money';
-import { describeExpiry, estimateExpiry, expiryStatus } from '../pantry';
+import { describeExpiry, estimateExpiry, expiryBadge, expiryStatus, isEstimatedExpiry } from '../pantry';
 import { guessCategory, normalizeSearch } from '../search';
 
 describe('categories', () => {
@@ -77,6 +79,26 @@ describe('dates', () => {
     expect(parseBRDate('5/1/27')).toBe('2027-01-05');
     expect(parseBRDate('31/02/2026')).toBeNull();
     expect(parseBRDate('2026-12-20')).toBeNull();
+  });
+
+  it('a data do aparelho que o banco não aceitaria leva o aviso antes de gravar', () => {
+    expect(deviceDayError('2000-01-01')).toBeNull();
+    expect(deviceDayError('2100-12-31')).toBeNull();
+    expect(deviceDayError('1999-12-31')).toEqual({
+      title: 'Confira a data do aparelho',
+      message: 'A data deste aparelho parece errada. Acerte o dia e a hora dele e tente de novo.',
+    });
+    expect(deviceDayError('2101-01-01', 'o dia do congelador')?.message).toBe(
+      'A data deste aparelho parece errada. Acerte o dia e a hora dele para o Kotii guardar o dia do congelador.',
+    );
+    expect(deviceDayError('lixo')).not.toBeNull();
+  });
+
+  it('hasAnyWord: palavra inteira, no singular ou como está', () => {
+    expect(hasAnyWord('carne moida', new Set(['moido', 'moida']))).toBe(true);
+    expect(hasAnyWord('almondegas bovina', new Set(['almondega']))).toBe(true);
+    expect(hasAnyWord('moidinha', new Set(['moida']))).toBe(false);
+    expect(hasAnyWord('', new Set(['moida']))).toBe(false);
   });
 });
 
@@ -156,6 +178,36 @@ describe('pantry expiry', () => {
     expect(expiryStatus('2026-09-29', today).kind).toBe('vence_logo');
     expect(expiryStatus('2026-09-30', today).kind).toBe('ok');
     expect(expiryStatus(null, today).kind).toBe('sem_validade');
+  });
+
+  it('o selo: a validade estimada leva "~" e cor neutra, e o leitor de tela diz "Validade estimada"', () => {
+    const today = '2026-09-26';
+    expect(expiryBadge(expiryStatus('2026-09-29', today), true)).toEqual({
+      label: '~ vence em 3 dias',
+      accessibilityLabel: 'Validade estimada: vence em 3 dias',
+      estimated: true,
+    });
+    expect(expiryBadge(expiryStatus('2026-09-29', today), false)).toEqual({
+      label: 'Vence em 3 dias',
+      accessibilityLabel: 'Validade: vence em 3 dias',
+      estimated: false,
+    });
+    expect(expiryBadge(expiryStatus('2026-09-26', today), true)?.label).toBe('~ vence hoje');
+    expect(expiryBadge(expiryStatus('2026-09-27', today), true)?.label).toBe('~ vence amanhã');
+    expect(expiryBadge(expiryStatus('2026-09-24', today), true)?.label).toBe('~ venceu há 2 dias');
+    expect(expiryBadge(expiryStatus('2026-09-26', '2026-09-26'), true)?.label).toBe('~ vence hoje');
+    expect(expiryBadge(expiryStatus('2026-09-25', today), true)?.label).toBe('~ venceu há 1 dia');
+    expect(expiryBadge(expiryStatus(null, today), true)).toBeNull();
+  });
+
+  it('estimada: pela categoria, pelo congelador, depois de descongelar; a digitada, a aprendida e a antiga, não', () => {
+    expect(isEstimatedExpiry('categoria')).toBe(true);
+    expect(isEstimatedExpiry('congelado')).toBe(true);
+    expect(isEstimatedExpiry('descongelado')).toBe(true);
+    expect(isEstimatedExpiry('produto')).toBe(false);
+    expect(isEstimatedExpiry('manual')).toBe(false);
+    expect(isEstimatedExpiry(null)).toBe(false);
+    expect(isEstimatedExpiry(undefined)).toBe(false);
   });
 });
 

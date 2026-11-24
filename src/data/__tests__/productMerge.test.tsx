@@ -14,6 +14,8 @@ import {
   type DistinctPair,
 } from '@/domain/productMerge';
 
+import { EXPECTS_ROWS_META } from '@/lib/accessErrors';
+
 import { useRenameProduct } from '../market';
 import {
   fetchDistinctPairs,
@@ -25,6 +27,7 @@ import {
   useMarkDistinct,
   useMergeProducts,
   usePurchaseCounts,
+  useUndoDistinct,
 } from '../productMerge';
 import { useConfirmReceipt } from '../receipts';
 
@@ -66,6 +69,8 @@ const mockDb = {
   noCount: false,
   asked: [] as Asked[],
   inserted: [] as { table: string; row: unknown }[],
+  /** Os deletes que chegaram, com os filtros e as colunas pedidas de volta. */
+  deletes: [] as { table: string; filters: Record<string, unknown>; returning: string }[],
   rpcs: [] as { name: string; args: unknown }[],
   rpcReply: { data: null as unknown, error: null as object | null },
   /** As respostas dos próximos pedidos, na ordem; acabando, vale `rpcReply`. */
@@ -162,6 +167,25 @@ jest.mock('@/lib/supabase', () => ({
       },
       // A gravação pede a linha de volta (o produto existe).
       update: () => ({ eq: () => ({ select: async () => ({ data: [{ id: 'p1' }], error: null }) }) }),
+      // Desfazer "São diferentes": apaga os pares que batem com os filtros e devolve os que saíram (RLS à parte).
+      delete: () => {
+        const filters: Record<string, unknown> = {};
+        const query = {
+          eq: (column: string, value: unknown) => {
+            filters[column] = value;
+            return query;
+          },
+          select: async (returning: string) => {
+            mockDb.deletes.push({ table, filters: { ...filters }, returning });
+            if (mockDb.error) return { data: null, error: mockDb.error };
+            const hit = (pair: DistinctPair) => pair.product_a === filters.product_a && pair.product_b === filters.product_b;
+            const rows = mockDb.pairs.filter(hit);
+            mockDb.pairs = mockDb.pairs.filter((pair) => !hit(pair));
+            return { data: rows, error: null };
+          },
+        };
+        return query;
+      },
     }),
     rpc: (name: string, args: unknown) => {
       mockDb.rpcs.push({ name, args });
@@ -251,6 +275,7 @@ afterEach(async () => {
     noCount: false,
     asked: [],
     inserted: [],
+    deletes: [],
     rpcs: [],
     rpcReply: { data: null, error: null },
     rpcReplies: [],
@@ -317,6 +342,52 @@ describe('pares "São diferentes"', () => {
     });
     expect(hook.invalidated).toEqual(['products']);
     expect(mergeErrorNotice(mockDb.error)).toEqual({ title: 'Erro', message: MERGE_PRODUCT_GONE });
+  });
+});
+
+describe('desfazer "São diferentes"', () => {
+  it('apaga o par pela ordem do banco, pede a linha de volta, tira o par da lista guardada e busca os pares de novo', async () => {
+    mockDb.pairs = [{ product_a: 'p1', product_b: 'p9' }];
+    const hook = await withHook(() => useUndoDistinct());
+    hook.client.setQueryData(['productDistinctPairs'], [
+      { product_a: 'a', product_b: 'b' },
+      { product_a: 'p1', product_b: 'p9' },
+    ]);
+    let rows: unknown;
+    await act(async () => {
+      rows = await hook.value().mutateAsync({ a: 'p9', b: 'p1' });
+    });
+    expect(rows).toEqual([{ product_a: 'p1', product_b: 'p9' }]);
+    expect(mockDb.deletes).toEqual([
+      { table: 'product_distinct_pairs', filters: { product_a: 'p1', product_b: 'p9' }, returning: 'product_a, product_b' },
+    ]);
+    expect(hook.client.getQueryData(['productDistinctPairs'])).toEqual([{ product_a: 'a', product_b: 'b' }]);
+    expect(hook.invalidated).toEqual(['productDistinctPairs']);
+  });
+
+  it('nada guardado (alguém já desfez, ou um dos dois saiu): resolve com nenhuma linha', async () => {
+    const hook = await withHook(() => useUndoDistinct());
+    await act(async () => {
+      await expect(hook.value().mutateAsync({ a: 'p1', b: 'p9' })).resolves.toEqual([]);
+    });
+  });
+
+  it('o erro sobe, e os pares são buscados de novo', async () => {
+    mockDb.error = { message: 'TypeError: Network request failed' };
+    const hook = await withHook(() => useUndoDistinct());
+    await act(async () => {
+      await expect(hook.value().mutateAsync({ a: 'p1', b: 'p9' })).rejects.toEqual(mockDb.error);
+    });
+    expect(hook.invalidated).toEqual(['productDistinctPairs']);
+  });
+
+  it('0 linhas confere a casa de novo, calado (EXPECTS_ROWS_META)', async () => {
+    const hook = await withHook(() => useUndoDistinct());
+    await act(async () => {
+      await hook.value().mutateAsync({ a: 'p1', b: 'p9' });
+    });
+    const [mutation] = hook.client.getMutationCache().getAll();
+    expect(mutation.options.meta).toEqual(EXPECTS_ROWS_META);
   });
 });
 

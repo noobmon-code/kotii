@@ -1,11 +1,12 @@
-import { onlineManager } from '@tanstack/react-query';
+import { onlineManager, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useMemo, useRef, useState, type ReactNode } from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
+import { useFreezePantryItems, useFreezer } from '@/data/freezer';
 import { fetchPantryNear } from '@/data/home';
-import { useLearnedAbbreviations } from '@/data/learnedAbbreviations';
+import { loadLearnedAbbreviations, useLearnedAbbreviations } from '@/data/learnedAbbreviations';
 import {
   useListLinks,
   useOpenListItems,
@@ -15,7 +16,11 @@ import {
   useStores,
 } from '@/data/market';
 import {
+  newReceiptItemId,
+  ReceiptCorrectionRefused,
   receiptImageUrl,
+  useAddConfirmedReceiptItem,
+  useChangeReceiptItemProduct,
   useConfirmedNear,
   useConfirmReceipt,
   useCorrectReceipt,
@@ -23,6 +28,7 @@ import {
   useDeleteReceiptItem,
   useFillReceiptItemValue,
   useReceipt,
+  useReceiptCorrectionsAvailable,
   useReceiptReadAt,
   useSaveReceiptItem,
   useSaveReceiptWeight,
@@ -37,10 +43,11 @@ import {
 import { joinNames, receiptPantryRepeats } from '@/domain/cartPantry';
 import { CATEGORIES, getCategory } from '@/domain/categories';
 import { COMMON_ITEMS } from '@/domain/commonItems';
-import { formatBRDate, formatShortDate, parseBRDate, toISODate } from '@/domain/dates';
+import { formatBRDate, formatShortDate, toISODate } from '@/domain/dates';
 import { DESKTOP_PANEL_SIDE_WIDTH } from '@/domain/desktop';
 import { duplicateReceiptNotice, findDuplicateReceipt } from '@/domain/duplicateReceipt';
 import { receiptSavedText } from '@/domain/finishPurchase';
+import { repeatFreezeFailedText, repeatFreezes, type FreezeDays, type RepeatFreeze } from '@/domain/freezer';
 import {
   applyListChoices,
   forgottenLinks,
@@ -55,6 +62,7 @@ import {
 import { formatBRL } from '@/domain/money';
 import { describePriceAlert, priceAlerts, totalSaving, type AlertItem, type PriceAlert } from '@/domain/priceAlert';
 import {
+  addedItemHint,
   confirmUnpricedQuestion,
   gapNotices,
   hasReceiptTotal,
@@ -91,6 +99,38 @@ import {
   receiptTotalChange,
 } from '@/domain/receiptEdit';
 import { asksPackCount, packCountOf, packLabel, packLine, PACK_CHOICES, PACK_LINE_CHANGED, PACK_QUESTION, PACK_SAVED_NOT_SHOWN, PACK_UNREADABLE, readPackCount } from '@/domain/packCount';
+import {
+  ADD_ITEM_ACCESSIBILITY,
+  ADD_ITEM_NEEDS_VALUE,
+  ADD_ITEM_PICKER_TITLE,
+  addedItemPantry,
+  addedItemPantryDefault,
+  addedItemRequest,
+  addedProduct,
+  ADDED_BEFORE,
+  addItemPickerMessage,
+  addItemProductLine,
+  addItemSummary,
+  CHANGE_PRODUCT_TITLE,
+  changeProductButton,
+  changeProductMessage,
+  CORRECTION_STALE,
+  correctionActions,
+  correctionCatchUp,
+  correctionNameChoice,
+  correctionNotice,
+  correctionOffline,
+  newProductCategory,
+  NO_NOTE_NAMES,
+  PRODUCT_SAVED_NOT_SHOWN,
+  productCorrection,
+  suggestionSubtitle,
+  type AddedItemPantryChoice,
+  type AddedItemRequest,
+  type AddedProduct,
+  type CorrectionAction,
+  type CorrectionLine,
+} from '@/domain/receiptCorrection';
 import { hasNoValue } from '@/domain/receiptItem';
 import {
   asksWeight,
@@ -112,9 +152,11 @@ import {
   goneProducts,
   REFRESH_FAILED_NOTICE,
   resolveItem,
+  toggleFrozen,
   type CatalogProduct,
   type ConfirmItem,
   type ItemOverride,
+  type ProductChoice,
   type ResolvedItem,
 } from '@/domain/receiptReview';
 import {
@@ -135,6 +177,7 @@ import { PayerChips } from '@/features/finance/PayerChips';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { ReceiptItemEditor } from '@/features/ReceiptItemEditor';
 import { ReceiptListSection } from '@/features/ReceiptListSection';
+import { ReceiptPantryChoice } from '@/features/ReceiptPantryChoice';
 import { RenameStoreModal } from '@/features/RenameStoreModal';
 import { FEATURES } from '@/lib/features';
 import { handConfirmedReceipt } from '@/lib/finishPurchase';
@@ -165,12 +208,23 @@ import {
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
+/**
+ * O seletor aberto. O de produto serve a três modos: `product` na revisão (o de sempre), `product` na nota confirmada
+ * ("Trocar produto", domain/receiptCorrection) e `addProduct` (o produto do item que faltou numa nota confirmada).
+ */
 type Picker =
   | { kind: 'store' }
   | { kind: 'product'; itemId: string; query: string }
+  | { kind: 'addProduct' }
   | { kind: 'category'; itemId: string };
 
-type Editing = { item?: ReceiptItem } | null;
+/**
+ * O formulário do item aberto: um item da nota (ou um novo, na revisão), ou o item que faltou numa nota confirmada,
+ * com o produto já escolhido e o id feito no aparelho (o mesmo em cada envio deste formulário).
+ */
+type Editing = { item?: ReceiptItem } | { adding: AddedProduct; id: string } | null;
+
+type Notice = { title: string; message: string };
 
 /** No seletor de produto: opção que é só um nome da casa (sem produto), pela chave do nome. */
 const NAME_OPTION = 'nome:';
@@ -227,8 +281,16 @@ export default function ReceiptScreen() {
   // As abreviações dos mercados da casa, que as notas confirmadas ensinaram ("AZ GALLO" é o azeite): só a nota em
   // revisão casa com a lista e confere a despensa.
   const learned = useLearnedAbbreviations({ enabled: reviewing });
-  // As compras recentes só servem aos nomes parecidos, que só aparecem na nota em revisão.
-  const purchases = usePurchaseRecords({ enabled: reviewing });
+  // O congelador: só com ele no banco a linha de carne ou peixe pergunta "Congelou?" (domain/freezer).
+  const freezer = useFreezer().days;
+  const freezeItems = useFreezePantryItems();
+  // As correções da nota confirmada ("Trocar produto" e "Item"): só aparecem com o banco que as tem (a pergunta só
+  // na nota confirmada, e a resposta guardada na memória).
+  const confirmed = receiptQuery.data?.receipt.status === 'confirmed';
+  const corrections = useReceiptCorrectionsAvailable(confirmed);
+  const changeItem = useChangeReceiptItemProduct(id);
+  const addItem = useAddConfirmedReceiptItem(id);
+  const queryClient = useQueryClient();
   // As notas confirmadas perto do dia do rascunho: a mesma compra lida duas vezes ganha um aviso (domain/duplicateReceipt).
   const nearby = useConfirmedNear(receiptQuery.data?.receipt.purchased_at, reviewing);
 
@@ -239,9 +301,22 @@ export default function ReceiptScreen() {
   // Itens em que a pessoa acabou de usar um nome da casa, com o que havia antes (para "Desfazer").
   const [beforeUse, setBeforeUse] = useState<Record<string, BeforeUse>>({});
   const [picker, setPicker] = useState<Picker | null>(null);
+  const [editing, setEditing] = useState<Editing>(null);
+  // Uma correção da nota confirmada aberta (o seletor da troca ou do item que faltou, ou o formulário do item): os
+  // nomes parecidos precisam das compras recentes, como na revisão.
+  const correcting = confirmed && (picker?.kind === 'product' || picker?.kind === 'addProduct' || Boolean(editing && 'adding' in editing));
+  // As compras recentes só servem aos nomes parecidos: na revisão e numa correção da nota confirmada.
+  const purchases = usePurchaseRecords({ enabled: reviewing || correcting });
+  // O item que faltou, escolhido no seletor que ainda está descendo (iOS): o formulário abre no onDismiss dele.
+  const pendingAdd = useRef<{ adding: AddedProduct; id: string } | null>(null);
+  // O id do item que faltou que já foi mandado uma vez: o envio de novo do mesmo formulário não confere a nota antes
+  // (a decisão foi a do primeiro envio, e o banco compara o pedido).
+  const addSent = useRef<string | null>(null);
+  // A trava do toque de "Incluir item", da conferência da despensa até as perguntas responderem.
+  const addLock = useRef(false);
+  const [checkingAdd, setCheckingAdd] = useState(false);
   // O nome do mercado da nota sendo trocado (para toda a casa).
   const [renamingStore, setRenamingStore] = useState(false);
-  const [editing, setEditing] = useState<Editing>(null);
   const [dateText, setDateText] = useState<string | null>(null);
   // A data que a nota confirmada está gravando. A tecla de enviar e a saída do campo chegam juntas (no celular, enviar
   // tira o foco), e o campo continua com o que foi digitado até a gravação voltar: a mesma data não grava de novo.
@@ -343,8 +418,10 @@ export default function ReceiptScreen() {
   // Os itens cujo valor foi gravado e que a nota em tela (a leitura de antes da gravação) ainda mostra sem ele.
   const savedUnshown = new Set(Object.keys(savedAt).filter((itemId) => receiptQuery.dataUpdatedAt <= savedAt[itemId]));
   const totalAccess = receiptTotalAccess(receipt.total);
+  // O item do formulário aberto (undefined: o item novo da revisão, ou o item que faltou numa nota confirmada).
+  const editingItem = editing && !('adding' in editing) ? editing.item : undefined;
 
-  const resolvedItems = new Map(items.map((item) => [item.id, resolveItem(item, overrides[item.id], catalog, purchasedOn)]));
+  const resolvedItems = new Map(items.map((item) => [item.id, resolveItem(item, overrides[item.id], catalog, purchasedOn, freezer)]));
   // Produto que sumiu do catálogo com a revisão aberta (foi juntado com outro em outro aparelho).
   const gone = goneProducts(items, overrides, catalog);
   // A descrição da nota traz o tamanho da embalagem: o pacote de 5 kg se compara pelo preço por kg. Sem ele na
@@ -653,12 +730,16 @@ export default function ReceiptScreen() {
    * sem o item novo. Aqui só se espera por essa mesma releitura, sem começar
    * outra. `onWritten` roda assim que o banco responde, e devolve `false`
    * quando a gravação não achou o item (nada desta tela foi gravado). `shown`
-   * é o que avisar se a nota não voltar, e o item que ganhou valor.
+   * é o que avisar se a nota não voltar, e o item que ganhou valor (`value`
+   * falso: a gravação não é de valor, como a troca de produto, e o item fica
+   * "gravando" sem deixar de perguntar pelo valor). `onFailed` diz o erro
+   * (o aviso de sempre, se não vier).
    */
   async function settleValue<T>(
     write: Promise<T>,
     onWritten?: (result: T) => boolean | void,
-    shown?: { itemId?: string; saved: { title: string; message: string } },
+    shown?: { itemId?: string; saved: Notice; value?: boolean },
+    onFailed: (err: unknown) => void = onError,
   ) {
     valueWrites.current += 1;
     valueSeq.current += 1;
@@ -683,15 +764,16 @@ export default function ReceiptScreen() {
         // nenhum "salvo" vem por cima dele.
         if (written && shown) {
           const { itemId } = shown;
-          if (itemId) setSavedAt((prev) => ({ ...prev, [itemId]: behind }));
+          if (itemId && shown.value !== false) setSavedAt((prev) => ({ ...prev, [itemId]: behind }));
           // A nota que sumiu em outro aparelho é a tela dela (ver o gate), sem o "Tentar de novo" que este aviso manda usar.
           if (read?.isError && !receiptGone(read.error)) notify(shown.saved.title, shown.saved.message);
         }
       }
     } catch (err) {
-      // Sem resposta do banco não dá para saber se gravou: a tela pode ter ficado para trás.
-      staleRead.current = receiptReadAt();
-      onError(err);
+      // Sem resposta do banco não dá para saber se gravou: a tela pode ter ficado para trás. A correção recusada teve
+      // resposta (nada foi gravado), e o hook já pediu a nota de novo.
+      if (!(err instanceof ReceiptCorrectionRefused)) staleRead.current = receiptReadAt();
+      onFailed(err);
     } finally {
       valueWrites.current -= 1;
       if (!valueWrites.current) setSettlingValue(false);
@@ -704,8 +786,16 @@ export default function ReceiptScreen() {
    * com os itens de antes (o item novo ficaria sem produto, fora da despensa e
    * da lista, e a nota confirmada não se corrige), busca a nota e diz o que
    * houve. A confirmação fica para o toque seguinte, já com os itens de agora.
+   * As correções da nota confirmada fazem o mesmo, com as frases delas
+   * (correctionCatchUp).
    */
-  async function catchUp() {
+  async function catchUp(
+    notices: { caughtUp: Notice; behind: Notice; failed: Notice } = {
+      caughtUp: RECEIPT_CAUGHT_UP,
+      behind: RECEIPT_STILL_BEHIND,
+      failed: RECEIPT_REREAD_FAILED,
+    },
+  ) {
     valueWrites.current += 1;
     setSettlingValue(true);
     try {
@@ -713,10 +803,10 @@ export default function ReceiptScreen() {
       // A busca que falha deixa a nota na tela, com o aviso de cima: sem outro aviso, o toque não faria nada. A nota que
       // sumiu vira a tela dela (ver o gate), e aí não há "Tentar de novo" para avisar.
       if (read?.isError) {
-        if (!receiptGone(read.error)) notify(RECEIPT_REREAD_FAILED.title, RECEIPT_REREAD_FAILED.message);
+        if (!receiptGone(read.error)) notify(notices.failed.title, notices.failed.message);
         return;
       }
-      const notice = read ? RECEIPT_CAUGHT_UP : RECEIPT_STILL_BEHIND;
+      const notice = read ? notices.caughtUp : notices.behind;
       notify(notice.title, notice.message);
     } finally {
       valueWrites.current -= 1;
@@ -751,11 +841,16 @@ export default function ReceiptScreen() {
 
   /**
    * O que já foi para a despensa pelo carrinho (ou à mão) numa data próxima:
-   * pergunta antes de repetir. Sem repetir, esses itens salvam só na nota.
+   * pergunta antes de repetir. Sem repetir, esses itens salvam só na nota, e a
+   * compra do carrinho que uma linha "Congelei" repete vai para o congelador
+   * depois da confirmação (`freezeAfter`, domain/freezer repeatFreezes).
    */
-  async function skipPantryRepeats(payload: ConfirmItem[]): Promise<ConfirmItem[]> {
-    const repeats = receiptPantryRepeats(payload, purchasedOn, await fetchPantryNear(purchasedOn), links.data, learned);
-    if (!repeats.length) return payload;
+  async function skipPantryRepeats<T extends { id: string; product_id?: string; pantry?: ConfirmItem['pantry'] }>(
+    payload: T[],
+    learnedNow = learned,
+  ): Promise<{ payload: T[]; freezeAfter: RepeatFreeze[] }> {
+    const repeats = receiptPantryRepeats(payload, purchasedOn, await fetchPantryNear(purchasedOn), links.data, learnedNow);
+    if (!repeats.length) return { payload, freezeAfter: [] };
     const dates = new Set(repeats.map((r) => r.since));
     const names = joinNames(repeats.map((r) => r.name));
     const again = await askYesNo(
@@ -766,9 +861,29 @@ export default function ReceiptScreen() {
       'Colocar de novo',
       'Não colocar',
     );
-    if (again) return payload;
+    if (again) return { payload, freezeAfter: [] };
     const skip = new Set(repeats.map((r) => r.id));
-    return payload.map((p) => (skip.has(p.id) ? { ...p, pantry: undefined } : p));
+    const freezeAfter = repeatFreezes(repeats, payload);
+    return { payload: payload.map((p) => (skip.has(p.id) ? { ...p, pantry: undefined } : p)), freezeAfter };
+  }
+
+  /**
+   * Congela, depois da confirmação, a compra do carrinho que cada linha "Congelei" que não foi de novo repete. A
+   * revisão já pode ter saído (a pessoa voltou enquanto a nota confirmava, ou o fim da confirmação a fechou): por
+   * isso corre na promessa de mutateAsync, não no onSuccess de cada chamada, que só roda com a tela montada, e o
+   * aviso da falha sai de qualquer jeito (mutateAsync e notify seguem sem a tela). Menos compras (a do carrinho já
+   * foi consumida ou já está no congelador) fica calado.
+   */
+  async function freezeRepeated(groups: RepeatFreeze[]) {
+    const failed: string[] = [];
+    for (const group of groups) {
+      try {
+        await freezeItems.mutateAsync({ ids: group.ids, kind: group.kind, frozenOn: group.frozenOn });
+      } catch {
+        failed.push(...group.names);
+      }
+    }
+    if (failed.length) notify('Não deu certo', repeatFreezeFailedText(failed));
   }
 
   /**
@@ -840,7 +955,7 @@ export default function ReceiptScreen() {
     }
     const removals = listRemovals(listMatches, listItems, receiptLines);
     const forgotten = forgottenLinks(suggestedMatches, listChoices, listItems);
-    let payload = buildConfirmPayload(items, overrides, catalog, purchasedOn).map((entry) => ({
+    let payload = buildConfirmPayload(items, overrides, catalog, purchasedOn, freezer).map((entry) => ({
       ...entry,
       ...(removals.has(entry.id) ? { list_items: removals.get(entry.id) } : {}),
       ...(forgotten.has(entry.id) ? { forget_links: forgotten.get(entry.id) } : {}),
@@ -848,8 +963,9 @@ export default function ReceiptScreen() {
     const listCount = [...removals.values()].reduce((n, list) => n + list.length, 0);
     confirming.current = true;
     setCheckingPantry(true);
+    let freezeAfter: RepeatFreeze[] = [];
     try {
-      payload = await skipPantryRepeats(payload);
+      ({ payload, freezeAfter } = await skipPantryRepeats(payload));
     } catch (err) {
       onError(err);
       return;
@@ -862,7 +978,7 @@ export default function ReceiptScreen() {
       // e a resposta em até 30 s (domain/finishPurchase).
       const tappedAt = Date.now();
       const onlineAtTap = onlineManager.isOnline();
-      confirm.mutate(payload, {
+      const confirmed = confirm.mutateAsync(payload, {
         onSuccess: () => {
           const pantryCount = payload.filter((p) => p.pantry).length;
           // Aberta pelo "Finalizar compra" da lista: quem diz o que a nota fez é a lista, para onde a revisão volta
@@ -882,6 +998,12 @@ export default function ReceiptScreen() {
           void receiptQuery.refetch();
         },
       });
+      // A compra do carrinho vai para o congelador mesmo com a revisão já fora da tela (freezeRepeated). A falha da
+      // confirmação já foi dita no onError acima, com a tela; sem ela, nada a congelar.
+      void confirmed.then(
+        () => (freezeAfter.length ? freezeRepeated(freezeAfter) : undefined),
+        () => undefined,
+      );
     };
     if (!receipt.store_id) {
       confirmAction(
@@ -958,9 +1080,12 @@ export default function ReceiptScreen() {
     if (refuseStale()) return false;
     if (refuseWhileSaving(item.id)) return false;
     void settleValue(
-      setPack.mutateAsync({ id: item.id, count }),
+      // Com o produto que a tela mostrava: a linha que passou para outro produto (em outro aparelho, ou pela troca desta
+      // tela cuja nota ainda não voltou) não leva a contagem.
+      setPack.mutateAsync({ id: item.id, productId: item.product_id ?? null, count }),
       ({ saved }) => {
-        // Sem a linha de volta, a resposta não gravou nada (a linha saiu ou mudou em outro aparelho): a pessoa fica sabendo.
+        // Sem a linha de volta, a resposta não gravou nada (a linha saiu ou mudou, aqui ou em outro aparelho): a pessoa
+        // fica sabendo, sem a frase culpar outro aparelho.
         if (!saved) notify(PACK_LINE_CHANGED.title, PACK_LINE_CHANGED.message);
         return saved;
       },
@@ -972,6 +1097,10 @@ export default function ReceiptScreen() {
   /** A pergunta (ou o que já se sabe) de quantos vêm na embalagem do item, nos dois cartões. */
   function packPart(item: ReceiptItem, category: string, productName: string | null) {
     if (category !== 'ovos' || item.unit !== 'un') return null;
+    // Na nota confirmada, a linha cujo produto o catálogo ainda não tem (o criado agora por "Trocar produto", com os
+    // produtos ainda voltando) não pergunta: a categoria seria a da descrição ("OVOS BRANCOS" é ovo), e a linha pode
+    // estar em outro produto. A pergunta volta quando os produtos chegam, se ele for ovo.
+    if (!isDraft && item.product_id && !catalog.has(item.product_id)) return null;
     // Gravando, ou gravado sem a nota de volta: a pergunta e os chips não voltam no meio.
     if (savedUnshown.has(item.id) || writingIds.has(item.id)) return null;
     const count = packCountOf(item, productName);
@@ -993,7 +1122,7 @@ export default function ReceiptScreen() {
   }
 
   function saveEditedItem(values: ItemValues) {
-    const itemId = editing?.item?.id;
+    const itemId = editingItem?.id;
     // Nota confirmada: o formulário só abre no item sem valor, e só o valor é gravado.
     if (!isDraft) {
       // Um valor por vez, como no "Usar": o segundo toque, antes de o botão virar "carregando", acharia o item
@@ -1023,11 +1152,174 @@ export default function ReceiptScreen() {
     );
   }
 
-  const pickerItem = picker && picker.kind !== 'store' ? items.find((i) => i.id === picker.itemId) : undefined;
+  /** O erro de uma correção da nota confirmada: a recusa com o aviso dela; o resto, o aviso de sempre. */
+  const notifyCorrectionError = (action: CorrectionAction) => (err: unknown) => {
+    if (!(err instanceof ReceiptCorrectionRefused)) return onError(err);
+    const notice = correctionNotice(err.kind, action);
+    notify(notice.title, notice.message);
+  };
+
+  /**
+   * A tela está atrás do que ela gravou (a nota relida não voltou, ou a gravação ficou sem resposta), ou a busca de
+   * fundo falhou: a correção busca a nota antes, e o toque fica para depois, com os itens de agora. Sem isso, a troca
+   * mandaria o produto de antes da troca que já foi (e o banco diria que o item mudou), e o item que faltou entraria
+   * duas vezes.
+   */
+  const behind = () => receiptQuery.isError || receiptQuery.dataUpdatedAt <= staleRead.current;
+
+  /** "Trocar produto" (ou "Escolher produto") num item da nota confirmada: abre o seletor de produto. */
+  function startChange(item: ReceiptItem) {
+    if (!onlineManager.isOnline()) {
+      const notice = correctionOffline('change');
+      notify(notice.title, notice.message);
+      return;
+    }
+    if (refuseWhileSaving(item.id)) return;
+    if (behind()) {
+      void catchUp(correctionCatchUp('change'));
+      return;
+    }
+    const current = item.product_id ? catalog.get(item.product_id)?.name : undefined;
+    setPicker({ kind: 'product', itemId: item.id, query: current ?? item.suggested_name ?? '' });
+  }
+
+  /**
+   * O produto escolhido para a linha da nota confirmada (domain/receiptCorrection productCorrection). O mesmo produto
+   * não grava nada; o que saiu do catálogo avisa e busca os produtos de novo; o resto grava pela espera da nota, com o
+   * item "gravando" (o chip desligado) até ela voltar.
+   */
+  function chooseCorrection(item: ReceiptItem, choice: ProductChoice) {
+    setPicker(null);
+    const pick = productCorrection(item, choice, catalog);
+    if (pick.kind === 'nothing') return;
+    if (pick.kind === 'gone') {
+      const notice = correctionNotice('productGone', 'change');
+      notify(notice.title, notice.message);
+      void products.refetch();
+      return;
+    }
+    void settleValue(
+      changeItem.mutateAsync({ item, target: pick.target, freezeKind: pick.freezeKind }),
+      undefined,
+      { itemId: item.id, saved: PRODUCT_SAVED_NOT_SHOWN, value: false },
+      notifyCorrectionError('change'),
+    );
+  }
+
+  /** "Item" na nota confirmada: primeiro o produto do item que faltou. */
+  function startAdd() {
+    if (!onlineManager.isOnline()) {
+      const notice = correctionOffline('add');
+      notify(notice.title, notice.message);
+      return;
+    }
+    if (valueWrites.current) {
+      const notice = writingNow.current.size ? OTHER_ITEM_SAVING : RECEIPT_BEING_UPDATED;
+      notify(notice.title, notice.message);
+      return;
+    }
+    // A decisão de incluir vem do que a tela mostra: depois de um envio cuja resposta se perdeu, a nota relida mostra
+    // se a linha chegou, e a pessoa não a inclui duas vezes.
+    if (behind()) {
+      void catchUp(correctionCatchUp('add'));
+      return;
+    }
+    pendingAdd.current = null;
+    setPicker({ kind: 'addProduct' });
+  }
+
+  /**
+   * O produto do item que faltou: o formulário abre com ele e com o id feito aqui, o mesmo em todo envio. No iOS, um
+   * modal aberto enquanto outro fecha falha: o formulário espera o onDismiss do seletor (openPendingAdd).
+   */
+  function chooseAdded(choice: ProductChoice) {
+    const pick = addedProduct(choice, catalog);
+    setPicker(null);
+    if (pick.kind === 'nothing') return;
+    if (pick.kind === 'gone') {
+      const notice = correctionNotice('productGone', 'add');
+      notify(notice.title, notice.message);
+      void products.refetch();
+      return;
+    }
+    const open = { adding: pick.product, id: newReceiptItemId() };
+    addSent.current = null;
+    if (Platform.OS === 'ios') pendingAdd.current = open;
+    else setEditing(open);
+  }
+
+  /** O seletor de produto acabou de sumir (só no iOS): o formulário do item que faltou, se um produto foi escolhido. */
+  function openPendingAdd() {
+    const open = pendingAdd.current;
+    pendingAdd.current = null;
+    if (open) setEditing(open);
+  }
+
+  /**
+   * "Incluir item": o item que faltou, com o que foi pago por ele (zero não entra: o brinde vai pela despensa). Antes
+   * de gravar, a mesma pergunta da confirmação quando já está na despensa, e a de incluir, porque a linha não muda nem
+   * sai depois. Tudo sob a trava do toque. Gravado pela espera da nota, com o mesmo id: o envio de novo depois de uma
+   * falha não cria outra linha.
+   */
+  async function saveAddedItem(values: ItemValues, choice: AddedItemPantryChoice) {
+    if (!editing || !('adding' in editing)) return;
+    const { adding: product, id: addId } = editing;
+    if (hasNoValue(values)) {
+      notify(ADD_ITEM_NEEDS_VALUE.title, ADD_ITEM_NEEDS_VALUE.message);
+      return;
+    }
+    if (addLock.current || valueWrites.current) return;
+    // A busca de fundo falhou: a nota em tela pode estar atrás (outro aparelho pode já ter incluído o item). O envio de
+    // novo do mesmo formulário passa: a decisão foi a do primeiro, e o banco compara o pedido.
+    if (addSent.current !== addId && receiptQuery.isError) {
+      notify(CORRECTION_STALE.title, CORRECTION_STALE.message);
+      return;
+    }
+    addLock.current = true;
+    setCheckingAdd(true);
+    let request: AddedItemRequest;
+    let freezeAfter: RepeatFreeze[] = [];
+    try {
+      request = addedItemRequest({ id: addId, values, product, choice, purchasedOn, freezer });
+      if (request.pantry) {
+        // As abreviações aprendidas, mesmo com o hook desligado na nota confirmada.
+        const repeats = await skipPantryRepeats([request], await loadLearnedAbbreviations(queryClient));
+        [request] = repeats.payload;
+        freezeAfter = repeats.freezeAfter;
+      }
+      const question = addItemSummary(request, product.name);
+      if (!(await askYesNo(question.title, question.message, question.confirmLabel, question.cancelLabel))) return;
+    } catch (err) {
+      onError(err);
+      return;
+    } finally {
+      addLock.current = false;
+      setCheckingAdd(false);
+    }
+    addSent.current = addId;
+    void settleValue(
+      addItem.mutateAsync(request),
+      ({ added, same }) => {
+        // O primeiro envio tinha chegado, e a pessoa mudou algo antes de mandar de novo: nada desta vez foi gravado.
+        if (!added && !same) notify(ADDED_BEFORE.title, ADDED_BEFORE.message);
+        setEditing(null);
+        // A compra do carrinho que a linha "Congelei" repete vai para o congelador, como na confirmação.
+        if ((added || same) && freezeAfter.length) void freezeRepeated(freezeAfter);
+        return added || same;
+      },
+      { saved: ITEM_SAVED_NOT_SHOWN },
+      notifyCorrectionError('add'),
+    );
+  }
+
+  // O seletor de produto: na revisão, o de sempre; na nota confirmada, a troca (`product`) ou o item que faltou.
+  const pickerMode: 'review' | 'change' | 'add' | null =
+    picker?.kind === 'addProduct' ? 'add' : picker?.kind === 'product' ? (isDraft ? 'review' : 'change') : null;
+  const pickerItem = picker && (picker.kind === 'product' || picker.kind === 'category') ? items.find((i) => i.id === picker.itemId) : undefined;
   // Os nomes que a pessoa já deu a outros itens desta nota: o seletor confere com eles também ("Pitaya" e
   // "Pitayas" na mesma nota). Ficam num índice pequeno à parte, para o da casa não ser refeito a cada escolha.
   const noteIndex = indexNames(
-    pickerItem && picker?.kind === 'product'
+    pickerItem && pickerMode === 'review'
       ? noteNames(
           items.map((item) => ({ id: item.id, product: resolvedItems.get(item.id)!.product })),
           keptNames,
@@ -1282,7 +1574,21 @@ export default function ReceiptScreen() {
 
         <Section
           title={`Itens (${items.length})`}
-          action={can.addItem ? <Button title="Item" icon="plus" variant="ghost" compact onPress={() => setEditing({})} /> : null}>
+          action={
+            !can.addItem ? null : isDraft ? (
+              <Button title="Item" icon="plus" variant="ghost" compact onPress={() => setEditing({})} />
+            ) : corrections ? (
+              // Na nota confirmada, o item que a leitura perdeu (só com o banco que tem as correções).
+              <Button
+                title="Item"
+                icon="plus"
+                variant="ghost"
+                compact
+                accessibilityLabel={ADD_ITEM_ACCESSIBILITY}
+                onPress={startAdd}
+              />
+            ) : null
+          }>
           {items.map((item) => {
             const resolved = resolvedItems.get(item.id)!;
             const alert = alertText(alerts.get(item.id));
@@ -1316,6 +1622,8 @@ export default function ReceiptScreen() {
                 onPickCategory={() => setPicker({ kind: 'category', itemId: item.id })}
                 onTogglePantry={() => override(item.id, { pantry: !resolved.pantry })}
                 onChangeExpiry={(iso) => override(item.id, { expiryManual: true, expiresOn: iso })}
+                freezer={freezer}
+                onToggleFrozen={(on) => setOverrides((prev) => ({ ...prev, [item.id]: toggleFrozen(prev[item.id], on) }))}
                 houseNames={houseNames}
                 keepsName={keptNames[item.id] === resolved.productName}
                 onUseName={(name) => applyHouseName(item.id, name)}
@@ -1327,30 +1635,19 @@ export default function ReceiptScreen() {
                 onUndoName={() => undoHouseName(item.id)}
               />
             ) : (
-              <Card key={item.id}>
-                <ListRow
-                  left={
-                    <CategoryIcon
-                      category={resolved.category}
-                      name={catalog.get(item.product_id ?? '')?.name ?? item.raw_description}
-                      size={36}
-                    />
-                  }
-                  title={item.product_id ? (catalog.get(item.product_id)?.name ?? item.raw_description) : item.raw_description}
-                  subtitle={
-                    <View style={styles.gapXs}>
-                      <Text variant="muted">{quantityText(item)}</Text>
-                      {alert ? <Badge label={alert} tone="warning" /> : null}
-                    </View>
-                  }
-                  right={<ItemValue item={item} />}
-                  onPress={item.product_id ? () => router.push({ pathname: '/produto/[id]', params: { id: item.product_id! } }) : undefined}
-                />
-                {/* Dos itens da nota confirmada, só se corrige o valor do que ficou sem (domain/receiptEdit). */}
-                {prompt ? <ValueQuestion prompt={prompt} onUse={applySuggestion} onFill={() => setEditing({ item })} /> : null}
-                {/* E quantos vêm na embalagem, que não mexe no valor nem na despensa. */}
-                {packPart(item, resolved.category, item.product_id ? (catalog.get(item.product_id)?.name ?? null) : null)}
-              </Card>
+              <ConfirmedItemCard
+                key={item.id}
+                item={item}
+                title={item.product_id ? (catalog.get(item.product_id)?.name ?? item.raw_description) : item.raw_description}
+                category={resolved.category}
+                artName={catalog.get(item.product_id ?? '')?.name ?? item.raw_description}
+                alert={alert}
+                change={can.changeProduct && corrections ? { writing: writingIds.has(item.id), onPress: () => startChange(item) } : null}
+                prompt={prompt}
+                onUse={applySuggestion}
+                onFill={() => setEditing({ item })}
+                pack={packPart(item, resolved.category, item.product_id ? (catalog.get(item.product_id)?.name ?? null) : null)}
+              />
             );
           })}
         </Section>
@@ -1382,8 +1679,9 @@ export default function ReceiptScreen() {
       />
 
       <PickerModal
-        visible={picker?.kind === 'product'}
-        title="Qual produto é este?"
+        visible={pickerMode != null}
+        title={pickerMode === 'add' ? ADD_ITEM_PICKER_TITLE : pickerMode === 'change' ? CHANGE_PRODUCT_TITLE : 'Qual produto é este?'}
+        message={pickerMode === 'add' ? addItemPickerMessage(receipt.source) : pickerMode === 'change' ? changeProductMessage(pickerItem) : undefined}
         initialQuery={picker?.kind === 'product' ? picker.query : ''}
         options={(products.data ?? []).map((p) => ({
           id: p.id,
@@ -1392,9 +1690,30 @@ export default function ReceiptScreen() {
           left: <CategoryIcon category={p.category} name={p.name} size={32} />,
         }))}
         onClose={() => setPicker(null)}
+        // Só no iOS: o formulário do item que faltou abre depois que o seletor sumiu.
+        onDismiss={openPendingAdd}
         suggestionsTitle="Nomes parecidos"
         suggestions={(query) => {
-          if (!pickerItem || !query) return [];
+          if (!query) return [];
+          if (pickerMode === 'change' || pickerMode === 'add') {
+            // Na nota confirmada: sem os nomes de outros itens desta nota, e o nome sem produto diz a categoria que o
+            // produto novo teria (a mesma que vai para o banco).
+            const line: CorrectionLine | null = pickerMode === 'change' ? (pickerItem ?? null) : null;
+            return similarNames(query, houseNames, {
+              category: newProductCategory(query, line),
+              exceptProductId: pickerMode === 'change' ? (pickerItem?.product_id ?? null) : null,
+              also: NO_NOTE_NAMES,
+            }).map((name) => {
+              const choice = correctionNameChoice(name, line, catalog);
+              return {
+                id: name.productId ?? `${NAME_OPTION}${name.key}`,
+                title: name.name,
+                subtitle: choice.kind === 'new' ? suggestionSubtitle(nameSourceLabel(name), choice.category) : nameSourceLabel(name),
+                left: <CategoryIcon category={choice.kind === 'new' ? choice.category : name.category} name={name.name} size={32} />,
+              };
+            });
+          }
+          if (!pickerItem) return [];
           const current = resolvedItems.get(pickerItem.id);
           return similarNames(query, houseNames, {
             category: current?.category,
@@ -1408,12 +1727,29 @@ export default function ReceiptScreen() {
           }));
         }}
         onSelect={(optionId) => {
+          if (pickerMode === 'change') {
+            if (pickerItem) chooseCorrection(pickerItem, { kind: 'existing', productId: optionId });
+            else setPicker(null);
+            return;
+          }
+          if (pickerMode === 'add') return chooseAdded({ kind: 'existing', productId: optionId });
           if (pickerItem) changeProduct(pickerItem.id, { product: { kind: 'existing', productId: optionId } });
           setPicker(null);
         }}
         onSelectSuggestion={(optionId) => {
           // Um nome parecido: produto da casa, nome da casa sem produto ou nome dado a outro item desta nota.
           const product = catalog.get(optionId);
+          if (pickerMode === 'change' || pickerMode === 'add') {
+            const chosen = product
+              ? { name: product.name, category: product.category, productId: product.id }
+              : houseNames.byKey.get(optionId.slice(NAME_OPTION.length));
+            const line = pickerMode === 'change' ? (pickerItem ?? null) : null;
+            const choice: ProductChoice = chosen ? correctionNameChoice(chosen, line, catalog) : { kind: 'none' };
+            if (pickerMode === 'add') return chooseAdded(choice);
+            if (pickerItem) chooseCorrection(pickerItem, choice);
+            else setPicker(null);
+            return;
+          }
           const chosen = product
             ? { name: product.name, category: product.category, productId: product.id }
             : optionId.startsWith(NOTE_OPTION)
@@ -1423,6 +1759,39 @@ export default function ReceiptScreen() {
           setPicker(null);
         }}
         extraActions={(query) => {
+          if (pickerMode === 'change' || pickerMode === 'add') {
+            // Usar o nome que já existe e criar o produto, com a categoria dita no botão; sem "Não acompanhar".
+            const line = pickerMode === 'change' ? (pickerItem ?? null) : null;
+            const { existing, create } = correctionActions(query, houseNames, line, catalog);
+            const choose = (choice: ProductChoice) => {
+              if (pickerMode === 'add') chooseAdded(choice);
+              else if (pickerItem) chooseCorrection(pickerItem, choice);
+              else setPicker(null);
+            };
+            if (!existing && !create) return null;
+            return (
+              <View style={styles.gapSm}>
+                {existing ? (
+                  <Button
+                    title={existing.label}
+                    icon="swap-horizontal"
+                    variant="secondary"
+                    compact
+                    onPress={() => choose(existing.choice)}
+                  />
+                ) : null}
+                {create ? (
+                  <Button
+                    title={create.title}
+                    icon="plus"
+                    variant={existing ? 'ghost' : 'secondary'}
+                    compact
+                    onPress={() => choose(create.choice)}
+                  />
+                ) : null}
+              </View>
+            );
+          }
           const current = pickerItem ? resolvedItems.get(pickerItem.id) : undefined;
           if (!pickerItem || !current) return null;
           // O mesmo nome com outra grafia ("Bananas", com "Banana" na casa): usar o que já existe vem antes de criar outro.
@@ -1485,18 +1854,35 @@ export default function ReceiptScreen() {
         }}
       />
 
-      {editing ? (
+      {editing && 'adding' in editing ? (
+        // O item que faltou numa nota confirmada: o produto já escolhido, e o id deste formulário em todo envio.
         <ReceiptItemEditor
-          initial={editing.item}
+          key={editing.id}
+          adding={{
+            productLine: addItemProductLine(editing.adding),
+            description: editing.adding.name,
+            pantryDefault: addedItemPantryDefault(editing.adding),
+            pantryOf: (choice, description, unit) =>
+              addedItemPantry({ product: editing.adding, description, unit, choice, purchasedOn, freezer }),
+            freezer,
+          }}
+          gapHint={addedItemHint(gap)}
+          saving={addItem.isPending || checkingAdd}
+          onClose={() => setEditing(null)}
+          onSave={(values, choice) => void saveAddedItem(values, choice)}
+        />
+      ) : editing ? (
+        <ReceiptItemEditor
+          initial={editingItem}
           valueOnly={can.items === 'missingValue'}
           saving={saveItem.isPending || fillValue.isPending}
           onClose={() => setEditing(null)}
           onSave={saveEditedItem}
           onDelete={
-            editing.item && isDraft
+            editingItem && isDraft
               ? () => {
                   if (refuseStale()) return;
-                  const target = editing.item!;
+                  const target = editingItem;
                   setEditing(null);
                   // Pelo mesmo caminho das outras gravações de item: até a nota voltar sem ele, "Confirmar nota"
                   // espera (iria com o item apagado, ou perguntaria pelo valor dele).
@@ -1528,6 +1914,8 @@ function DraftItemCard({
   onPickCategory,
   onTogglePantry,
   onChangeExpiry,
+  freezer,
+  onToggleFrozen,
   houseNames,
   keepsName,
   onUseName,
@@ -1555,6 +1943,9 @@ function DraftItemCard({
   onPickCategory: () => void;
   onTogglePantry: () => void;
   onChangeExpiry: (iso: string | null) => void;
+  /** Os dias do congelador (useFreezer): null sem ele no banco. */
+  freezer: FreezeDays | null;
+  onToggleFrozen: (on: boolean) => void;
   /** Os nomes que a casa já usa (domain/similarNames). */
   houseNames: NameIndex;
   /** A pessoa já decidiu o nome deste produto novo: sem sugestão. */
@@ -1565,7 +1956,6 @@ function DraftItemCard({
   previousName?: string | null;
   onUndoName: () => void;
 }) {
-  const [expiryText, setExpiryText] = useState<string | null>(null);
   const { product } = resolved;
   // Produto novo com o nome que veio da leitura: se a casa já usa um nome que serve, a sugestão fica no próprio item.
   const newName = product.kind === 'new' ? product.name : null;
@@ -1573,21 +1963,6 @@ function DraftItemCard({
     () => (newName && !keepsName ? suggestedName(newName, houseNames, { category: resolved.category }) : null),
     [newName, keepsName, houseNames, resolved.category],
   );
-
-  function commitExpiry() {
-    if (expiryText == null) return;
-    if (!expiryText.trim()) {
-      onChangeExpiry(null);
-    } else {
-      const iso = parseBRDate(expiryText);
-      if (!iso) {
-        notify('Data inválida', 'Use o formato dd/mm/aaaa.');
-        return;
-      }
-      onChangeExpiry(iso);
-    }
-    setExpiryText(null);
-  }
 
   const productLabel =
     product.kind === 'existing'
@@ -1645,32 +2020,80 @@ function DraftItemCard({
         </Row>
       ) : null}
       {product.kind !== 'none' ? (
+        <ReceiptPantryChoice
+          rawDescription={item.raw_description}
+          resolved={resolved}
+          freezer={freezer}
+          onTogglePantry={onTogglePantry}
+          onChangeExpiry={onChangeExpiry}
+          onToggleFrozen={onToggleFrozen}
+        />
+      ) : null}
+    </Card>
+  );
+}
+
+/**
+ * O item da nota confirmada: o produto (o toque abre a tela dele), a quantidade e o valor, e o que ainda se corrige
+ * nele (domain/receiptEdit): o produto ("Trocar produto", com o banco que tem as correções), o valor do que ficou sem
+ * e quantos vêm na embalagem, que não mexe no valor nem na despensa.
+ */
+function ConfirmedItemCard({
+  item,
+  title,
+  category,
+  artName,
+  alert,
+  change,
+  prompt,
+  onUse,
+  onFill,
+  pack,
+}: {
+  item: ReceiptItem;
+  /** O nome do produto, ou a descrição da nota. */
+  title: string;
+  category: string;
+  artName: string;
+  /** Aviso de preço já descrito (describePriceAlert). */
+  alert: string | null;
+  /** "Trocar produto": null sem o banco que tem as correções; `writing` desliga o chip até a nota voltar. */
+  change: { writing: boolean; onPress: () => void } | null;
+  prompt: UnpricedPrompt | null;
+  onUse: (suggestion: GapSuggestion) => void;
+  onFill: () => void;
+  pack: ReactNode;
+}) {
+  const button = changeProductButton(title, Boolean(item.product_id));
+  return (
+    <Card>
+      <ListRow
+        left={<CategoryIcon category={category} name={artName} size={36} />}
+        title={title}
+        subtitle={
+          <View style={styles.gapXs}>
+            <Text variant="muted">{quantityText(item)}</Text>
+            {alert ? <Badge label={alert} tone="warning" /> : null}
+          </View>
+        }
+        right={<ItemValue item={item} />}
+        onPress={item.product_id ? () => router.push({ pathname: '/produto/[id]', params: { id: item.product_id! } }) : undefined}
+      />
+      {change ? (
+        // Um chip, e não um botão largo: a nota comprida não cresce muito.
         <Row style={styles.wrap}>
           <Chip
-            label={resolved.pantry ? 'Vai para a despensa' : 'Não vai para a despensa'}
-            icon="fridge-outline"
-            selected={resolved.pantry}
-            onPress={onTogglePantry}
+            label={button.title}
+            accessibilityLabel={button.accessibilityLabel}
+            icon="swap-horizontal"
+            disabled={change.writing}
+            onPress={change.onPress}
           />
-          {resolved.pantry ? (
-            <View style={styles.expiry}>
-              <DateField
-                value={expiryText ?? (resolved.expiresOn ? formatBRDate(resolved.expiresOn) : '')}
-                placeholder="Validade"
-                onChangeText={setExpiryText}
-                onBlur={commitExpiry}
-                onSubmitEditing={commitExpiry}
-                accessibilityLabel={`Validade de ${item.raw_description}`}
-              />
-            </View>
-          ) : null}
         </Row>
       ) : null}
-      {resolved.pantry && resolved.expiresOn && resolved.expirySource !== 'manual' ? (
-        <Text variant="small">
-          Validade estimada {resolved.expirySource === 'produto' ? 'pelo histórico do produto' : 'pela categoria'} — ajuste se quiser.
-        </Text>
-      ) : null}
+      {/* O valor do que ficou sem (domain/receiptEdit). */}
+      {prompt ? <ValueQuestion prompt={prompt} onUse={onUse} onFill={onFill} /> : null}
+      {pack}
     </Card>
   );
 }
@@ -1890,7 +2313,6 @@ const styles = StyleSheet.create({
   between: { justifyContent: 'space-between' },
   storeRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   totalRow: { flexDirection: 'row', alignItems: 'center' },
-  expiry: { width: 140 },
   weight: { width: 190 },
   viewerHeader: { padding: space.lg },
   photos: { gap: space.sm, paddingBottom: space.xl },

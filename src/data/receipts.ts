@@ -6,11 +6,24 @@ import { type QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import type { ReceiptFingerprint } from '@/domain/duplicateReceipt';
 import { NFCE_CAPTCHA_STATE, nfceFailureCode, nfceItemsToDraft, nfceReceiptRow, nfceStoreCodes, type NfceItem, type NfceQr } from '@/domain/nfce';
 import { RECEIPTS_PAGE } from '@/domain/receiptList';
+import {
+  CATEGORY_SHELF_LIFE_DAYS,
+  CORRECTION_CODES,
+  CORRECTION_NOT_FOUND,
+  correctionNotice,
+  type AddedItemRequest,
+  type CorrectionAction,
+  type CorrectionRefusal,
+  type CorrectionTarget,
+} from '@/domain/receiptCorrection';
+import type { FreezeKind } from '@/domain/freezer';
 import { MAX_RECEIPT_PHOTOS, tooManyPhotosMessage } from '@/domain/receiptPhotos';
 import type { ConfirmItem } from '@/domain/receiptReview';
 import { weighedLine } from '@/domain/receiptWeight';
+import { isDeadlock } from '@/lib/databaseErrors';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
+import { newUuid } from '@/lib/uuid';
 import {
   FunctionError,
   functionErrorDetails,
@@ -22,7 +35,7 @@ import {
 } from './images';
 import { loadLearnedAbbreviations } from './learnedAbbreviations';
 import { isMissingColumn, isMissingFunction } from './missingSchema';
-import { withFreshProducts } from './productMerge';
+import { isProductMergedAway, withFreshProducts } from './productMerge';
 import { readAll } from './readAll';
 
 const RECEIPT_COLUMNS =
@@ -36,9 +49,15 @@ const ITEM_BASE_COLUMNS =
  */
 const OPTIONAL_ITEM_COLUMNS = ['generic_name', 'store_code', 'pack_count'] as const;
 type OptionalItemColumn = (typeof OPTIONAL_ITEM_COLUMNS)[number];
+/**
+ * As que o app só lê: a linha incluída depois de a nota ser confirmada (added_after_confirmation, que só
+ * add_confirmed_receipt_item marca). Por último, a mais nova: o banco sem ela custa uma leitura a mais.
+ */
+const READ_ITEM_COLUMNS = [...OPTIONAL_ITEM_COLUMNS, 'added_after_confirmation'] as const;
+type ReadItemColumn = (typeof READ_ITEM_COLUMNS)[number];
 
 /** A coluna recente que o banco disse que não tem (uma por erro), ou undefined. */
-const missingItemColumn = (error: unknown, columns: readonly OptionalItemColumn[]) =>
+const missingItemColumn = <C extends ReadItemColumn>(error: unknown, columns: readonly C[]) =>
   columns.find((column) => isMissingColumn(error, column));
 
 /** Uma nota da lista de Compras > Notas: com quantos itens ela tem. */
@@ -127,14 +146,15 @@ export function useReceiptHistory() {
 }
 
 /**
- * Os itens da nota, na ordem impressa, com o item genérico da leitura por foto (generic_name) e o código do
- * produto na nota (store_code). Com o banco de antes de uma dessas colunas (o app publicado antes da migração),
- * lê de novo sem ela, uma de cada vez (o erro fala de uma só): a revisão fica como era.
+ * Os itens da nota, na ordem impressa, com o item genérico da leitura por foto (generic_name), o código do
+ * produto na nota (store_code), quantos vêm na embalagem (pack_count) e se a linha foi incluída depois de a nota
+ * ser confirmada (added_after_confirmation). Com o banco de antes de uma dessas colunas (o app publicado antes da
+ * migração), lê de novo sem ela, uma de cada vez (o erro fala de uma só): a revisão fica como era.
  */
 export async function fetchReceiptItems(receiptId: string, db: SupabaseClient = supabase): Promise<ReceiptItem[]> {
   const read = (columns: readonly string[]) =>
     db.from('receipt_items').select([ITEM_BASE_COLUMNS, ...columns].join(', ')).eq('receipt_id', receiptId).order('position');
-  let columns: readonly OptionalItemColumn[] = OPTIONAL_ITEM_COLUMNS;
+  let columns: readonly ReadItemColumn[] = READ_ITEM_COLUMNS;
   for (;;) {
     const answer = await read(columns);
     const missing = missingItemColumn(answer.error, columns);
@@ -760,14 +780,19 @@ export const PACK_COUNT_NOT_READY = 'Ainda não dá para guardar quantos vêm na
 
 /**
  * Quantos vêm na embalagem do item (domain/packCount), a resposta da revisão. Vale também na nota confirmada:
- * não muda o valor, a quantidade nem a despensa, só o que o preço diz (cada ovo). `saved` falso é o item que
- * saiu da nota em outro aparelho.
+ * não muda o valor, a quantidade nem a despensa, só o que o preço diz (cada ovo). Vai o produto que a tela mostrava
+ * na linha (`productId`, null sem produto): na nota confirmada a linha pode ter passado para outro produto ("Trocar
+ * produto", que tira a contagem do que não é ovo), em outro aparelho ou neste, pela troca desta tela cuja nota relida
+ * ainda não voltou ou cuja resposta se perdeu, e a contagem dos ovos dividiria o preço dele no histórico e na lista.
+ * `saved` falso é o item que saiu da nota, ou mudou de produto, em outro aparelho ou por essa troca deste:
+ * PACK_LINE_CHANGED não culpa outro aparelho.
  */
 export function useSetReceiptItemPack(receiptId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, count }: { id: string; count: number }): Promise<{ saved: boolean }> => {
-      const result = await supabase.from('receipt_items').update({ pack_count: count }).eq('id', id).eq('receipt_id', receiptId).select('id');
+    mutationFn: async ({ id, productId, count }: { id: string; productId: string | null; count: number }): Promise<{ saved: boolean }> => {
+      const line = supabase.from('receipt_items').update({ pack_count: count }).eq('id', id).eq('receipt_id', receiptId);
+      const result = await (productId ? line.eq('product_id', productId) : line.is('product_id', null)).select('id');
       if (result.error && isMissingColumn(result.error, 'pack_count')) throw new Error(PACK_COUNT_NOT_READY);
       const rows = unwrap(result) as { id: string }[] | null;
       return { saved: Boolean(rows?.length) };
@@ -777,6 +802,164 @@ export function useSetReceiptItemPack(receiptId: string) {
       for (const key of ['latestPrices', 'priceHistory']) queryClient.invalidateQueries({ queryKey: [key] });
       queryClient.invalidateQueries({ queryKey: ['receipt', receiptId] });
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Nota confirmada: trocar o produto de um item e incluir o que faltou (domain/receiptCorrection)
+
+/**
+ * O que a troca de produto e o item que faltou mudam: os mesmos nomes da confirmação (useConfirmReceipt), menos as
+ * listas e os mercados (nenhuma das duas mexe neles), com a nota estreitada a esta.
+ */
+export const RECEIPT_CORRECTION_REFRESHES = [...CONFIRMED_ITEM_KEYS, 'products', 'pantry', 'productAliases', 'productBarcodes'] as const;
+
+/** O banco recusou a correção (a mensagem é a do aviso): a tela mostra `correctionNotice(kind, action)`. */
+export class ReceiptCorrectionRefused extends Error {
+  constructor(
+    readonly kind: CorrectionRefusal,
+    readonly action: CorrectionAction,
+  ) {
+    super(correctionNotice(kind, action).message);
+    this.name = 'ReceiptCorrectionRefused';
+  }
+}
+
+/**
+ * Por que o banco recusou a correção, ou null quando não foi recusa (a falta de resposta, outro erro, o 40P01 que se
+ * tenta de novo). A função que o banco ainda não tem (ou o cache de esquema da API de antes dela) é `notReady`.
+ */
+export function correctionRefusal(error: unknown, fn: string): CorrectionRefusal | null {
+  if (isMissingFunction(error, fn)) return 'notReady';
+  const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
+  if (code === CORRECTION_CODES.itemChanged) return 'itemChanged';
+  if (code === CORRECTION_CODES.notConfirmed) return 'notConfirmed';
+  if (code === 'P0002') {
+    if (message === CORRECTION_NOT_FOUND.receiptGone) return 'receiptGone';
+    if (message === CORRECTION_NOT_FOUND.itemGone) return 'itemGone';
+    if (message === CORRECTION_NOT_FOUND.productGone) return 'productGone';
+  }
+  if (isProductMergedAway(error)) return 'productGone';
+  return null;
+}
+
+/** O id do item que faltou, feito no aparelho: o mesmo em todo envio do formulário (o banco não cria outra linha). */
+export function newReceiptItemId(): string {
+  return newUuid();
+}
+
+export const RECEIPT_CORRECTIONS_AVAILABLE_KEY = ['receiptCorrectionsAvailable'] as const;
+
+/** Este banco já tem as correções da nota confirmada? false sem a função; outro erro sobe. */
+export async function fetchReceiptCorrectionsAvailable(): Promise<boolean> {
+  const result = await supabase.rpc('receipt_corrections_available');
+  if (result.error && isMissingFunction(result.error, 'receipt_corrections_available')) return false;
+  return unwrap(result) === true;
+}
+
+/**
+ * "Trocar produto" e "Item" na nota confirmada só aparecem com a resposta true: enquanto ela não chega, falha ou
+ * espera a internet, ficam de fora (a mesma regra do cartão dos preços compartilhados). Perguntada uma vez por
+ * abertura do app, só na memória.
+ */
+export function useReceiptCorrectionsAvailable(enabled: boolean): boolean {
+  const { data } = useQuery({
+    queryKey: RECEIPT_CORRECTIONS_AVAILABLE_KEY,
+    queryFn: fetchReceiptCorrectionsAvailable,
+    staleTime: Infinity,
+    enabled,
+  });
+  return data === true;
+}
+
+/**
+ * O erro da correção como a tela o lê: a recusa vira ReceiptCorrectionRefused, depois de pedir a nota de novo (a tela
+ * mostra a nota de agora). O produto que sumiu (juntado ou excluído em outro aparelho) espera os produtos e a nota
+ * voltarem antes de devolver o erro, como withFreshProducts: o seletor aberto de novo não oferece o que sumiu. O resto
+ * (a falta de resposta, o 40P01, que o hook tenta de novo) passa como veio.
+ */
+async function correctionError(
+  queryClient: QueryClient,
+  receiptId: string,
+  error: unknown,
+  fn: string,
+  action: CorrectionAction,
+): Promise<unknown> {
+  const kind = correctionRefusal(error, fn);
+  if (!kind) return error;
+  if (kind === 'productGone') {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['products'] }),
+      queryClient.invalidateQueries({ queryKey: ['receipt', receiptId] }),
+    ]);
+  } else if (kind !== 'notReady') {
+    void queryClient.invalidateQueries({ queryKey: ['receipt', receiptId] });
+    void queryClient.invalidateQueries({ queryKey: ['receipts'] });
+  }
+  return new ReceiptCorrectionRefused(kind, action);
+}
+
+function invalidateCorrection(queryClient: QueryClient, receiptId: string) {
+  for (const key of RECEIPT_CORRECTION_REFRESHES) queryClient.invalidateQueries({ queryKey: [key] });
+  queryClient.invalidateQueries({ queryKey: ['receipt', receiptId] });
+}
+
+/** A troca pedida: a linha como a tela a mostrava, o produto escolhido e o tipo do congelador dele. */
+export interface ProductChange {
+  item: Pick<ReceiptItem, 'id' | 'product_id'>;
+  target: CorrectionTarget;
+  freezeKind: FreezeKind | null;
+}
+
+/**
+ * "Trocar produto" numa linha da nota confirmada (change_receipt_item_product): a linha, a despensa, o apelido e os
+ * códigos que ela ensinou passam para o produto escolhido. Vai o produto que a tela mostrava, e o banco recusa
+ * (NK018) se a linha já está em outro. `changed` falso é a linha que já estava no escolhido (a resposta de um toque
+ * anterior que se perdeu). Na hora, nunca na fila: sem internet, falha.
+ */
+export function useChangeReceiptItemProduct(receiptId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ item, target, freezeKind }: ProductChange): Promise<{ productId: string; changed: boolean; pantry: number }> => {
+      // Toda chave vai, as nulas também: o PostgREST acha a função pelos nomes.
+      const result = await supabase.rpc('change_receipt_item_product', {
+        p_receipt_id: receiptId,
+        p_item_id: item.id,
+        p_expected_product_id: item.product_id,
+        p_product_id: 'productId' in target ? target.productId : null,
+        p_new_product: 'newProduct' in target ? target.newProduct : null,
+        p_shelf_life_days: CATEGORY_SHELF_LIFE_DAYS,
+        p_freeze_kind: freezeKind,
+      });
+      if (result.error) throw await correctionError(queryClient, receiptId, result.error, 'change_receipt_item_product', 'change');
+      const data = (result.data ?? {}) as { product_id?: string; changed?: boolean; pantry?: number };
+      return { productId: String(data.product_id ?? ''), changed: data.changed === true, pantry: Number(data.pantry ?? 0) };
+    },
+    // O banco desfez o pedido para destravar o de outra pessoa da casa (40P01): repetir uma vez é seguro (a função é
+    // uma transação só, e a linha que já está no escolhido responde sem mudar nada).
+    retry: (failures, error) => failures < 1 && isDeadlock(error),
+    retryDelay: 0,
+    onSuccess: () => invalidateCorrection(queryClient, receiptId),
+  });
+}
+
+/**
+ * "Item" na nota confirmada (add_confirmed_receipt_item): a linha que a leitura perdeu, com o produto e, quando
+ * pedido, a despensa. O id vem do aparelho (newReceiptItemId), o mesmo em cada envio do formulário: `added` falso é o
+ * item que já tinha entrado (a resposta do primeiro se perdeu), e `same` diz se o pedido de agora é o mesmo.
+ */
+export function useAddConfirmedReceiptItem(receiptId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (request: AddedItemRequest): Promise<{ itemId: string; added: boolean; same: boolean }> => {
+      const result = await supabase.rpc('add_confirmed_receipt_item', { p_receipt_id: receiptId, p_item: request });
+      if (result.error) throw await correctionError(queryClient, receiptId, result.error, 'add_confirmed_receipt_item', 'add');
+      const data = (result.data ?? {}) as { item_id?: string; added?: boolean; same?: boolean };
+      return { itemId: String(data.item_id ?? request.id), added: data.added === true, same: data.same === true };
+    },
+    retry: (failures, error) => failures < 1 && isDeadlock(error),
+    retryDelay: 0,
+    onSuccess: () => invalidateCorrection(queryClient, receiptId),
   });
 }
 

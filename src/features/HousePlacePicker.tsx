@@ -16,6 +16,7 @@ import {
   cepUnreachableMessage,
   HOUSE_PLACE_CREATE_INTRO,
   HOUSE_PLACE_OPTIONAL,
+  HOUSE_PLACE_PRICES,
   HOUSE_PLACE_PRIVACY,
   HOUSE_PLACE_REMOVE,
   PLACE_SEARCH_FAILED_TITLE,
@@ -120,6 +121,7 @@ export function PlaceSearchFields({
         onPress={() => search.find('gps')}
       />
       <Text variant="small">{HOUSE_PLACE_PRIVACY}</Text>
+      <Text variant="small">{HOUSE_PLACE_PRICES}</Text>
     </>
   );
 }

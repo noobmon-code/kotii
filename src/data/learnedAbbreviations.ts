@@ -46,6 +46,15 @@ function learnedFrom(aliases: readonly AliasRow[], products: readonly Pick<Produ
 }
 
 /**
+ * Os apelidos da casa (a descrição da nota de cada produto dela, já padronizada como a base de preços a guarda), para a
+ * troca de marca da lista (domain/cheaperBrand): a descrição de um produto da casa não é "outra marca". A mesma busca
+ * e a mesma chave das abreviações aprendidas (uma leitura só); fora do cache guardado no aparelho.
+ */
+export function useProductAliases({ enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery({ queryKey: ALIASES_KEY, queryFn: fetchProductAliases, staleTime: ALIASES_STALE_MS, enabled });
+}
+
+/**
  * As abreviações aprendidas, para a revisão da nota e a despensa. Enquanto os apelidos ou os produtos não chegam
  * (ou sem internet, ou se a leitura falhar), nada aprendido: as regras de sempre continuam valendo, sem aviso.
  * `enabled: false` (a nota já confirmada, que não casa mais com a lista) nem lê os apelidos.

@@ -1,10 +1,12 @@
 // Clima da casa: onde ela fica (o bairro), a previsão do Open-Meteo e a busca
 // do lugar, pelo CEP (ViaCEP; BrasilAPI de reserva) ou pela localização do
 // celular, com o ponto do bairro achado no OpenStreetMap (Nominatim). O endereço exato não sai do
-// aparelho para o banco: só o bairro, com as coordenadas arredondadas.
+// aparelho para o banco: só o bairro, com as coordenadas arredondadas, e o estado (o código do IBGE, que
+// a base aberta de preços usa: a lista acha os preços dos mercados do estado da casa).
 
-import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { onlineManager, queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { useEffect, useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
 
 import {
@@ -20,23 +22,40 @@ import {
   roundCoordinate,
   type OsmPlace,
 } from '@/domain/weather';
+import { stateCode } from '@/domain/sharedPrices';
+import { useActiveHouseholdId } from '@/lib/activeHousehold';
 import { HOUSEHOLD_HEADER } from '@/lib/householdHeader';
 import { supabase, unwrap } from '@/lib/supabase';
+import { isMissingColumn } from './missingSchema';
 
 export interface HouseholdLocation {
   label: string;
   latitude: number;
   longitude: number;
   source: 'cep' | 'gps';
+  /**
+   * O estado do local (código do IBGE, "35"), de onde a lista lê os preços de outras casas. null: o local foi salvo
+   * antes do estado existir (a tela Hoje o preenche, useFillHouseState) ou o estado não foi achado; ausente: o banco
+   * ainda não tem a coluna.
+   */
+  state_code?: string | null;
 }
 
 export const LOCATION_KEY = ['householdLocation'];
 const HOUR = 60 * 60 * 1000;
 
 export async function fetchHouseholdLocation(db: SupabaseClient = supabase): Promise<HouseholdLocation | null> {
-  const row = unwrap(await db.from('household_location').select('label, latitude, longitude, source').maybeSingle()) as HouseholdLocation | null;
+  let result = await db.from('household_location').select('label, latitude, longitude, source, state_code').maybeSingle();
+  // O banco de antes da coluna do estado: o local sem ela (state_code fica ausente, não null).
+  if (result.error && isMissingColumn(result.error, 'state_code')) {
+    result = await db.from('household_location').select('label, latitude, longitude, source').maybeSingle();
+  }
+  const row = unwrap(result) as HouseholdLocation | null;
   return row ? { ...row, latitude: Number(row.latitude), longitude: Number(row.longitude) } : null;
 }
+
+/** O local sem o estado, para gravar no banco de antes da coluna. */
+const withoutState = ({ state_code: _state, ...place }: HouseholdLocation) => place;
 
 /** Onde fica a casa; null se ninguém definiu ainda. */
 export function useHouseholdLocation() {
@@ -47,12 +66,18 @@ export function useSaveHouseholdLocation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (place: HouseholdLocation) => {
-      unwrap(await supabase.from('household_location').upsert(place, { onConflict: 'household_id' }));
+      const result = await supabase.from('household_location').upsert(place, { onConflict: 'household_id' });
+      // O banco de antes da coluna do estado: grava o resto.
+      if (result.error && 'state_code' in place && isMissingColumn(result.error, 'state_code')) {
+        unwrap(await supabase.from('household_location').upsert(withoutState(place), { onConflict: 'household_id' }));
+      } else unwrap(result);
       return place;
     },
     onSuccess: (place) => {
       queryClient.setQueryData(LOCATION_KEY, place);
       queryClient.invalidateQueries({ queryKey: LOCATION_KEY });
+      // Os estados da casa mudaram: os preços de outras casas (o caminho do produto e a base aberta) também.
+      queryClient.invalidateQueries({ queryKey: ['sharedPrices'] });
     },
   });
 }
@@ -63,12 +88,15 @@ export function useSaveHouseholdLocation() {
  * de acesso confere que a pessoa é dela).
  */
 export async function saveHouseholdLocationFor(householdId: string, place: HouseholdLocation): Promise<void> {
-  unwrap(
-    await supabase
+  const save = (row: HouseholdLocation) =>
+    supabase
       .from('household_location')
-      .upsert({ household_id: householdId, ...place }, { onConflict: 'household_id' })
-      .setHeader(HOUSEHOLD_HEADER, householdId),
-  );
+      .upsert({ household_id: householdId, ...row }, { onConflict: 'household_id' })
+      .setHeader(HOUSEHOLD_HEADER, householdId);
+  const result = await save(place);
+  // O banco de antes da coluna do estado: grava o resto.
+  if (result.error && 'state_code' in place && isMissingColumn(result.error, 'state_code')) unwrap(await save(withoutState(place)));
+  else unwrap(result);
 }
 
 export function useClearHouseholdLocation() {
@@ -80,6 +108,8 @@ export function useClearHouseholdLocation() {
     onSuccess: () => {
       queryClient.setQueryData(LOCATION_KEY, null);
       queryClient.invalidateQueries({ queryKey: LOCATION_KEY });
+      // Sem o local, a casa pode perder um estado: os preços de outras casas mudam.
+      queryClient.invalidateQueries({ queryKey: ['sharedPrices'] });
     },
   });
 }
@@ -227,6 +257,8 @@ export async function findPlaceByCep(cep: string): Promise<HouseholdLocation> {
     latitude: roundCoordinate(point.latitude),
     longitude: roundCoordinate(point.longitude),
     source: 'cep',
+    // A sigla do estado do CEP ("SP"), como o código do IBGE que a base de preços usa.
+    state_code: stateCode(state),
   });
   if (neighborhood) {
     // Mapa fora do ar ou no limite: segue para a cidade (as coordenadas da
@@ -273,5 +305,70 @@ export async function findPlaceByDevice(): Promise<HouseholdLocation> {
     latitude: roundCoordinate(latitude),
     longitude: roundCoordinate(longitude),
     source: 'gps',
+    // O estado no OpenStreetMap ("BR-SP"); fora do Brasil, ou sem o mapa, nenhum.
+    state_code: stateCode(address?.['ISO3166-2-lvl4']),
   };
+}
+
+/** O estado (código do IBGE) do ponto guardado da casa, pelo mesmo mapa da localização do celular; null sem ele. */
+export async function findStateByPoint(latitude: number, longitude: number): Promise<string | null> {
+  return stateCode((await osmReverse(latitude, longitude))?.['ISO3166-2-lvl4']);
+}
+
+/** As casas cujo estado este aparelho já tentou achar nesta vez que o app abriu (uma tentativa por casa). */
+const triedHouseStates = new Set<string>();
+
+/** Para os testes: esquece as tentativas. */
+export function forgetHouseStateTries(): void {
+  triedHouseStates.clear();
+}
+
+const subscribeOnline = (listener: () => void) => onlineManager.subscribe(listener);
+
+/**
+ * O local salvo antes do estado existir ganha o estado, uma vez, sem aviso: na tela Hoje, quando o local da casa
+ * aberta chegou com `state_code` null e o aparelho está com internet, o ponto guardado (cerca de 1 km) vai ao mapa
+ * (o mesmo da localização do celular, que os termos já citam) e só o estado é gravado, e só se ainda estiver vazio
+ * (outro aparelho pode ter preenchido, ou o local pode ter saído: sem linha de volta, nada a fazer). Uma tentativa por
+ * casa enquanto o app está aberto; qualquer falha fica em silêncio. Nunca para `undefined` (o banco sem a coluna, ou
+ * o local guardado de antes). `householdId`: a casa da tela (a de useHousehold).
+ *
+ * O local lido não diz de que casa é (a chave dele não tem casa): ele é o da casa aberta (lib/activeHousehold), que
+ * vai no cabeçalho de cada pedido. Na troca de casa, a aberta muda e o local é buscado de novo antes de a casa da
+ * tela mudar, então o estado só é procurado quando as duas são a mesma: senão o ponto da casa nova iria para a linha
+ * da anterior. Sem internet (ou com a sessão esperando renovar), nada é tentado, e a volta da internet tenta.
+ */
+export function useFillHouseState(householdId: string | null | undefined): void {
+  const queryClient = useQueryClient();
+  const location = useHouseholdLocation();
+  const activeId = useActiveHouseholdId();
+  const online = useSyncExternalStore(subscribeOnline, () => onlineManager.isOnline(), () => true);
+  const place = location.data;
+  const missing = place != null && place.state_code === null;
+  useEffect(() => {
+    if (!missing || !place || !householdId || householdId !== activeId || triedHouseStates.has(householdId) || !online) return;
+    triedHouseStates.add(householdId);
+    void (async () => {
+      try {
+        const code = await findStateByPoint(place.latitude, place.longitude);
+        if (!code) return;
+        // A casa vai no filtro e no cabeçalho: uma troca de casa no meio do caminho não grava o estado em outra.
+        unwrap(
+          await supabase
+            .from('household_location')
+            .update({ state_code: code })
+            .eq('household_id', householdId)
+            .is('state_code', null)
+            .select('household_id')
+            .setHeader(HOUSEHOLD_HEADER, householdId),
+        );
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: LOCATION_KEY }),
+          queryClient.invalidateQueries({ queryKey: ['sharedPrices'] }),
+        ]);
+      } catch {
+        // Sem o mapa ou sem o banco, o local fica sem estado: nada a dizer.
+      }
+    })();
+  }, [missing, place, householdId, activeId, online, queryClient]);
 }

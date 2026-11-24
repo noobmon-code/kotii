@@ -6,7 +6,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'rea
 import { ListItemEditor } from '@/features/ListItemEditor';
 import { type ItemHint, ShoppingGrid } from '@/features/ShoppingGrid';
 import type { ShoppingListItem } from '@/lib/types';
-import { Badge, Button, CategoryIcon, TextField } from '@/ui/primitives';
+import { Badge, Button, CategoryIcon, Text, TextField } from '@/ui/primitives';
 
 // A grade de verdade: o selo "Novo" da ida ao mercado aparece (e o leitor de tela diz "novo") só no que falta
 // comprar, e a lista arquivada (só para ver) não marca nem abre os detalhes. No navegador, segurar sobre a
@@ -205,5 +205,22 @@ describe('os detalhes do item só para ver (lista arquivada)', () => {
     });
     const titles = renderer!.root.findAllByType(Button).map((button) => button.props.title);
     expect(titles).toEqual(expect.arrayContaining(['Salvar', 'Remover da lista', 'Tirar foto']));
+  });
+});
+
+describe('a marca mais barata do mercado escolhido, no quadrinho', () => {
+  it('uma linha a mais embaixo do preço, apagada e de uma linha só, e o leitor de tela a diz depois do preço', async () => {
+    await mount({ hint: { cost: '~R$ 4,49', brand: 'Camil 1kg ×5', brandSpoken: 'pela marca mais barata: Arroz Camil 1kg, 5 pacotes' } });
+    const texts = renderer!.root.findAllByType(Text);
+    const at = texts.findIndex((entry) => entry.props.children === '~R$ 4,49');
+    const brand = texts[at + 1];
+    expect(brand.props).toMatchObject({ children: 'Camil 1kg ×5', color: 'textMuted', numberOfLines: 1, variant: 'small' });
+    expect(tile().props.accessibilityLabel).toBe('Feijão, 1 un, ~R$ 4,49, pela marca mais barata: Arroz Camil 1kg, 5 pacotes');
+  });
+
+  it('sem preço, sem a linha da marca', async () => {
+    await mount({ hint: { brand: 'Camil 1kg', brandSpoken: 'pela marca mais barata: Arroz Camil 1kg', inPantry: true } });
+    expect(renderer!.root.findAllByType(Text).some((entry) => entry.props.children === 'Camil 1kg')).toBe(false);
+    expect(tile().props.accessibilityLabel).not.toContain('marca');
   });
 });

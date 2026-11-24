@@ -5,7 +5,7 @@ import { getCategory } from './categories';
 import { diffDays, toISODate } from './dates';
 import { NO_LEARNED, withLearned, type LearnedAbbreviations } from './learnedAbbreviations';
 import { LinkIndex } from './listLinks';
-import { estimateExpiry, type ExpirySource } from './pantry';
+import { estimateExpiry, type EstimateSource } from './pantry';
 import { sameItemFit } from './sameItem';
 import { normalizeSearch } from './search';
 
@@ -14,6 +14,8 @@ export const SAME_PURCHASE_DAYS = 3;
 
 /** O que já está na despensa (para achar a mesma compra). */
 export interface PantryEntry {
+  /** A compra na despensa: o "Congelei" de uma linha que não vai de novo congela esta (domain/freezer, repeatFreezes). */
+  id?: string;
   product_id: string | null;
   name: string;
   purchased_on: string;
@@ -151,7 +153,7 @@ export interface CartPantryEntry {
   quantity: number;
   purchased_on: string;
   expires_on: string | null;
-  expiry_source: Exclude<ExpirySource, 'manual'> | null;
+  expiry_source: EstimateSource | null;
 }
 
 /** Linhas marcadas com a quantidade confirmada; validade estimada como na nota. */
@@ -190,6 +192,8 @@ export interface PantryRepeat {
   id: string;
   name: string;
   since: string;
+  /** A compra da despensa que esta linha repete, quando a entrada diz qual é. */
+  entryId?: string;
 }
 
 /**
@@ -230,6 +234,8 @@ export function receiptPantryRepeats(
   }
   return payload.flatMap((item, at) => {
     const same = repeatOf.get(at);
-    return same && item.pantry ? [{ id: item.id, name: item.pantry.name, since: same.purchased_on }] : [];
+    return same && item.pantry
+      ? [{ id: item.id, name: item.pantry.name, since: same.purchased_on, ...(same.id ? { entryId: same.id } : {}) }]
+      : [];
   });
 }

@@ -66,6 +66,7 @@ jest.mock('@/data/weather', () => ({
   useHouseholdLocation: () => ({ data: null }),
   useForecast: () => ({ data: undefined }),
   useRefreshWeather: () => () => undefined,
+  useFillHouseState: () => undefined,
 }));
 jest.mock('@/data/home', () => ({
   toSchedules: () => [],
@@ -140,7 +141,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 jest.mock('@/features/TermsNotice', () => ({ TermsNoticeCard: () => null }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
 jest.mock('@/ui/iconArt', () => ({ IconArt: () => null }));
-jest.mock('expo-router', () => ({ router: { push: jest.fn(), navigate: jest.fn(), back: jest.fn() } }));
+jest.mock('expo-router', () => ({ router: { push: jest.fn(), navigate: jest.fn(), back: jest.fn() }, useFocusEffect: () => undefined }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 

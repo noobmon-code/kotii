@@ -4,7 +4,7 @@ import { FlatList, StyleSheet, View } from 'react-native';
 
 import { useLatestPrices, useProducts, useStores } from '@/data/market';
 import { useSharedPrices } from '@/data/sharedPrices';
-import { storeSummaryLine, storeSummaryPrice, summarizeStorePrices } from '@/domain/prices';
+import { NO_PRICE_YET, storeSummaryLine, storeSummaryPrice, summarizeStorePrices, type StoreSummary } from '@/domain/prices';
 import { normalizeSearch } from '@/domain/search';
 import { cheaperSharedHint, cheaperSharedPrice, comparedSharedByProduct, SHARED_PRICES_NOTICE, type ShownSharedPrice } from '@/domain/sharedPrices';
 import { savedPricesByProduct } from '@/domain/storePrices';
@@ -12,6 +12,7 @@ import { StaleNotice } from '@/features/health/StaleNotice';
 import { MergeSuggestionsCard } from '@/features/MergeSuggestionsCard';
 import { useProductBarcode } from '@/features/ProductBarcode';
 import { settledData } from '@/lib/settledData';
+import type { Product } from '@/lib/types';
 import {
   CategoryIcon,
   EmptyState,
@@ -66,17 +67,21 @@ export default function PricesScreen() {
   const searchable = useMemo(() => (products.data ?? []).map((product) => ({ product, key: normalizeSearch(product.name) })), [products.data]);
   const storeName = useMemo(() => new Map((stores.data ?? []).map((s) => [s.id, s.name])), [stores.data]);
 
+  // Os produtos com preço, na ordem do catálogo (por nome). Buscando, também os que ainda não têm preço de nota,
+  // depois deles: sem a busca a tela é a dos preços, e um produto sem preço só é achado pelo nome.
   const rows = useMemo(() => {
     const q = normalizeSearch(query);
-    return searchable
-      .filter(({ key }) => !q || key.includes(q))
-      .map(({ product }) => {
-        const summary = summarizeStorePrices(byProduct.get(product.id) ?? []);
-        const seen = compared?.get(product.id);
-        // Só quando outra casa viu mais barato que o preço da casa com que se compara, na unidade da linha.
-        return summary ? { product, summary, cheaper: seen ? cheaperSharedPrice(seen) : null } : null;
-      })
-      .filter((r): r is NonNullable<typeof r> => r !== null);
+    const priced: { product: Product; summary: StoreSummary; cheaper: ShownSharedPrice | null }[] = [];
+    const unpriced: { product: Product; summary: null; cheaper: null }[] = [];
+    for (const { product, key } of searchable) {
+      if (q && !key.includes(q)) continue;
+      const summary = summarizeStorePrices(byProduct.get(product.id) ?? []);
+      const seen = compared?.get(product.id);
+      // Só quando outra casa viu mais barato que o preço da casa com que se compara, na unidade da linha.
+      if (summary) priced.push({ product, summary, cheaper: seen ? cheaperSharedPrice(seen) : null });
+      else if (q) unpriced.push({ product, summary: null, cheaper: null });
+    }
+    return [...priced, ...unpriced];
   }, [searchable, byProduct, compared, query]);
 
   const queries = [products, prices, stores];
@@ -138,6 +143,7 @@ export default function PricesScreen() {
         renderItem={({ item: { product, summary, cheaper }, index }) => {
           const first = index === 0;
           const last = index === rows.length - 1;
+          const open = () => router.push({ pathname: '/produto/[id]', params: { id: product.id } });
           return (
             <View
               style={[
@@ -147,17 +153,26 @@ export default function PricesScreen() {
                 last && styles.segmentLast,
               ]}>
               {first ? null : <View style={[styles.divider, { backgroundColor: c.border }]} />}
-              <ListRow
-                left={<CategoryIcon category={product.category} name={product.name} size={36} />}
-                title={product.name}
-                subtitle={withSeenCheaper(
-                  storeSummaryLine(summary, (id) => storeName.get(id), product.category),
-                  cheaper,
-                  product.category,
-                )}
-                right={<Text variant="label">{storeSummaryPrice(summary, product.category)}</Text>}
-                onPress={() => router.push({ pathname: '/produto/[id]', params: { id: product.id } })}
-              />
+              {summary ? (
+                <ListRow
+                  left={<CategoryIcon category={product.category} name={product.name} size={36} />}
+                  title={product.name}
+                  subtitle={withSeenCheaper(
+                    storeSummaryLine(summary, (id) => storeName.get(id), product.category),
+                    cheaper,
+                    product.category,
+                  )}
+                  right={<Text variant="label">{storeSummaryPrice(summary, product.category)}</Text>}
+                  onPress={open}
+                />
+              ) : (
+                <ListRow
+                  left={<CategoryIcon category={product.category} name={product.name} size={36} />}
+                  title={product.name}
+                  subtitle={NO_PRICE_YET}
+                  onPress={open}
+                />
+              )}
             </View>
           );
         }}

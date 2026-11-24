@@ -16,6 +16,12 @@ const mockAdd = jest.fn<(item: Record<string, unknown>) => Promise<{ id: string;
 const mockConsume = jest.fn<(ids: string[]) => Promise<void>>();
 
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
+// O congelador (data/freezer): sem ele no banco, como antes da migração.
+jest.mock('@/data/freezer', () => ({
+  useFreezer: () => ({ available: false, days: null }),
+  useFreezePantryItems: () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false }),
+  useThawPantryItems: () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false }),
+}));
 jest.mock('@/data/home', () => {
   const mutation = () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false });
   return {

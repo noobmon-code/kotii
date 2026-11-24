@@ -84,6 +84,63 @@ export function mergeCandidates(products: readonly ProductName[], distinct: read
   });
 }
 
+/**
+ * Os produtos que a casa marcou como diferentes de `productId`, em qualquer das duas colunas do par, que o catálogo
+ * tem (o par cujo outro produto não está em `products` fica de fora: catálogo velho, ou um produto que acabou de
+ * ser juntado ou excluído), por nome. [] sem pares (null: sem a tabela) ou sem produtos.
+ */
+export function distinctFrom(
+  productId: string,
+  pairs: readonly DistinctPair[] | null | undefined,
+  products: readonly ProductName[] | undefined,
+): ProductName[] {
+  if (!pairs || !products) return [];
+  const byId = new Map(products.map((product) => [product.id, product]));
+  const found = new Map<string, ProductName>();
+  for (const { product_a, product_b } of pairs) {
+    const otherId = product_a === productId ? product_b : product_b === productId ? product_a : null;
+    const other = otherId && otherId !== productId ? byId.get(otherId) : undefined;
+    if (other) found.set(other.id, other);
+  }
+  return [...found.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.id.localeCompare(b.id));
+}
+
+/**
+ * Excluir B apaga os pares dele (cascade). Pela regra do nome, um (A, B) guardado também esconde A de todo B′ com o
+ * mesmo similarNameKey de B (`differentByName`, só para pares 'parecido'); sem B e os pares dele, esses voltariam
+ * como sugestão. Devolve os pares (A, B′) a guardar para nada escondido voltar: os pares que aparecem sem B e não
+ * apareciam com ele, em que um lado tem o similarNameKey de B e o outro tem um par guardado com B, na ordem do banco
+ * (orderedPair), sem repetir. [] sem pares ou produtos, com B fora do catálogo, com o nome de B sem chave, ou com B
+ * sem par guardado (conferido primeiro: o caso comum não calcula nada).
+ */
+export function carriedDistinctPairs(
+  deletedId: string,
+  products: readonly ProductName[] | undefined,
+  pairs: readonly DistinctPair[] | null | undefined,
+): DistinctPair[] {
+  if (!pairs || !products) return [];
+  const own = pairs.filter((pair) => pair.product_a === deletedId || pair.product_b === deletedId);
+  if (!own.length) return [];
+  const deleted = products.find((product) => product.id === deletedId);
+  if (!deleted) return [];
+  const key = similarNameKey(deleted.name);
+  if (!key) return [];
+  const partners = new Set(own.map((pair) => (pair.product_a === deletedId ? pair.product_b : pair.product_a)));
+  const before = new Set(mergeCandidates(products, pairs).map(([a, b]) => pairKey(a.id, b.id)));
+  const after = mergeCandidates(
+    products.filter((product) => product.id !== deletedId),
+    pairs.filter((pair) => pair.product_a !== deletedId && pair.product_b !== deletedId),
+  );
+  const carried = new Map<string, DistinctPair>();
+  for (const [x, y] of after) {
+    const pair = pairKey(x.id, y.id);
+    if (before.has(pair) || carried.has(pair)) continue;
+    const hidden = (twin: ProductName, partner: ProductName) => similarNameKey(twin.name) === key && partners.has(partner.id);
+    if (hidden(x, y) || hidden(y, x)) carried.set(pair, orderedPair(x.id, y.id));
+  }
+  return [...carried.values()];
+}
+
 /** Quantas sugestões aparecem de cada vez: as outras vêm conforme estas são resolvidas. */
 export const MERGE_SUGGESTION_LIMIT = 3;
 
@@ -381,10 +438,10 @@ export const MERGE_PRODUCT_GONE = 'Um destes produtos não existe mais: alguém 
 export const MERGE_NO_ANSWER_TITLE = 'Sem resposta';
 export const MERGE_NO_ANSWER = 'A resposta não chegou, e pode ser que os produtos já tenham sido juntados. Confira os produtos antes de tentar de novo.';
 /**
- * Uma gravação (a nota, um item na lista) mandou um produto que outra pessoa da casa juntou com outro enquanto
- * esta tela estava aberta. A tela busca os produtos de novo; a pessoa confere e repete.
+ * Uma gravação (a nota, um item na lista) mandou um produto que outra pessoa da casa juntou com outro, ou excluiu,
+ * enquanto esta tela estava aberta. A tela busca os produtos de novo; a pessoa confere e repete.
  */
-export const PRODUCT_MERGED_AWAY = 'Um produto daqui foi juntado com outro. Confira e tente de novo.';
+export const PRODUCT_MERGED_AWAY = 'Um produto daqui foi juntado com outro ou excluído. Confira e tente de novo.';
 /**
  * Renomear para o nome de outro produto da casa (o banco não deixa dois com o mesmo nome, sem contar maiúsculas):
  * se forem a mesma coisa, o caminho é juntar os dois.
@@ -413,3 +470,24 @@ export function isProductRenamed(error: unknown): boolean {
 }
 /** O título do aviso depois de juntar. */
 export const MERGE_DONE_TITLE = 'Agora é um produto só';
+
+// ---------------------------------------------------------------------------
+// "Marcados como diferentes": desfazer o "São diferentes" na tela de cada produto
+
+export const DISTINCT_TITLE = 'Marcados como diferentes';
+/** A explicação acima da lista, com o nome do produto aberto. */
+export function distinctIntro(name: string): string {
+  return `A casa disse que "${name}" não é o mesmo produto que estes, e eles não aparecem juntos em "Parecem o mesmo produto". Desfazendo, a sugestão pode voltar.`;
+}
+export const UNDO_DISTINCT = 'Desfazer';
+/** O botão de cada linha, para quem ouve a tela: sem o par, vários "Desfazer" seguidos não dizem de quê. */
+export function undoDistinctLabel(name: string, other: string): string {
+  return `Desfazer o "são diferentes" de ${name} e ${other}`;
+}
+/** O que o leitor de tela ouve depois de desfazer: a linha saiu da tela. */
+export const DISTINCT_UNDONE = 'Desfeito. A sugestão de juntar pode voltar.';
+/** Desfazer não achou o par guardado: alguém já desfez, ou um dos dois produtos saiu. */
+export const DISTINCT_UNDO_GONE_TITLE = 'Já tinha saído';
+export const DISTINCT_UNDO_GONE =
+  'Esta marcação não estava mais guardada: alguém da casa já desfez, ou um dos dois produtos foi juntado com outro ou excluído.';
+export const UNDO_DISTINCT_FAILED_TITLE = 'Não deu para desfazer';

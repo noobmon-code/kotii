@@ -6,11 +6,45 @@
 // antes dela. Sem a função, a resposta é "não disponível" (null), nunca um
 // erro: as telas seguem como eram, sem a seção e a linha em Preços. O cartão
 // de Configurações pergunta à parte (shared_prices_available), sem buscar preço.
+//
+// A base aberta (o item que a casa nunca comprou: domain/openPrices) são
+// outras duas funções, shared_item_keys e shared_item_prices, lidas por
+// useOpenSharedPrices. As mesmas duas chamadas também trazem, para o item que
+// a casa já compra, as outras marcas que só outras casas compraram (a troca de
+// marca, domain/cheaperBrand): buscas e grupos a mais, depois dos da base
+// aberta e nunca no lugar deles. As chaves delas começam com 'sharedPrices', então toda
+// invalidação dos preços de outras casas (confirmar uma nota, juntar
+// produtos, os nomes dos mercados, o local da casa) vale para elas também, e
+// nada disso fica guardado no aparelho (PERSISTED não tem 'sharedPrices').
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMemo } from 'react';
 
-import type { SharedPrice } from '@/domain/sharedPrices';
+import {
+  brandGroupCalls,
+  brandItemsSignature,
+  brandKeyGroups,
+  brandKeyQuotes,
+  type BrandKeyQuote,
+  type BrandSearchItem,
+} from '@/domain/cheaperBrand';
+import {
+  openGroupArgument,
+  openGroupCalls,
+  openGroups,
+  openItemsSignature,
+  openQuotes,
+  openSearchPlan,
+  parseSharedItemKeys,
+  parseSharedItemPrices,
+  type OpenGroup,
+  type OpenKeysAnswer,
+  type OpenPricesAnswer,
+  type OpenSearchEntry,
+  type OpenSearchItem,
+} from '@/domain/openPrices';
+import { sharedWeekStart, type SharedPrice, type SharedQuote, type StoreCnpj } from '@/domain/sharedPrices';
 import { supabase, unwrap } from '@/lib/supabase';
 
 import { isMissingFunction } from './missingSchema';
@@ -32,9 +66,10 @@ const MAX_PAGES = 10;
 const PARALLEL_PAGES = 3;
 
 /**
- * Os preços de outras casas para os produtos desta: o mais recente de cada
- * produto, mercado e unidade, dos últimos 90 dias e nunca de nota confirmada
- * hoje (cada preço aparece a partir do dia seguinte ao da confirmação); dos
+ * Os preços de outras casas para os produtos desta: o da semana mais recente
+ * de cada produto, mercado e unidade, das últimas 13 semanas e nunca de nota
+ * confirmada nesta semana (cada preço aparece na segunda-feira depois da
+ * semana da confirmação), com a segunda-feira da semana da compra; dos
  * mercados da própria casa (`mine`) todos e, dos outros, os 5 mais baratos do
  * estado onde ela compra, com o tamanho da embalagem que o servidor leu na
  * nota do QR code (pack_*). null quando a função não existe no banco. Página
@@ -67,9 +102,11 @@ export async function fetchSharedPrices(db: SupabaseClient = supabase): Promise<
   // O preço é numeric no banco: garante número, venha como vier. "É mercado da casa" só com um sim de
   // verdade, e estado que não veio é "não se sabe". O tamanho da embalagem (pack_*) também: a função de antes da
   // coluna não o manda, e aí ele é "não se sabe" (null).
+  // A semana: o banco de antes da lista aberta ainda devolve o dia, e o app mostra a segunda-feira dele.
   return pages.flat().map((row) => ({
     ...row,
     unit_price: Number(row.unit_price),
+    seen_on: sharedWeekStart(row.seen_on),
     store_uf: row.store_uf ?? null,
     mine: row.mine === true,
     pack_unit: row.pack_unit ?? null,
@@ -106,4 +143,125 @@ export async function fetchSharedPricesAvailable(db: SupabaseClient = supabase):
  */
 export function useSharedPricesAvailable() {
   return useQuery({ queryKey: ['sharedPricesAvailable'], queryFn: () => fetchSharedPricesAvailable(), staleTime: Infinity });
+}
+
+// ---------------------------------------------------------------------------
+// A base aberta: o mesmo item, de qualquer marca, que a casa nunca comprou
+
+/**
+ * O passo 1 (shared_item_keys): as descrições da base que começam pelas palavras de cada busca. null quando a função
+ * não existe no banco (o app chegou antes da migração): sem preço aberto, sem erro. Uma resposta fora da forma é
+ * erro (a busca tenta de novo), nunca meia resposta.
+ */
+export async function fetchSharedItemKeys(entries: readonly OpenSearchEntry[], db: SupabaseClient = supabase): Promise<OpenKeysAnswer | null> {
+  const result = await db.rpc('shared_item_keys', { p_items: entries.map((entry) => ({ f: entry.first, s: entry.second, x: entry.extra })) });
+  if (result.error && isMissingFunction(result.error, 'shared_item_keys')) return null;
+  return parseSharedItemKeys(unwrap(result), entries);
+}
+
+/** O passo 2 (shared_item_prices): os preços de cada grupo de descrições. null quando a função não existe. */
+export async function fetchSharedItemPrices(
+  groups: readonly Pick<OpenGroup, 'signature' | 'keys' | 'weightOnly' | 'expected'>[],
+  db: SupabaseClient = supabase,
+): Promise<OpenPricesAnswer | null> {
+  const result = await db.rpc('shared_item_prices', { p_groups: groups.map(openGroupArgument) });
+  if (result.error && isMissingFunction(result.error, 'shared_item_prices')) return null;
+  return parseSharedItemPrices(unwrap(result), groups);
+}
+
+/**
+ * As respostas de várias buscas, juntas: os dados (a mesma lista de antes quando nada mudou, pela junção do
+ * TanStack, que reaproveita o que é igual) e se alguma está na primeira vez, a caminho.
+ */
+function joinAnswers<T>(results: readonly { data: T | undefined; isPending: boolean; fetchStatus: string }[]) {
+  return {
+    data: results.map((result) => result.data),
+    waiting: results.some((result) => result.isPending && result.fetchStatus === 'fetching'),
+  };
+}
+
+/** Os preços abertos não são em tempo real: dez minutos sem perguntar de novo. */
+const OPEN_STALE_MS = 10 * 60_000;
+const NO_QUOTES: ReadonlyMap<string, SharedQuote[]> = new Map();
+const NO_BRAND_QUOTES: ReadonlyMap<string, BrandKeyQuote[]> = new Map();
+
+/** O que a lista e o "Onde comprar" recebem da base aberta. */
+export interface OpenSharedPrices {
+  /** Por item da lista, os preços da base aberta (domain/openPrices, openQuotes). */
+  quotes: ReadonlyMap<string, readonly SharedQuote[]>;
+  /** Por item da lista, as marcas que só outras casas compraram (domain/cheaperBrand, brandKeyQuotes). */
+  brandQuotes: ReadonlyMap<string, readonly BrandKeyQuote[]>;
+  /** Alguma busca está na primeira vez, a caminho. Uma parada (sem internet), um erro ou a função que não existe não esperam. */
+  waiting: boolean;
+  /** Busca de novo o que está na tela (puxar para atualizar). */
+  refetch: () => Promise<void>;
+}
+
+/**
+ * A base aberta para os itens da lista (`items`, de openCandidates; null enquanto a lista não sabe quais são): as
+ * descrições (passo 1, uma busca por conjunto de palavras, de 40 em 40) e, delas, os preços dos grupos que o app
+ * decidiu serem o mesmo item (passo 2). As chaves são as assinaturas das buscas e dos grupos: duas listas com os
+ * mesmos itens dividem as respostas, e o "Onde comprar" não pede nada que a lista já pediu. Marcar um item no
+ * carrinho não refaz nada (o plano e os grupos se guardam pela assinatura dos itens e pelas respostas).
+ *
+ * `brandItems` (de brandSearchItems; null enquanto a lista não sabe quais são): os itens que já têm preço da casa e
+ * procuram outras marcas do mesmo item (domain/cheaperBrand). As buscas e os grupos deles vão depois dos da base
+ * aberta, que ficam exatamente como sem eles, e no máximo BRAND_MAX_CALLS chamadas a mais de cada passo; a busca ou
+ * o grupo igual a um da base aberta é o mesmo pedido.
+ */
+export function useOpenSharedPrices(
+  items: readonly OpenSearchItem[] | null,
+  stores: readonly StoreCnpj[] | undefined,
+  brandItems: readonly BrandSearchItem[] | null = null,
+): OpenSharedPrices {
+  const queryClient = useQueryClient();
+  const signature = openItemsSignature(items ?? []) + brandItemsSignature(brandItems);
+  const asking = items != null || brandItems != null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- a assinatura é o que muda a busca, não a lista em si.
+  const plan = useMemo(() => openSearchPlan(items ?? [], brandItems ?? []), [signature]);
+  const keyAnswers = useQueries({
+    queries: plan.calls.map((call) => ({
+      queryKey: ['sharedPrices', 'open', 'keys', call.map((entry) => entry.signature)],
+      queryFn: () => fetchSharedItemKeys(call),
+      enabled: asking,
+      staleTime: OPEN_STALE_MS,
+      placeholderData: keepPreviousData,
+    })),
+    combine: joinAnswers<OpenKeysAnswer | null>,
+  });
+  const keyData = keyAnswers.data;
+  const groups = useMemo(
+    () => openGroups(items ?? [], keyData.filter((answer): answer is OpenKeysAnswer => answer != null), plan),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- os itens entram pela assinatura (o plano é dela).
+    [plan, keyData],
+  );
+  const brandGroups = useMemo(
+    () => brandKeyGroups(brandItems ?? [], keyData.filter((answer): answer is OpenKeysAnswer => answer != null), plan),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- os itens entram pela assinatura (o plano é dela).
+    [plan, keyData],
+  );
+  const calls = useMemo(
+    () => [...openGroupCalls(groups), ...brandGroupCalls(brandGroups, new Set(groups.map((group) => group.signature)))],
+    [groups, brandGroups],
+  );
+  const priceAnswers = useQueries({
+    queries: calls.map((call) => ({
+      queryKey: ['sharedPrices', 'open', 'prices', call.map((group) => group.signature)],
+      queryFn: () => fetchSharedItemPrices(call),
+      enabled: asking,
+      staleTime: OPEN_STALE_MS,
+      placeholderData: keepPreviousData,
+    })),
+    combine: joinAnswers<OpenPricesAnswer | null>,
+  });
+  const priceData = priceAnswers.data;
+  const answered = useMemo(() => priceData.filter((answer): answer is OpenPricesAnswer => answer != null), [priceData]);
+  const quotes = useMemo(() => (stores ? openQuotes(answered, groups, stores) : NO_QUOTES), [groups, stores, answered]);
+  const brandQuotes = useMemo(
+    () => (stores && brandGroups.length ? brandKeyQuotes(answered, brandGroups, stores) : NO_BRAND_QUOTES),
+    [brandGroups, stores, answered],
+  );
+  const waiting = asking && (keyAnswers.waiting || priceAnswers.waiting);
+  const refetch = () => queryClient.refetchQueries({ queryKey: ['sharedPrices', 'open'], type: 'active' });
+  return { quotes, brandQuotes, waiting, refetch };
 }

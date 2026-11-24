@@ -18,6 +18,10 @@ export interface ItemHint {
   cost?: string;
   inPantry?: boolean;
   isNew?: boolean;
+  /** No mercado escolhido, a marca mais barata que entrou na conta ("Camil 1kg ×5", "outra marca"; domain/cheaperBrand). */
+  brand?: string;
+  /** O mesmo para o leitor de tela, depois do preço ("pela marca mais barata: Arroz Camil 1kg, 5 pacotes"). */
+  brandSpoken?: string;
 }
 
 /** Fotos dos itens: links das já enviadas (por caminho) e as que esperam internet (por item). */
@@ -132,7 +136,16 @@ function Tile({
     <Pressable
       accessibilityRole="checkbox"
       accessibilityState={{ checked: inCart }}
-      accessibilityLabel={[item.name, quantity, hint?.cost, isNew ? 'novo' : null, badge?.label, inPantry ? 'na despensa' : null, notes]
+      accessibilityLabel={[
+        item.name,
+        quantity,
+        hint?.cost,
+        hint?.cost ? hint.brandSpoken : null,
+        isNew ? 'novo' : null,
+        badge?.label,
+        inPantry ? 'na despensa' : null,
+        notes,
+      ]
         .filter(Boolean)
         .join(', ')}
       accessibilityHint={readOnly ? 'Segure para ver os detalhes' : inCart ? 'Toque para devolver à lista' : 'Toque para pôr no carrinho'}
@@ -173,6 +186,12 @@ function Tile({
       {hint?.cost ? (
         <Text variant="small" style={styles.center}>
           {hint.cost}
+        </Text>
+      ) : null}
+      {/* A marca mais barata do mercado escolhido, que entrou na conta: uma linha só, apagada. */}
+      {hint?.cost && hint.brand ? (
+        <Text variant="small" color="textMuted" numberOfLines={1} style={styles.center}>
+          {hint.brand}
         </Text>
       ) : null}
       {/* Pedido da casa depois que a pessoa saiu para as compras. */}

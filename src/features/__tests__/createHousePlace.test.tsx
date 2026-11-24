@@ -15,6 +15,7 @@ import {
   cepLookupFailedMessage,
   cepUnreachableMessage,
   HOUSE_PLACE_OPTIONAL,
+  HOUSE_PLACE_PRICES,
   HOUSE_PLACE_PRIVACY,
   HOUSE_PLACE_REMOVE,
   PLACE_NOT_SAVED_OFFLINE,
@@ -32,7 +33,9 @@ import { notify } from '@/ui/dialogs';
 // Entrar com um código não pergunta o lugar. O bem-vindo é o do começo novo (a chave ligada, como o app sai: o lugar
 // fechado numa linha, no passo do nome da casa) e o de antes (a chave desligada: um formulário só).
 
-const PINHEIROS: HouseholdLocation = { label: 'Pinheiros, São Paulo', latitude: -23.56, longitude: -46.69, source: 'cep' };
+// O lugar achado pelo CEP leva o estado (o código do IBGE): ele vai junto para a casa nova, e a lista acha os preços
+// dos mercados de lá.
+const PINHEIROS: HouseholdLocation = { label: 'Pinheiros, São Paulo', latitude: -23.56, longitude: -46.69, source: 'cep', state_code: '35' };
 const PERTO: HouseholdLocation = { label: 'Vila Madalena, São Paulo', latitude: -23.55, longitude: -46.69, source: 'gps' };
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
@@ -207,6 +210,7 @@ describe('bem-vindo (o começo novo): criar a casa com o lugar', () => {
     expect(field('CEP')).toBeUndefined();
     await press(HOUSE_PLACE_ROW.title);
     expect(page()).toContain(HOUSE_PLACE_PRIVACY);
+    expect(page()).toContain(HOUSE_PLACE_PRICES);
     expect(page()).toContain(HOUSE_PLACE_OPTIONAL);
     expect(field('CEP')).toBeDefined();
     await press('Criar casa');

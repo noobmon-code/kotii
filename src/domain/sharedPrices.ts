@@ -20,8 +20,13 @@
 // sempre é outra embalagem (o fardo ou a lata avulsa sob a mesma descrição). A
 // lista e o "Onde comprar" usam a mesma regra para o preço por unidade
 // (fitsHouseholdPack).
+// A semana: desde a lista aberta (20261124181819_shared_prices_open.sql),
+// nenhuma leitura devolve o dia da compra, só a segunda-feira da semana dela
+// (seen_on), e dentro de uma semana nada é escolhido pelo dia. O app mostra
+// "visto na semana de 9 nov" e, para um banco de antes (que ainda devolve
+// dias), passa o dia para a segunda-feira (sharedWeekStart).
 
-import { formatShortDate } from './dates';
+import { addDays, formatShortDate, isValidISODate } from './dates';
 import { formatBRL } from './money';
 import { eachPriceLabel, packSizeText } from './packCount';
 import { packageLabel, samePackageSize, sharedPackageSize, type PackageSize } from './packageSize';
@@ -70,7 +75,7 @@ export interface SharedPrice {
   store_uf: string | null;
   unit: string;
   unit_price: number;
-  /** O dia da compra em São Paulo (AAAA-MM-DD). */
+  /** A segunda-feira da semana da compra (AAAA-MM-DD, semana de São Paulo); o banco nunca devolve o dia. */
   seen_on: string;
   /** O mercado é um dos mercados da própria casa (pelo CNPJ). */
   mine: boolean;
@@ -114,7 +119,13 @@ export interface SharedPriceRow {
   mine: boolean;
   unit: string;
   unitPrice: number;
-  seenOn: string;
+  /** A segunda-feira da semana em que foi visto (AAAA-MM-DD): nunca o dia. */
+  seenWeek: string;
+  /**
+   * O tamanho da embalagem do preço por unidade, quando se sabe: o que o servidor leu na nota (sharedPack) ou, na
+   * base aberta, o que o app escolheu para o item (domain/openPrices). null quando não se sabe.
+   */
+  pack: PackageSize | null;
 }
 
 /** Quantas linhas cada lista da tela do produto mostra antes do "Ver mais", e quantas a mais a cada toque. */
@@ -126,7 +137,7 @@ export const SHARED_PRICES_MINE = 'Nos seus mercados';
 export const SHARED_PRICES_OTHERS = 'Em outros mercados';
 /** Sempre junto dos preços de outras casas. */
 export const SHARED_PRICES_NOTICE =
-  'Preços de notas de outras casas que usam o Kotii, sem dizer de quem. Não são em tempo real: cada preço vale para o dia em que foi visto.';
+  'Preços de notas de outras casas que usam o Kotii, sem dizer de quem. Não são em tempo real: cada preço vale para a semana em que foi visto.';
 export const SHARED_PRICES_MORE = 'Ver mais';
 /** O que o leitor de tela diz em cada "Ver mais": as duas listas ficam na mesma tela, cada uma com o seu. */
 export const SHARED_PRICES_MORE_LABEL = {
@@ -136,9 +147,9 @@ export const SHARED_PRICES_MORE_LABEL = {
 
 /** O que a casa lê, em Configurações, sobre o que ela mesma compartilha: a linha (fechada) e o texto (aberta). */
 export const SHARING_TITLE = 'Preços compartilhados';
-export const SHARING_SUMMARY = 'Os preços das notas vão para uma base comum, sem dizer de qual casa';
+export const SHARING_SUMMARY = 'Os preços das notas vão para uma base aberta a todas as casas, sem dizer de qual casa';
 export const SHARING_ABOUT =
-  'Os preços das notas lidas pelo app (mercado, item, código de barras, tamanho da embalagem, preço e dia) entram numa base comum, sem dizer de qual casa são, para que outras casas vejam quanto cada coisa custa nos mercados. Ficam de fora as notas digitadas à mão, remédios e compras em farmácia, suplementos, primeiros socorros, itens de higiene pessoal e o que o app não reconheceu; o que você corrige na revisão também fica na casa. Cada preço aparece para as outras casas a partir do dia seguinte.';
+  'Os preços das notas lidas pelo app (mercado, item, código de barras, tamanho da embalagem, preço e dia da compra) entram numa base aberta a todas as casas do Kotii, sem dizer de qual casa são: qualquer casa vê quanto cada coisa custa nos mercados do estado onde compra (o das notas lidas ou o do local da casa, em Clima da casa), também o que ela nunca comprou. Ninguém vê o dia da compra: cada preço aparece com a semana, a partir da segunda-feira depois da semana em que a nota foi confirmada. Ficam de fora as notas digitadas à mão, remédios e compras em farmácia, suplementos, primeiros socorros, itens de higiene pessoal e o que o app não reconheceu; o que você corrige na revisão também fica na casa.';
 
 /** Código do IBGE de cada estado (os dois primeiros dígitos da chave de acesso da nota) -> sigla. */
 const STATE_BY_CODE: Record<string, string> = {
@@ -174,6 +185,29 @@ const STATE_BY_CODE: Record<string, string> = {
 /** "SP" para o código 35; null para código que não é de estado nenhum, ou sem código. */
 export function stateAbbreviation(code: string | null | undefined): string | null {
   return (code && STATE_BY_CODE[code]) || null;
+}
+
+const CODE_BY_STATE = new Map(Object.entries(STATE_BY_CODE).map(([code, abbreviation]) => [abbreviation, code]));
+
+/**
+ * O código do IBGE de um estado, para guardar com o local da casa (household_location.state_code): a sigla do
+ * ViaCEP e da BrasilAPI ("SP") ou o código ISO do OpenStreetMap ("BR-SP"), em qualquer caixa. null para o resto,
+ * também o código de outro país ("US-AL" não é Alagoas).
+ */
+export function stateCode(value: string | null | undefined): string | null {
+  const text = (value ?? '').trim().toUpperCase();
+  const abbreviation = /^[A-Z]{2}$/.test(text) ? text : /^BR-[A-Z]{2}$/.test(text) ? text.slice(3) : null;
+  return (abbreviation && CODE_BY_STATE.get(abbreviation)) || null;
+}
+
+/**
+ * A segunda-feira da semana de uma data (AAAA-MM-DD), pela conta nas datas (a semana de segunda a domingo, como
+ * shared_week no banco). Um texto que não é data volta como veio.
+ */
+export function sharedWeekStart(iso: string): string {
+  if (!isValidISODate(iso)) return iso;
+  const weekday = new Date(`${iso}T00:00:00Z`).getUTCDay();
+  return addDays(iso, -((weekday + 6) % 7));
 }
 
 /** São Paulo está 3 h atrás do UTC o ano todo (sem horário de verão desde 2019). */
@@ -228,7 +262,8 @@ const round4 = (n: number) => Math.round(n * 10000) / 10000;
 /**
  * Os preços de outras casas de UM produto, prontos para a tela. Unidades não
  * se misturam: por g vira por kg e por ml vira por litro (pricePerBase), e
- * cada mercado fica com uma linha por unidade, a mais recente. Na frente vêm
+ * cada mercado fica com uma linha por unidade e tamanho da embalagem (o que o
+ * servidor leu, sharedPack), a mais recente. Na frente vêm
  * as da unidade principal do produto (a mesma escolha do resumo de preços:
  * a que tem mais mercados entre os preços da casa; sem preço da casa, entre
  * estes), do mais barato para o mais caro; no empate, o visto por último.
@@ -243,21 +278,13 @@ export function sharedPriceRows(
   const ownName = new Map(stores.map((store) => [store.cnpj, store.name]));
   const latest = new Map<string, SharedPriceRow>();
   for (const price of shared) {
-    const base = pricePerBase(price.unit_price, price.unit);
-    const mine = price.mine === true;
-    // De volta às 4 casas do banco: 0,0049 x 1000 dá 4,8999999999999995.
-    const row: SharedPriceRow = {
-      storeCnpj: price.store_cnpj,
-      storeName: (mine && ownName.get(price.store_cnpj)) || price.store_name,
-      state: mine ? null : stateAbbreviation(price.store_uf),
-      mine,
-      unit: base.unit,
-      unitPrice: round4(base.unitPrice),
-      seenOn: price.seen_on,
-    };
-    const key = row.storeCnpj + SEPARATOR + row.unit;
+    const row = sharedRowOf(price, ownName.get(price.store_cnpj));
+    // Por tamanho também, como compareSharedPrices: a caixa de 5 kg e o pacote de 1 kg do mesmo produto no mesmo
+    // mercado são dois preços (a troca de marca, domain/cheaperBrand, compara os dois). A conta de hoje pega, de cada
+    // mercado, o mesmo de antes (newestShared: a semana mais nova, depois o mais barato).
+    const key = row.storeCnpj + SEPARATOR + row.unit + SEPARATOR + (row.pack?.label ?? '');
     const seen = latest.get(key);
-    if (!seen || row.seenOn > seen.seenOn || (row.seenOn === seen.seenOn && row.unitPrice < seen.unitPrice)) latest.set(key, row);
+    if (!seen || newerSharedRow(row, seen)) latest.set(key, row);
   }
   const rows = [...latest.values()];
   const inBase = own.map((price) => ({ store_id: price.store_id, ...toBase(price) }));
@@ -268,10 +295,39 @@ export function sharedPriceRows(
       rank(a.unit) - rank(b.unit) ||
       a.unit.localeCompare(b.unit) ||
       a.unitPrice - b.unitPrice ||
-      b.seenOn.localeCompare(a.seenOn) ||
+      b.seenWeek.localeCompare(a.seenWeek) ||
       a.storeName.localeCompare(b.storeName, 'pt-BR') ||
       a.storeCnpj.localeCompare(b.storeCnpj),
   );
+}
+
+/**
+ * Uma linha de outra casa pronta para a tela e para a lista: por g vira por kg e por ml por litro (pricePerBase, de
+ * volta às 4 casas do banco: 0,0049 x 1000 dá 4,8999999999999995), o mercado da casa com o nome que ela conhece
+ * (`ownName`), os outros com o nome da nota e a sigla do estado, a semana e o tamanho que o servidor leu (sharedPack).
+ * A mesma para o caminho do produto (sharedPriceRows) e para a base aberta (domain/openPrices).
+ */
+export function sharedRowOf(price: SharedPrice | Omit<SharedPrice, 'product_id'>, ownName?: string | null): SharedPriceRow {
+  const base = pricePerBase(price.unit_price, price.unit);
+  const mine = price.mine === true;
+  return {
+    storeCnpj: price.store_cnpj,
+    storeName: (mine && ownName) || price.store_name,
+    state: mine ? null : stateAbbreviation(price.store_uf),
+    mine,
+    unit: base.unit,
+    unitPrice: round4(base.unitPrice),
+    seenWeek: sharedWeekStart(price.seen_on),
+    pack: base.unit === 'un' ? sharedPack(price) : null,
+  };
+}
+
+/**
+ * Entre duas linhas do mesmo mercado e unidade, a que fica: a da semana mais nova; na mesma semana, a mais barata
+ * (o dia nunca escolhe, como no banco).
+ */
+export function newerSharedRow(a: Pick<SharedPriceRow, 'seenWeek' | 'unitPrice'>, b: Pick<SharedPriceRow, 'seenWeek' | 'unitPrice'>): boolean {
+  return a.seenWeek > b.seenWeek || (a.seenWeek === b.seenWeek && a.unitPrice < b.unitPrice);
 }
 
 function toBase(price: { unit: string; unit_price: number }): { unit: string; unit_price: number } {
@@ -357,8 +413,11 @@ export function sharedPack(row: Pick<SharedPrice, 'unit' | 'pack_unit' | 'pack_a
 export const ownSharedPack = (row: Pick<OwnPrice, 'raw_description' | 'pack_count'>): PackageSize | null =>
   (row.raw_description ? sharedPackageSize(row.raw_description) : null) ?? answeredPack(row.pack_count);
 
-/** Os dois preços a no máximo 2,5 vezes um do outro (inclusive). */
-export const withinBand = (a: number, b: number) => a > 0 && b > 0 && a <= b * SHARED_PRICE_BAND && b <= a * SHARED_PRICE_BAND;
+/**
+ * Os dois preços a no máximo `limit` vezes um do outro (inclusive): 2,5 (SHARED_PRICE_BAND) entre o preço de fora e o
+ * da casa; 2 (BRAND_PRICE_BAND, domain/cheaperBrand) entre outra marca e o preço por kg que a casa pagou.
+ */
+export const withinBand = (a: number, b: number, limit: number = SHARED_PRICE_BAND) => a > 0 && b > 0 && a <= b * limit && b <= a * limit;
 
 /**
  * Os preços por unidade da casa com que um preço por unidade de fora se compara: os de mesmo tamanho, quando ele diz
@@ -427,7 +486,7 @@ export function compareSharedPrices(
       mine,
       unit: shownUnit,
       unitPrice,
-      seenOn: price.seen_on,
+      seenWeek: sharedWeekStart(price.seen_on),
       pack,
       packagePrice: converted ? roundPrice(price.unit_price) : null,
       comparedTo: near.length ? Math.min(...near) : null,
@@ -435,7 +494,7 @@ export function compareSharedPrices(
     };
     const key = [row.storeCnpj, row.unit, pack?.label ?? ''].join(SEPARATOR);
     const seen = latest.get(key);
-    if (!seen || row.seenOn > seen.seenOn || (row.seenOn === seen.seenOn && row.unitPrice < seen.unitPrice)) latest.set(key, row);
+    if (!seen || newerSharedRow(row, seen)) latest.set(key, row);
   }
   const rank = (shown: string) => (shown === unit ? -1 : SHOWN_ORDER.includes(shown) ? SHOWN_ORDER.indexOf(shown) : SHOWN_ORDER.length);
   const rows = [...latest.values()].sort(
@@ -444,7 +503,7 @@ export function compareSharedPrices(
       rank(a.unit) - rank(b.unit) ||
       a.unit.localeCompare(b.unit) ||
       a.unitPrice - b.unitPrice ||
-      b.seenOn.localeCompare(a.seenOn) ||
+      b.seenWeek.localeCompare(a.seenWeek) ||
       a.storeName.localeCompare(b.storeName, 'pt-BR') ||
       a.storeCnpj.localeCompare(b.storeCnpj) ||
       (a.pack?.label ?? '').localeCompare(b.pack?.label ?? ''),
@@ -506,7 +565,7 @@ export function cheaperSharedPrice(compared: ComparedSharedPrices): ShownSharedP
   const inMyStores = cheaper.filter((row) => row.mine);
   const candidates = inMyStores.length ? inMyStores : cheaper;
   if (!candidates.length) return null;
-  return candidates.reduce((a, b) => (b.unitPrice < a.unitPrice || (b.unitPrice === a.unitPrice && b.seenOn > a.seenOn) ? b : a));
+  return candidates.reduce((a, b) => (b.unitPrice < a.unitPrice || (b.unitPrice === a.unitPrice && b.seenWeek > a.seenWeek) ? b : a));
 }
 
 /**
@@ -546,9 +605,9 @@ export function sharedStoreLabel(row: Pick<SharedPriceRow, 'storeName' | 'state'
   return row.state ? `${row.storeName} (${row.state})` : row.storeName;
 }
 
-/** "visto em 10 out", com o ano quando não é o de agora. */
-export function seenLabel(row: Pick<SharedPriceRow, 'seenOn'>, referenceYear?: number): string {
-  return `visto em ${formatShortDate(row.seenOn, referenceYear)}`;
+/** "visto na semana de 9 nov", com o ano quando não é o de agora: a segunda-feira da semana, nunca o dia. */
+export function seenLabel(row: Pick<SharedPriceRow, 'seenWeek'>, referenceYear?: number): string {
+  return `visto na semana de ${formatShortDate(row.seenWeek, referenceYear)}`;
 }
 
 /**
@@ -563,16 +622,16 @@ export function sharedPackDetail(row: SharedPriceRow & Partial<ShownSize>, categ
   return row.packagePrice != null ? `${words} por ${formatBRL(row.packagePrice)}` : words;
 }
 
-/** O subtítulo da linha na tela do produto: "5 kg por R$ 22,90 · visto em 15 nov", ou só "visto em 15 nov". */
+/** O subtítulo da linha na tela do produto: "5 kg por R$ 22,90 · visto na semana de 9 nov", ou só "visto na semana de 9 nov". */
 export function sharedRowDetail(row: SharedPriceRow & Partial<ShownSize>, referenceYear?: number, category?: string | null): string {
   const detail = sharedPackDetail(row, category);
   return detail ? `${detail} · ${seenLabel(row, referenceYear)}` : seenLabel(row, referenceYear);
 }
 
 /**
- * A linha de um preço de outra casa: "R$ 22,90/un · Atacadão Mooca · visto em 10 out", com o tamanho quando se sabe
- * ("R$ 4,58/kg · 5 kg por R$ 22,90 · SUPER OUTRO (SP) · visto em 15 nov"). O nome do mercado vai como veio, sem
- * artigo na frente.
+ * A linha de um preço de outra casa: "R$ 22,90/un · Atacadão Mooca · visto na semana de 9 nov", com o tamanho quando
+ * se sabe ("R$ 4,58/kg · 5 kg por R$ 22,90 · SUPER OUTRO (SP) · visto na semana de 9 nov"). O nome do mercado vai como
+ * veio, sem artigo na frente.
  */
 export function describeSharedPrice(row: SharedPriceRow & Partial<ShownSize>, referenceYear?: number, category?: string | null): string {
   return [sharedPriceLabel(row, category), sharedPackDetail(row, category), sharedStoreLabel(row), seenLabel(row, referenceYear)]
@@ -581,23 +640,40 @@ export function describeSharedPrice(row: SharedPriceRow & Partial<ShownSize>, re
 }
 
 /**
- * A linha em Preços, embaixo do produto: "Visto por R$ 21,90/un · Atacadão Mooca · 10 out, em outra casa", com o
- * tamanho entre parênteses quando se sabe ("Visto por R$ 4,58/kg (5 kg por R$ 22,90) · …").
+ * A linha em Preços, embaixo do produto: "Visto por R$ 21,90/un · Atacadão Mooca · semana de 9 nov, em outra casa",
+ * com o tamanho entre parênteses quando se sabe ("Visto por R$ 4,58/kg (5 kg por R$ 22,90) · …").
  */
 export function cheaperSharedHint(row: SharedPriceRow & Partial<ShownSize>, referenceYear?: number, category?: string | null): string {
   const detail = sharedPackDetail(row, category);
-  return `Visto por ${sharedPriceLabel(row, category)}${detail ? ` (${detail})` : ''} · ${sharedStoreLabel(row)} · ${formatShortDate(row.seenOn, referenceYear)}, em outra casa`;
+  return `Visto por ${sharedPriceLabel(row, category)}${detail ? ` (${detail})` : ''} · ${sharedStoreLabel(row)} · semana de ${formatShortDate(row.seenWeek, referenceYear)}, em outra casa`;
+}
+
+/**
+ * O preço da base aberta (domain/openPrices) para um item que a casa nunca comprou: como a conta chegou a ele. Os
+ * detalhes do item e as linhas do "Onde comprar" dizem isso.
+ */
+export interface OpenPrice {
+  /** O tamanho que o app escolheu para a lista que não disse ("5 kg"); só nas linhas por unidade. */
+  size: string | null;
+  /** Como: o único tamanho visto, o mais visto, ou um dos mais vistos (empate). */
+  sizeBy: 'only' | 'most' | 'tie' | null;
+  /** O preço do pacote virou preço por kg ou litro, para o item pedido em peso ou volume: aquele pacote ("5 kg"). */
+  fromPackage: string | null;
+  /** Nesse caso, quantos pacotes inteiros cumprem o que a lista pede; null quando a conta usa uma fração do pacote. */
+  packages: number | null;
 }
 
 /**
  * Um preço de outra casa pronto para a conta da lista: o de sharedPriceRows
  * (por kg, por litro ou por unidade, sem o que a casa já sabe), com o produto
  * e o mercado da casa que tem esse CNPJ. `storeId` null: o mercado não é da
- * casa (vai para "Em outros mercados", no "Onde comprar").
+ * casa (vai para "Em outros mercados", no "Onde comprar"). `productId` null:
+ * é da base aberta (o item que a casa nunca comprou), e `open` diz como.
  */
 export interface SharedQuote extends SharedPriceRow {
-  productId: string;
+  productId: string | null;
   storeId: string | null;
+  open?: OpenPrice;
 }
 
 /**

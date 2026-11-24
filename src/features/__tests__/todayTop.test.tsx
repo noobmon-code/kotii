@@ -10,7 +10,7 @@ import TodayScreen from '@/app/(tabs)/index';
 import type { HouseholdLocation } from '@/data/weather';
 import { todayISO } from '@/domain/dates';
 import { defaultSky } from '@/domain/sky';
-import { ALL_CLEAR_TITLE, MARKET_LIST_OFFLINE, MARKET_LIST_SHORTCUT } from '@/domain/today';
+import { ALL_CLEAR_TITLE, MARKET_LIST_OFFLINE, MARKET_LIST_SHORTCUT, SUGGESTION_TITLES } from '@/domain/today';
 import type { Forecast, WeatherHour } from '@/domain/weather';
 import { SkyHeader, washStops } from '@/features/SkyHeader';
 import { Columns } from '@/ui/desktop';
@@ -37,6 +37,7 @@ jest.mock('@/data/weather', () => ({
     return { data: location ? mockWeather.forecast : undefined };
   },
   useRefreshWeather: () => () => undefined,
+  useFillHouseState: () => undefined,
 }));
 jest.mock('@/data/home', () => ({
   toSchedules: () => [],
@@ -118,7 +119,14 @@ jest.mock('@/lib/supabase', () => ({ errorMessage: (error: unknown) => String(er
 const mockNotify = jest.fn();
 jest.mock('@/ui/dialogs', () => ({ notify: (...args: unknown[]) => mockNotify(...args) }));
 jest.mock('@/ui/iconArt', () => ({ IconArt: () => null }));
-jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
+jest.mock('expo-router', () => ({ router: { push: jest.fn() }, useFocusEffect: () => undefined }));
+// Os prazos de troca: antes da migração (null) por padrão; o caso do computador dá uma escova na hora.
+const mockLongCycle = { settings: null as unknown, history: null as unknown };
+jest.mock('@/data/longCycle', () => ({
+  useLongCycleSettings: () => ({ data: mockLongCycle.settings, fetchStatus: 'idle', refetch: jest.fn() }),
+  useLongCycleHistory: () => ({ data: mockLongCycle.history, fetchStatus: 'idle', refetch: jest.fn() }),
+  useSetLongCycleSetting: () => ({ mutateAsync: jest.fn(), isPending: false }),
+}));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 
@@ -147,6 +155,8 @@ async function mount() {
 }
 
 beforeEach(() => {
+  mockLongCycle.settings = null;
+  mockLongCycle.history = null;
   mockWeather.location = null;
   mockWeather.forecast = undefined;
   mockWeather.forecastFor = [];
@@ -321,6 +331,24 @@ describe('a tela Hoje no computador', () => {
     expect(main.findAllByType(Tile)).toHaveLength(0);
     expect(side.findAllByType(Tile).map((tile) => tile.props.label)).toEqual(['Escanear', MARKET_LIST_SHORTCUT, 'Criar nova tarefa']);
     expect(rawText(side)).not.toContain(ALL_CLEAR_TITLE);
+  });
+
+  it('"Hora de trocar" fica com as sugestões, na coluna do lado', async () => {
+    await desktop();
+    mockLongCycle.settings = [];
+    mockLongCycle.history = [
+      { name: 'Escova de dente', category: 'higiene', productId: null, quantity: 1, unit: 'un', at: '2020-01-01T12:00:00.000Z', source: 'list' },
+    ];
+    // Comprada há 3 meses e meio: na hora (de 3 meses), longe do dobro.
+    const bought = new Date();
+    bought.setDate(bought.getDate() - 105);
+    (mockLongCycle.history as { at: string }[])[0].at = bought.toISOString();
+    await mount();
+    const row = renderer!.root.findByType(Columns).findAll((node) => (node.type as unknown) === 'View')[0];
+    const [main, side] = row.children as ReactTestInstance[];
+    expect(rawText(side)).toContain(SUGGESTION_TITLES.longCycle);
+    expect(rawText(side)).toContain('Escova de dente');
+    expect(rawText(main)).not.toContain(SUGGESTION_TITLES.longCycle);
   });
 
   it('o topo (o véu, a saudação e "Ver a agenda") continua em cima das duas colunas', async () => {

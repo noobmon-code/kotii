@@ -65,22 +65,56 @@ describe('termos de uso', () => {
   });
 
   it('os preços compartilhados: o tamanho da embalagem lido na descrição vai; quanto você levou e o que você responde, não', () => {
-    expect(TERMS_VERSION).toBe('2026-11-22');
+    expect(TERMS_VERSION).toBe('2026-11-24');
     const prices = section('Preços compartilhados');
     expect(prices).toContain('o tamanho da embalagem que o app leu na descrição (só na nota lida pelo QR code, quando ela diz, como "5 kg" ou "12 x 350 ml")');
     expect(prices).toContain('a quantidade que você levou');
     expect(prices).toContain('quantos vêm na embalagem, quando você responde');
   });
 
-  it('não promete o que não cumpre: no dia em que só uma casa comprou num mercado, os preços contam o que ela comprou', () => {
+  it('a marca mais barata: a base também compara as marcas do item sem marca, por kg ou litro, e a de fora é "outra marca"', () => {
+    expect(TERMS_VERSION).toBe('2026-11-24');
+    const prices = section('Preços compartilhados');
+    expect(prices).toContain('No item sem marca da lista, com o mercado escolhido e no "Onde comprar"');
+    expect(prices).toContain('por kg ou por litro');
+    expect(prices).toContain('aparece como "outra marca"');
+  });
+
+  it('não promete o que não cumpre: na semana em que só uma casa comprou num mercado, os preços contam o que ela comprou', () => {
     const prices = section('Preços compartilhados');
     expect(prices).toContain('Ninguém vê de qual casa veio um preço');
     expect(prices).not.toContain('Não entra nada que identifique você');
-    // O risco é por dia (a base junta as casas só no mesmo mercado, item e dia de compra), não só no mercado
-    // em que nenhuma outra casa compra: um mercado com outras casas em outros dias também entra.
-    expect(prices).toContain('num dia em que só a sua casa, entre as que usam o Kotii, comprou num mercado');
+    // O risco é por semana (as leituras mostram só a semana da compra, e a base junta as casas no mesmo mercado,
+    // item e dia de compra), não só no mercado em que nenhuma outra casa compra: um mercado com outras casas em
+    // outras semanas também entra.
+    expect(prices).toContain('numa semana em que só a sua casa, entre as que usam o Kotii, comprou num mercado');
     expect(prices).not.toContain('num mercado em que só a sua casa usa o Kotii');
-    expect(prices).toContain('pode deduzir o que foi comprado lá naquele dia');
+    expect(prices).toContain('deduzir o que foi comprado lá naquela semana');
+    expect(prices).not.toContain('naquele dia');
+  });
+
+  it('a lista aberta: toda casa vê toda a base do estado, a semana e não o dia, e as descrições chegam ao app de quem procura', () => {
+    const prices = section('Preços compartilhados');
+    for (const part of [
+      'base de preços aberta a todas as casas',
+      'também os de itens que ela nunca comprou',
+      'o dia da compra, que a base guarda mas não mostra a ninguém',
+      'ninguém vê o dia da compra, só a semana',
+      'Cada preço só aparece na segunda-feira depois da semana em que a nota foi confirmada',
+      'a descrição padronizada dos itens da base chega ao app de quem procura',
+      'a descrição que tem um número comprido (como um CPF ou um telefone) não sai da base',
+      'o do local da casa, em Configurações → Clima da casa',
+      'cada um aparece com a semana em que foi visto',
+      // A limpeza diária (forget_old_shared_prices): o que as leituras não devolvem mais sai da base.
+      'A base apaga sozinha, todo dia, o preço de uma compra de antes das últimas 13 semanas inteiras',
+    ]) {
+      expect(prices).toContain(part);
+    }
+    expect(section('Apagar dados e sair')).toContain('saem sozinhos, como todos, quando a semana da compra fica antes das últimas 13 semanas inteiras');
+    // O local da casa agora também guarda o estado, e o texto diz para quê.
+    const stored = section('O que o app guarda e para quê');
+    expect(stored).toContain('o nome do bairro e o estado');
+    expect(stored).toContain('O estado também serve para mostrar os preços de outras casas do mesmo estado');
   });
 
   it('diz que guarda o aceite destes termos: quais versões e quando', () => {
@@ -203,19 +237,43 @@ describe('termos de uso', () => {
     expect(names).toContain('O nome que a sua casa der a um mercado vale para ela acima do nome padrão');
   });
 
-  it('a foto de produto no "Escanear" é um envio novo à IA: o texto diz, e o aviso volta para todo mundo', () => {
-    // O tamanho da embalagem nos preços compartilhados (22/11/2026) mudou só o texto: o aceite segue o de 14/11.
-    expect(TERMS_ACCEPT_VERSION).toBe('2026-11-14');
-    // Quem aceitou a versão de antes (a do código de barras) vê o aviso de novo: agora a foto de produto ou de
-    // prateleira também vai para a IA.
+  it('a lista aberta de preços (24/11/2026) é uma mudança importante: o aviso volta para todo mundo', () => {
+    // O que se compartilha entre casas e quem vê mudou (toda casa vê toda a base do estado, e as descrições chegam ao
+    // app de quem procura): o aceite é o da mesma data do texto.
+    expect(TERMS_ACCEPT_VERSION).toBe('2026-11-24');
+    expect(TERMS_VERSION).toBe('2026-11-24');
+    expect(termsNotice(['2026-11-14'])).toBe('mudou');
+    expect(termsNotice(['2026-11-24'])).toBeNull();
+  });
+
+  it('a foto de produto no "Escanear" é um envio novo à IA: o texto diz', () => {
+    // Quem aceitou a versão de antes (a do código de barras) via o aviso de novo: a foto de produto ou de prateleira
+    // também vai para a IA.
     expect(termsNotice(['2026-10-24'])).toBe('mudou');
-    expect(termsNotice(['2026-11-14'])).toBeNull();
     const ai = section('Inteligência artificial');
     expect(ai).toContain('dizer o que há na foto que você tira no "Escanear" (uma nota, um produto ou uma prateleira com vários produtos)');
     // O que a foto pode mostrar, que ela não fica guardada, e que nada entra sem o toque.
     expect(ai).toContain('Essa foto pode mostrar o que há na sua casa, então enquadre só os produtos');
     expect(ai).toContain('Ela não fica guardada: é apagada logo depois de lida');
     expect(ai).toContain('só entram na despensa ou na lista quando você toca para guardar');
+  });
+
+  it('os prazos de troca da casa são dado guardado, mas não mudam o que é compartilhado nem o que vai para a IA', () => {
+    // A mesma data de excluir produto e da lista aberta de preços (2026-11-24, o dia do merge): as frases saem juntas.
+    // Os prazos de troca, sozinhos, não trariam o aviso de volta; quem traz é a lista aberta.
+    expect(TERMS_VERSION).toBe('2026-11-24');
+    expect(termsNotice([TERMS_ACCEPT_VERSION])).toBeNull();
+    const stored = section('O que o app guarda e para quê');
+    expect(stored).toContain('despensa (com o que foi para o congelador), cardápio, os prazos de troca dos itens da casa (escova de dente, refil do filtro…), tarefas e pontos');
+  });
+
+  it('excluir o produto que não está em nenhuma nota é uma mudança de texto: a versão muda, e o aceite que volta o aviso é o da lista aberta', () => {
+    expect(TERMS_VERSION).toBe('2026-11-24');
+    // Excluir produto, sozinho, não traria o aviso de volta: o aceite de 2026-11-24 é o da lista aberta de preços.
+    expect(termsNotice(['2026-11-24'])).toBeNull();
+    const erase = section('Apagar dados e sair');
+    expect(erase).toContain('gás, água e ração, e os produtos que não estão em nenhuma nota.');
+    expect(erase).toContain('e os produtos que estão em alguma nota, os mercados e os históricos');
   });
 
   it('manda a pessoa para Configurações (a aba "Ajustes"), não mais para a aba Família, que deixou de existir', () => {

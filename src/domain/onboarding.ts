@@ -70,7 +70,10 @@ export const CHOICE_INVITE = { title: 'Sim, tenho um convite', subtitle: 'Use o 
 export const HOUSE_TITLE = 'Dê um nome para a casa';
 export const HOUSE_PLACEHOLDER = 'Casa da família Silva';
 /** A linha que abre a parte "Onde fica a casa": fechada de começo, porque é opcional. */
-export const HOUSE_PLACE_ROW = { title: 'Onde fica a casa (opcional)', subtitle: 'Para o céu da tela Hoje seguir o tempo daí.' } as const;
+export const HOUSE_PLACE_ROW = {
+  title: 'Onde fica a casa (opcional)',
+  subtitle: 'Para o céu da tela Hoje seguir o tempo daí e a lista achar preços do seu estado.',
+} as const;
 export const HOUSE_CREATE = 'Criar casa';
 
 export const CODE_TITLE = 'Digite o código do convite';
