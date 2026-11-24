@@ -781,9 +781,11 @@ export const PACK_COUNT_NOT_READY = 'Ainda não dá para guardar quantos vêm na
 /**
  * Quantos vêm na embalagem do item (domain/packCount), a resposta da revisão. Vale também na nota confirmada:
  * não muda o valor, a quantidade nem a despensa, só o que o preço diz (cada ovo). Vai o produto que a tela mostrava
- * na linha (`productId`, null sem produto): na nota confirmada a linha pode ter passado para outro produto em outro
- * aparelho ("Trocar produto", que tira a contagem do que não é ovo), e a contagem dos ovos dividiria o preço dele no
- * histórico e na lista. `saved` falso é o item que saiu da nota, ou mudou de produto, em outro aparelho.
+ * na linha (`productId`, null sem produto): na nota confirmada a linha pode ter passado para outro produto ("Trocar
+ * produto", que tira a contagem do que não é ovo), em outro aparelho ou neste, pela troca desta tela cuja nota relida
+ * ainda não voltou ou cuja resposta se perdeu, e a contagem dos ovos dividiria o preço dele no histórico e na lista.
+ * `saved` falso é o item que saiu da nota, ou mudou de produto, em outro aparelho ou por essa troca deste:
+ * PACK_LINE_CHANGED não culpa outro aparelho.
  */
 export function useSetReceiptItemPack(receiptId: string) {
   const queryClient = useQueryClient();
