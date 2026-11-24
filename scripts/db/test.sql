@@ -11314,7 +11314,7 @@ begin
   assert (select count(*) from public.product_store_codes) = 2 and (select count(*) from public.product_barcodes) = 2, 'nothing was lost';
 
   -- A banana tem linhas de nota: um delete direto pela API esbarra no gatilho products_keep_receipt_lines
-  -- (20261122100000_delete_product.sql), e nada sai.
+  -- (20261123130646_delete_product.sql), e nada sai.
   begin
     delete from public.products where id = p_banana;
     raise exception 'FAIL: a product with receipt lines left by a direct delete';
