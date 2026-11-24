@@ -71,6 +71,12 @@ jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
 jest.mock('@/features/finance/PayerChips', () => ({ PayerChips: () => null }));
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));
+// O congelador (data/freezer): sem ele no banco, como antes da migração.
+jest.mock('@/data/freezer', () => ({
+  useFreezer: () => ({ available: false, days: null }),
+  useFreezePantryItems: () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false }),
+  useThawPantryItems: () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false }),
+}));
 jest.mock('@/data/home', () => ({ fetchPantryNear: async () => [] }));
 // A câmera do "Escanear": a permissão já dada, a foto tirada e o que a leitura local acharia nela.
 jest.mock('expo-camera', () => {
@@ -385,7 +391,8 @@ describe('"Finalizar compra" com a nota, de ponta a ponta', () => {
     expect(where()).toBe('/nota/r1');
     // A revisão marcou sozinha o detergente do carrinho: confirmar o tira da lista.
     await press('Confirmar nota');
-    expect(mockDb.rpcs.map(({ fn }) => fn)).toEqual(['confirm_receipt']);
+    // A nota já confirmada pergunta se o banco tem as correções dela (só uma leitura, receipt_corrections_available).
+    expect(mockDb.rpcs.map(({ fn }) => fn).filter((fn) => fn !== 'receipt_corrections_available')).toEqual(['confirm_receipt']);
     expect(where()).toBe('/lista/l1');
     expect(mockList.confirmed).toHaveLength(1);
     expect(mockList.confirmed[0]).toMatchObject({ onlineAtTap: true, removedListItems: ['li1'] });

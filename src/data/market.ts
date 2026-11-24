@@ -15,6 +15,7 @@ import { productNamed as productWithName } from '@/domain/barcode';
 import type { CartPantryEntry } from '@/domain/cartPantry';
 import { pendingSameItem } from '@/domain/genericItem';
 import { LinkIndex, type ListLink, type OpenListItem } from '@/domain/listLinks';
+import { longCycleKeyOf } from '@/domain/longCycle';
 import type { MarketTrip } from '@/domain/marketTrips';
 import {
   cartPurchases,
@@ -48,6 +49,7 @@ import type {
   Store,
   Unit,
 } from '@/lib/types';
+import { newUuid } from '@/lib/uuid';
 
 import { isMissingColumn, isMissingFunction } from './missingSchema';
 import { isProductMergedAway, LISTED_PRODUCT_SOURCES, withFreshProducts } from './productMerge';
@@ -560,7 +562,12 @@ export function useAddItemsToList() {
       listId?: string;
       newListName: string;
       reuseMarketList?: boolean;
-      items: NewListItem[];
+      /**
+       * `cycleKey`: o item dos prazos de troca (domain/longCycle). Na lista achada no servidor, o pendente que é o
+       * mesmo item com outro nome ("Travesseiro Nasa", que pendingSameItem não reconhece) também conta. Só dado: não vai
+       * para o banco.
+       */
+      items: (NewListItem & { cycleKey?: string })[];
     }) => {
       const id =
         listId ??
@@ -579,7 +586,11 @@ export function useAddItemsToList() {
         const pending = unwrap(
           await supabase.from('shopping_list_items').select('name, category').eq('list_id', id).is('checked_at', null),
         ) as { name: string; category?: string | null }[];
-        toAdd = items.filter((item) => !pendingSameItem(item, pending));
+        toAdd = items.filter(
+          (item) =>
+            !pendingSameItem(item, pending) &&
+            !(item.cycleKey && pending.some((p) => longCycleKeyOf(p.name, p.category) === item.cycleKey)),
+        );
       }
       if (toAdd.length) {
         // O id sai do aparelho e fica guardado antes do envio (se a resposta se perder, o item já entrou): o que ele
@@ -835,11 +846,7 @@ export interface ToggleItemInput {
 
 /** Selo novo (formato uuid); também o id do item posto pela fila. Não precisa ser secreto, só não repetir. */
 export function newToggleToken(): string {
-  const hex = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16));
-  hex[12] = '4';
-  hex[16] = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
-  const s = hex.join('');
-  return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`;
+  return newUuid();
 }
 
 /** Token vencido e ainda não renovado: o pedido iria com a chave pública e não gravaria nada. */

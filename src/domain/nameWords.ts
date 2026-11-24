@@ -39,3 +39,11 @@ export function singular(word: string): string {
   if (word.length > 3 && /[aeiou]s$/.test(word)) return word.slice(0, -1);
   return word;
 }
+
+/**
+ * O texto (já sem acento, em minúsculas e com as palavras separadas: o de spelledOut ou de termText) tem alguma
+ * destas palavras, inteira, no singular ou como está ("moidos" vale por "moido"). As palavras vão no singular.
+ */
+export function hasAnyWord(text: string, words: ReadonlySet<string>): boolean {
+  return text.split(/[^a-z0-9-]+/).some((word) => word !== '' && (words.has(word) || words.has(singular(word))));
+}

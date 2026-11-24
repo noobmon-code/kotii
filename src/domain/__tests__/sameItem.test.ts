@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { LinkIndex, matchListItems, receiptLineNames, type OpenListItem, type ReceiptLine } from '../listLinks';
-import { itemIdentity, sameItemFit, spelledOut, spellOut, termWords, wordOverlap } from '../sameItem';
+import { itemIdentity, sameItemFit, spelledOut, spelledOutFirstWords, spellOut, termWords, wordOverlap } from '../sameItem';
 import { guessCategory } from '../search';
 import { sameListedName } from '../similarNames';
 
@@ -638,5 +638,20 @@ describe('"Gilete" é a lâmina; com outro produto de barbear no nome, é a marc
     expect(match([listItem('l1', 'Espuma de barbear', 'higiene', true)], [line('e', 'ESP BARB GILETE 200ML')])).toEqual([
       { listItemId: 'l1', receiptItemId: 'e', reason: 'item', checked: true },
     ]);
+  });
+});
+
+describe('spelledOutFirstWords', () => {
+  it('as abreviações de nota que viram a palavra no começo do texto, com as próprias palavras', () => {
+    expect(spelledOutFirstWords(['escova'])).toEqual(expect.arrayContaining(['esc', 'escova']));
+    expect(spelledOutFirstWords(['esponja'])).toEqual(['espo', 'esponj', 'esponja']);
+    expect(spelledOutFirstWords(['nada'])).toEqual(['nada']);
+  });
+
+  it('fecha as correntes e devolve em ordem', () => {
+    // "leite" vem de "lte" e de "lt" ("^lt integral"); o resultado sai em ordem e sem repetir.
+    const words = spelledOutFirstWords(['leite', 'leite']);
+    expect(words).toEqual(expect.arrayContaining(['leite', 'lte', 'lt']));
+    expect(words).toEqual([...new Set(words)].sort());
   });
 });

@@ -64,6 +64,12 @@ jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
 jest.mock('@/features/finance/PayerChips', () => ({ PayerChips: () => null }));
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));
+// O congelador (data/freezer): sem ele no banco, como antes da migração.
+jest.mock('@/data/freezer', () => ({
+  useFreezer: () => ({ available: false, days: null }),
+  useFreezePantryItems: () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false }),
+  useThawPantryItems: () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false }),
+}));
 jest.mock('@/data/home', () => ({ fetchPantryNear: async () => [] }));
 jest.mock('@/data/market', () => {
   const { LinkIndex: Links } = jest.requireActual<typeof import('@/domain/listLinks')>('@/domain/listLinks');
@@ -277,7 +283,8 @@ describe('nota repetida na revisão', () => {
     await open(<ReceiptScreen />);
     expect(page()).toContain(NOTICE);
     await press('Confirmar nota');
-    expect(mockDb.rpcs.map((call) => call.fn)).toEqual(['confirm_receipt']);
+    // A nota já confirmada pergunta se o banco tem as correções dela (só uma leitura, receipt_corrections_available).
+    expect(mockDb.rpcs.map((call) => call.fn).filter((fn) => fn !== 'receipt_corrections_available')).toEqual(['confirm_receipt']);
     expect(mockDb.rpcs[0].args.p_receipt_id).toBe('r1');
     expect(mockDb.deletes).toEqual([]);
     expect(mockRouter.back).toHaveBeenCalled();

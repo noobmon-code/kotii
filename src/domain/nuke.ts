@@ -52,6 +52,12 @@ export interface NukeMessage {
   error?: boolean;
 }
 
+/** "Frango, no congelador (vence por volta de 19/02)": o que está vencendo na despensa. */
+export function expiringLine(p: NukeSnapshot['expiring'][number], today: string): string {
+  const verb = p.expires_on < today ? 'venceu' : 'vence';
+  return `${p.name}${p.frozen ? ', no congelador' : ''} (${verb} ${p.estimated ? 'por volta de ' : ''}${shortDate(p.expires_on)})`;
+}
+
 /** Tudo o que o Nuke sabe da casa, já filtrado pelo app. */
 export interface NukeSnapshot {
   today: string;
@@ -62,7 +68,11 @@ export interface NukeSnapshot {
   /** Estoque e receita dos remédios: quantos o app acompanha e o estado dos que estão acabando (refillSummary). */
   refills?: RefillSummary;
   chores: { title: string; due_on: string; assignee: string | null }[];
-  expiring: { name: string; expires_on: string }[];
+  /**
+   * Um produto por linha, pela validade mais próxima. `estimated`: a validade é estimada (pela categoria, pelo
+   * congelador ou depois de descongelar), e a linha diz "por volta de"; `frozen`: as compras estão no congelador.
+   */
+  expiring: { name: string; expires_on: string; estimated?: boolean; frozen?: boolean }[];
   pantry: string[];
   /** Gás, água, ração: a previsão de cada reposição (supplyLines). Sem o campo, a linha não entra. */
   supplies?: string[];
@@ -129,7 +139,7 @@ export function buildNukeContext(s: NukeSnapshot): string {
     `Tarefas (atrasadas e próximos 7 dias): ${listOrNone(
       s.chores.map((c) => `${c.title} — ${c.due_on < s.today ? 'atrasada desde' : 'vence'} ${shortDate(c.due_on)}${c.assignee ? ` (${c.assignee})` : ''}`),
     )}.`,
-    `Despensa vencendo: ${listOrNone(s.expiring.map((p) => `${p.name} (${p.expires_on < s.today ? 'venceu' : 'vence'} ${shortDate(p.expires_on)})`))}.`,
+    `Despensa vencendo: ${listOrNone(s.expiring.map((p) => expiringLine(p, s.today)))}.`,
     `Despensa (tem em casa): ${listOrNone(s.pantry, 40)}.`,
     // Só para a casa que cadastrou alguma: sem reposições, a linha nem aparece.
     ...(s.supplies?.length ? [`Gás, água e ração (previsão): ${listOrNone(s.supplies)}.`] : []),

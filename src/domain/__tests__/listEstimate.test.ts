@@ -1998,6 +1998,29 @@ describe('textos da estimativa', () => {
       'Na despensa desde 1 ago 2025: 1 un de Detergente.',
     ]);
     expect(itemFacts(undefined, undefined, { storeName, today })).toEqual([]);
+    // A validade estimada (pela categoria, pelo congelador, depois de descongelar) é "por volta de".
+    expect(
+      itemFacts(undefined, { name: 'Frango', quantity: 1, unit: 'kg', since: '2026-10-03', expiresOn: '2027-01-01', expiryEstimated: true }, { storeName, today }),
+    ).toEqual(['Na despensa desde 3 out: 1 kg de Frango; vence por volta de 1 jan 2027.']);
+  });
+
+  it('a validade da despensa é estimada quando todas as entradas com ela são estimadas', () => {
+    const items = [{ id: 'f', name: 'Frango', productId: 'p-frango' }];
+    const entry = (over: Partial<PantryStock>): PantryStock => ({
+      product_id: 'p-frango',
+      name: 'Frango',
+      quantity: 1,
+      unit: 'kg',
+      purchased_on: '2026-10-01',
+      expires_on: '2026-12-30',
+      ...over,
+    });
+    const hitOf = (pantry: PantryStock[]) => pantryHits(items, pantry, { today: '2026-10-10' }).get('f');
+    expect(hitOf([entry({ expiry_source: 'congelado' }), entry({ expires_on: '2027-01-10', expiry_source: 'manual' })])?.expiryEstimated).toBe(true);
+    // A certa vence o empate; sem origem (compras antigas) também é certa.
+    expect(hitOf([entry({ expiry_source: 'congelado' }), entry({ expiry_source: 'manual' })])?.expiryEstimated).toBeUndefined();
+    expect(hitOf([entry({ expiry_source: null })])?.expiryEstimated).toBeUndefined();
+    expect(hitOf([entry({ expiry_source: 'descongelado' })])?.expiryEstimated).toBe(true);
   });
 
   it('a frase do cartão: nomes sem repetir, os três primeiros e quantos mais', () => {

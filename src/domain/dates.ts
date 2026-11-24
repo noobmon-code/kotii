@@ -58,6 +58,25 @@ export function isValidISODate(value: string): boolean {
   return fromUTC(toUTC(value)) === value;
 }
 
+/**
+ * O que o banco aceita como dia (as colunas de data das tabelas novas têm um check com estes limites). Aparelho com a
+ * data errada (relógio zerado, ano trocado) leva o aviso de deviceDayError antes de gravar, e não o erro do banco.
+ */
+export const APP_MIN_DATE = '2000-01-01';
+export const APP_MAX_DATE = '2100-12-31';
+
+export const DEVICE_DAY_TITLE = 'Confira a data do aparelho';
+
+/** A frase de deviceDayError; `purpose` termina a frase ("o dia do congelador"). */
+export const deviceDayMessage = (purpose?: string) =>
+  `A data deste aparelho parece errada. Acerte o dia e a hora dele${purpose ? ` para o Kotii guardar ${purpose}` : ' e tente de novo'}.`;
+
+/** O aviso para um aparelho cuja data de hoje o banco não aceitaria (ver APP_MIN_DATE); null quando a data serve. */
+export function deviceDayError(today: string, purpose?: string): { title: string; message: string } | null {
+  if (isValidISODate(today) && today >= APP_MIN_DATE && today <= APP_MAX_DATE) return null;
+  return { title: DEVICE_DAY_TITLE, message: deviceDayMessage(purpose) };
+}
+
 /** "2026-12-20" -> "20/12/2026" */
 export function formatBRDate(iso: string): string {
   const [y, m, d] = iso.slice(0, 10).split('-');
