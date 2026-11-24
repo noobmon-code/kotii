@@ -76,7 +76,7 @@ const groupOf = (groups: OpenGroup[], id: string) => groups.find((group) => grou
 const entryOf = (groups: OpenGroup[], id: string) => groupOf(groups, id)?.items.find((one) => one.id === id);
 
 /**
- * O que shared_item_prices aceita num grupo (supabase/migrations/20261122150000_shared_prices_open.sql, as checagens
+ * O que shared_item_prices aceita num grupo (supabase/migrations/20261124181819_shared_prices_open.sql, as checagens
  * antes de ler qualquer coisa): um grupo fora disto faz o banco recusar a chamada inteira, de até 40 grupos.
  */
 function serverAccepts(group: { k: string[]; w?: string[]; p?: { u: string; a: number; o?: number } }): boolean {
@@ -214,7 +214,7 @@ describe('o mesmo item: as descrições que ficam', () => {
   it('o tamanho na forma que a base guarda: o "1 x" sai, o "N x" fora de 2 a 1000 também, e o tamanho fora dos limites não é tamanho', () => {
     expect([MAX_PACK_AMOUNT, MAX_PACK_OF]).toEqual([100000, 1000]);
     // Os mesmos limites do tamanho esperado em shared_item_prices (e do check de pack_* de onde vêm).
-    const sql = readFileSync(path.join(__dirname, '../../../supabase/migrations/20261122150000_shared_prices_open.sql'), 'utf8');
+    const sql = readFileSync(path.join(__dirname, '../../../supabase/migrations/20261124181819_shared_prices_open.sql'), 'utf8');
     expect(sql).toContain(`(e.v -> 'p' ->> 'a')::numeric <= ${MAX_PACK_AMOUNT}`);
     expect(sql).toContain(`(e.v -> 'p' ->> 'o')::numeric between 2 and ${MAX_PACK_OF}`);
     expect(keyPackageSize('REFRI COCA COLA 1X2L')).toEqual({ unit: 'l', amount: 2, label: '2 L' });

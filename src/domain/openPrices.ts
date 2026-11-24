@@ -2,7 +2,7 @@
 // 21/11/2026): o item da lista que a casa nunca comprou acha preço nas notas
 // de outras casas dos estados onde ela compra. Aqui ficam as regras e os
 // textos dessa leitura; o banco faz a busca em dois passos
-// (supabase/migrations/20261122150000_shared_prices_open.sql):
+// (supabase/migrations/20261124181819_shared_prices_open.sql):
 //
 // 1. shared_item_keys: para cada item, as descrições de nota (item_key, a
 //    descrição padronizada: sem acento, em maiúsculas) que começam pelas
@@ -285,7 +285,7 @@ export function restorePackMark(key: string): string {
 // normalize_alias corta o decimal ("10,1KG" vira "10 1KG"): o número solto antes do tamanho deixa o tamanho em dúvida.
 const SPLIT_DECIMAL = /(?:^| )\d{1,3} \d{1,3} ?(?:KG|G|GR|GRS|L|LT|ML)(?= |$)/;
 
-/** Os limites do check de shared_prices.pack_* (20261122140000_package_sizes.sql), os mesmos de readPack no servidor. */
+/** Os limites do check de shared_prices.pack_* (20261124181159_package_sizes.sql), os mesmos de readPack no servidor. */
 export const MAX_PACK_AMOUNT = 100000;
 export const MAX_PACK_OF = 1000;
 

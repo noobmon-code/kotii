@@ -4579,7 +4579,7 @@ end $$;
 set time zone 'UTC';
 select set_config('test.sp_today', ((now() at time zone 'America/Sao_Paulo')::date)::text, false) \gset
 -- A semana de hoje (a segunda-feira dela). As datas desta seção contam dela, nunca de hoje: as regras da lista aberta
--- (20261122150000_shared_prices_open.sql) são por semana, e o resultado não pode depender do dia da semana em que o
+-- (20261124181819_shared_prices_open.sql) são por semana, e o resultado não pode depender do dia da semana em que o
 -- teste roda. Os blocos de quem entrou leem esta config: shared_week não é dos clientes.
 select set_config('test.sp_week', public.shared_week(current_setting('test.sp_today')::date)::text, false) \gset
 
@@ -13658,7 +13658,7 @@ begin
     ('64000000000901', '35', 'X', 'GRAVADA NO DOMINGO', 'un', week - 10, 1.00, week),
     ('64000000000901', '35', 'X', 'GRAVADA ANTES', 'un', week - 10, 1.00, week - 3);
 end $$;
-\ir ../../supabase/migrations/20261122150000_shared_prices_open.sql
+\ir ../../supabase/migrations/20261124181819_shared_prices_open.sql
 do $$
 declare
   week constant date := current_setting('test.op_week')::date;
@@ -13667,7 +13667,7 @@ begin
     = array['GRAVADA ANTES ' || (week - 3), 'GRAVADA NESTA SEGUNDA ' || (week + 7), 'GRAVADA NO DOMINGO ' || week],
     'what was written this week waits for next Monday; what was written before stays readable';
 end $$;
-\ir ../../supabase/migrations/20261122150000_shared_prices_open.sql
+\ir ../../supabase/migrations/20261124181819_shared_prices_open.sql
 do $$
 declare
   week constant date := current_setting('test.op_week')::date;
