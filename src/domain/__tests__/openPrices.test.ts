@@ -374,6 +374,32 @@ describe('o mesmo item: as descrições que ficam', () => {
     ] as const) {
       expect([name, description, keyFit({ name, category }, description)]).toEqual([name, description, true]);
     }
+    // O "VERM" depois de "FRUTAS", "CEBOLA" e "MACA" é o feminino, que por extenso não marca: a mesma descrição dá o
+    // mesmo veredito abreviada ou por extenso. Depois de outra palavra (também uma marca no meio) é o vermelho.
+    const feminine: [string, string | null, string, string][] = [
+      ['Iogurte', 'laticinios', 'IOGURTE NESTLE FRUTAS VERMELHAS 170G', 'IOGURTE NESTLE FRUTAS VERM 170G'],
+      ['Iogurte', 'laticinios', 'IOG NESTLE FRUTAS VERMELHAS 170G', 'IOG NESTLE FRUT VERM 170G'],
+      ['Chá', 'cafe_cha', 'CHA LEAO FRUTAS VERMELHAS 10UN', 'CHA LEAO FRT VERM 10UN'],
+      ['Suco', 'bebidas', 'SUCO DEL VALLE FRUTAS VERMELHAS 1L', 'SUCO DEL VALLE FRUTAS VERMEL 1L'],
+      ['Gelatina', null, 'GELATINA ROYAL FRUTAS VERMELHAS 25G', 'GELATINA ROYAL FRUTAS VERMELH 25G'],
+      ['Cebola', 'hortifruti', 'CEBOLA VERMELHA KG', 'CEBOLA VERM KG'],
+      ['Maçã', 'hortifruti', 'MACA VERMELHA KG', 'MACA VERM KG'],
+    ];
+    for (const [name, category, whole, short] of feminine) {
+      expect([name, whole, keyFit({ name, category }, whole)]).toEqual([name, whole, true]);
+      expect([name, short, keyFit({ name, category }, short), [...otherProductMarks(short)]]).toEqual([name, short, true, []]);
+    }
+    for (const description of ['FEIJAO VERM 1KG', 'FEIJAO CAMIL VERM 1KG', 'ARROZ VERM 1KG', 'PIMENTAO VERM KG']) {
+      expect([description, [...otherProductMarks(description)]]).toEqual([description, ['vermelho']]);
+    }
+    expect(keyFit({ name: 'Feijão', category: 'graos' }, 'FEIJAO CAMIL VERM 1KG')).toBe(false);
+    // O feminino é o masculino (MARK_OF): "Arroz quebrado" leva "ARROZ QUEBRADA", como o "ARROZ QUEBR" abreviado.
+    expect(keyFit({ name: 'Arroz quebrado', category: 'graos' }, 'ARROZ QUEBRADA 1KG')).toBe(true);
+    expect(keyFit({ name: 'Arroz quebrado', category: 'graos' }, 'ARROZ QUEBR 1KG')).toBe(true);
+    // A marca só decide entre nomes que já são o mesmo item: o leitor lê "CARNE SEC" como a carne fresca, então nem a
+    // "Carne seca" (outro item) nem a "Carne" (a marca de "seca") o levam.
+    expect(keyFit({ name: 'Carne seca', category: 'carnes' }, 'CARNE SEC 500G')).toBe(false);
+    expect(keyFit({ name: 'Carne', category: 'carnes' }, 'CARNE SEC 500G')).toBe(false);
     // O que não é abreviação de marca continua: o alho em cabeça, os ovos grandes.
     expect(keyFit({ name: 'Alho', category: 'hortifruti' }, 'ALHO CAB')).toBe(true);
     expect(keyFit({ name: 'Ovos', category: 'ovos' }, 'OVOS BRANCOS GRAN 12UN')).toBe(true);
@@ -382,7 +408,7 @@ describe('o mesmo item: as descrições que ficam', () => {
   it('a lata é só a embalagem onde o item quase sempre vem nela; em todo outro item, a lata, a conserva e a calda são outro produto', () => {
     expect([...CAN_IS_THE_PACKAGE].sort()).toEqual([
       'achocolatado', 'agua+tonica', 'atum', 'azeite', 'cerveja', 'creme_leite', 'doce_leite', 'extrato_tomate', 'fermento',
-      'leite+po', 'leite_condensado', 'molho_tomate', 'oleo', 'polpa_tomate', 'refrigerante', 'sardinha', 'suco',
+      'leite+po', 'leite_condensado', 'molho_tomate', 'oleo', 'polpa_tomate', 'refrigerante', 'sardinha', 'suco', 'tomate_pelado',
     ]);
     expect([...LT_IS_THE_CAN].sort()).toEqual(['abacaxi', 'carne', 'feijao', 'frango', 'goiaba', 'milho', 'salsicha', 'tomate']);
     for (const description of ['FEIJAO CARIOCA LATA 400G', 'FEIJAO CARIOCA LT 400G', 'FEIJAO EM LATA 400G']) {
@@ -427,6 +453,8 @@ describe('o mesmo item: as descrições que ficam', () => {
       ['Óleo', 'oleos', ['OLEO SOJA LIZA LATA 900ML']],
       ['Azeite', 'oleos', ['AZEITE GALLO LATA 500ML']],
       ['Extrato de tomate', null, ['EXTRATO TOMATE ELEFANTE LATA 340G']],
+      // O tomate pelado quase sempre vem em lata: "LATA" e "LT" ficam no grupo, como a descrição sem a lata.
+      ['Tomate pelado', null, ['TOMATE PELADO LATA 400G', 'TOMATE PELADO LT 400G', 'TOMATE PELADO CONSERVA 400G', 'TOMATE PELADO ARCO BELLO 400G']],
     ];
     for (const [name, category, descriptions] of asPackage) {
       for (const description of descriptions) expect([name, description, keyFit({ name, category }, description)]).toEqual([name, description, true]);
