@@ -2,7 +2,7 @@
 // Decisões do dono de 2026-11-21: (a) a troca leva para o produto novo a entrada da despensa e o histórico de preço,
 // e o apelido e o código que a casa aprendeu daquela linha vão junto; (b) o item que faltou entra nas linhas da nota
 // (os gastos, o Mercado do mês e o histórico de preço contam com ele) e, como na confirmação, na despensa. As regras e
-// todas as frases ficam aqui; os dados, em data/receipts.ts; o banco, em 20261122120000_confirmed_receipt_items.sql.
+// todas as frases ficam aqui; os dados, em data/receipts.ts; o banco, em 20261124180430_confirmed_receipt_items.sql.
 // Nenhuma das duas correções chega aos preços compartilhados entre casas.
 
 import type { Unit } from '@/lib/types';
