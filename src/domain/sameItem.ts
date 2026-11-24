@@ -174,6 +174,26 @@ export function spelledOut(name: string): string {
     .join(' ');
 }
 
+/**
+ * As palavras que, no começo do texto (termText), spelledOut pode trocar por uma destas ("esc" de "esc dent" vira
+ * "escova"), com as próprias. Só lê a tabela (não muda o vocabulário): diz à leitura do servidor dos prazos de troca
+ * (domain/longCycle) que primeiras palavras pedir. A mais (os nomes regionais, as correntes fechadas): uma palavra a
+ * mais só traz mais linhas, que o app lê e filtra.
+ */
+export function spelledOutFirstWords(words: Iterable<string>): string[] {
+  const found = new Set(words);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const { from, to } of SPELLED_OUT_WORDS) {
+      if (found.has(to[0]) && !found.has(from[0])) {
+        found.add(from[0]);
+        grew = true;
+      }
+    }
+  }
+  return [...found].sort();
+}
+
 // ---------------------------------------------------------------------------
 // O vocabulário
 
