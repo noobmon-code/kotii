@@ -359,6 +359,7 @@ export default function TodayScreen() {
             settings={longCycle.settings}
             notice={longCycle.notice}
             setNotice={longCycle.setNotice}
+            visit={longCycle.visit}
             busy={marketAdd.busy}
             onAdd={(suggestion) => void marketAdd.add([marketItemOf(suggestion)])}
           />

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
-import { Modal, Platform, Text as RNText, View } from 'react-native';
+import { AccessibilityInfo, Modal, Platform, Text as RNText, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -86,19 +86,36 @@ const mockSaveSetting = jest.fn(async ({ itemKey, change }: { itemKey: string; c
   mockData.longCycleSettings = { ...mockData.longCycleSettings, data: [...rows.filter((r) => r.item_key !== itemKey), row] };
   return row;
 });
-const mockFocus = { blur: [] as (() => void)[] };
+const mockFocus = { blur: [] as (() => void)[], focus: [] as (() => void)[] };
 const mockAddItems = jest.fn(async (_: unknown) => ({ id: 'mercado' }));
 const mockOpenList = jest.fn(async () => ({ id: 'mercado', name: 'Mercado' }));
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn() },
-  // A tela à vista ao montar; `mockFocus.blur` a tira de vista (o que a limpeza do efeito faz).
+  // A tela à vista ao montar; `mockFocus.blur` a tira de vista (o que a limpeza do efeito faz) e `mockFocus.focus` a
+  // traz de volta (o efeito roda de novo).
   useFocusEffect: (effect: () => void | (() => void)) => {
     const { useEffect } = jest.requireActual<typeof import('react')>('react');
     useEffect(() => {
-      const cleanup = effect();
-      if (cleanup) mockFocus.blur.push(cleanup);
-      return cleanup;
+      let shown = true;
+      let cleanup = effect();
+      const leave = () => {
+        if (!shown) return;
+        shown = false;
+        if (typeof cleanup === 'function') cleanup();
+      };
+      const enter = () => {
+        if (shown) return;
+        shown = true;
+        cleanup = effect();
+      };
+      mockFocus.blur.push(leave);
+      mockFocus.focus.push(enter);
+      return () => {
+        leave();
+        mockFocus.blur = mockFocus.blur.filter((f) => f !== leave);
+        mockFocus.focus = mockFocus.focus.filter((f) => f !== enter);
+      };
     }, [effect]);
   },
 }));
@@ -382,6 +399,7 @@ beforeEach(async () => {
   jest.mocked(moveFocus).mockClear();
   jest.mocked(notify).mockClear();
   mockFocus.blur = [];
+  mockFocus.focus = [];
   jest.mocked(router.push).mockClear();
   mockOpenList.mockClear();
   mockAddItems.mockClear();
@@ -1159,5 +1177,85 @@ describe('"Hora de trocar" (prazos de troca)', () => {
     expect(row('Vassoura').props.subtitle).toBe(longCycleOffNotice('Vassoura'));
     await act(async () => mockFocus.blur.forEach((leave) => leave()));
     expect(rows()).toEqual(['Travesseiro', 'Escova de dente']);
+  });
+
+  it('a gravação que termina com a Hoje fora de vista, ou já noutra visita, não deixa aviso, não fala nem move o foco', async () => {
+    const announced = jest.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => undefined);
+    const save = mockSaveSetting.getMockImplementation()!;
+    /** A próxima gravação fica no ar até `finish`. */
+    function holdNextWrite() {
+      const held = { finish: () => undefined as void };
+      mockSaveSetting.mockImplementationOnce(
+        (args) => new Promise((resolve) => (held.finish = () => void save(args).then(resolve))),
+      );
+      return held;
+    }
+    const leave = () => act(async () => mockFocus.blur.forEach((f) => f()));
+    const come = () => act(async () => mockFocus.focus.forEach((f) => f()));
+    const noUndo = () => expect(group(SUGGESTION_TITLES.longCycle)!.findAllByType(Button).filter((b) => b.props.title === 'Desfazer')).toHaveLength(0);
+    dueHouse();
+    await mount();
+
+    // "Não sugerir mais" no ar; a pessoa troca de aba (ou abre os prazos) antes de a gravação voltar.
+    const off = holdNextWrite();
+    await act(async () => options('Travesseiro')!.props.onPress());
+    await pressSheet('Não sugerir mais');
+    expect(mockSaveSetting).toHaveBeenLastCalledWith({ itemKey: 'travesseiro', change: { off: true } });
+    await leave();
+    jest.mocked(moveFocus).mockClear();
+    announced.mockClear();
+    await act(async () => off.finish());
+    await rerender();
+    // Nada falado nem foco movido para o "Desfazer" da Hoje escondida.
+    expect(announced).not.toHaveBeenCalled();
+    expect(moveFocus).not.toHaveBeenCalled();
+    // De volta à Hoje: o travesseiro saiu, sem aviso nem "Desfazer" (que gravaria o de antes de outra visita).
+    await come();
+    await rerender();
+    expect(rows()).toEqual(['Vassoura', 'Escova de dente']);
+    noUndo();
+    expect(announced).not.toHaveBeenCalled();
+    expect(moveFocus).not.toHaveBeenCalled();
+
+    // "Já troquei" no ar; a pessoa sai e volta antes de a gravação voltar: o aviso era da visita de antes.
+    const replaced = holdNextWrite();
+    await act(async () => options('Vassoura')!.props.onPress());
+    await pressSheet('Já troquei');
+    expect(mockSaveSetting).toHaveBeenLastCalledWith({ itemKey: 'vassoura', change: { replaced_on: TODAY } });
+    await leave();
+    await come();
+    jest.mocked(moveFocus).mockClear();
+    await act(async () => replaced.finish());
+    await rerender();
+    expect(rows()).toEqual(['Escova de dente']);
+    noUndo();
+    expect(announced).not.toHaveBeenCalled();
+    expect(moveFocus).not.toHaveBeenCalled();
+
+    // Um prazo que deixa na hora: o foco não volta às opções da linha se a Hoje saiu de vista no meio.
+    const period = holdNextWrite();
+    await act(async () => options('Escova de dente')!.props.onPress());
+    await pressSheet('Mudar o prazo');
+    // 4 meses depois de 1/7 ainda é a hora (até o dobro, 1/3/2027).
+    const chip = renderer!.root.findAllByType(Chip).find((c) => c.props.toggle && c.props.label === '4 meses')!;
+    await act(async () => chip.props.onPress());
+    await act(async () => renderer!.root.findAllByType(Button).find((b) => b.props.title === 'Salvar')!.props.onPress());
+    expect(mockSaveSetting).toHaveBeenLastCalledWith({ itemKey: 'escova_dente', change: { every_months: 4 } });
+    await leave();
+    jest.mocked(moveFocus).mockClear();
+    await act(async () => period.finish());
+    await rerender();
+    expect(moveFocus).not.toHaveBeenCalled();
+    expect(row('Escova de dente').props.subtitle).toBe('Última compra há 4 meses · trocar a cada 4 meses');
+    noUndo();
+
+    // Na mesma visita, tudo como antes: o aviso, a fala e o foco no "Desfazer".
+    await come();
+    await act(async () => options('Escova de dente')!.props.onPress());
+    await pressSheet('Não sugerir mais');
+    expect(row('Escova de dente').props.subtitle).toBe(longCycleOffNotice('Escova de dente'));
+    expect(announced).toHaveBeenCalledWith(longCycleOffNotice('Escova de dente'));
+    expect(focusedLast()).toBe(viewOf(undoButton()));
+    announced.mockRestore();
   });
 });

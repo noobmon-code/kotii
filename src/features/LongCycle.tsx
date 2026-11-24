@@ -168,9 +168,21 @@ export function useLongCycleToday({
     return longCycleSuggestions(states, { lists: onLists, exclude: listExclusion(onLists, pending), skip });
   }, [settingsData, historyData, historyFirstFetch, onLists, purchases, restock, supplies, chores, equipment, pending, today]);
 
-  // Um aviso por vez, no lugar da linha; sai quando a Hoje deixa de estar à vista.
+  // Um aviso por vez, no lugar da linha; sai quando a Hoje deixa de estar à vista. O aviso é da visita em que a
+  // gravação começou (`visit`): a que volta depois de a Hoje sair de vista (a aba trocada, os prazos abertos no meio do
+  // pedido) não deixa aviso, nem fala, nem move o foco, nem nessa visita escondida nem na próxima.
   const [notice, setNotice] = useState<LongCycleNotice | null>(null);
-  useFocusEffect(useCallback(() => () => setNotice(null), []));
+  const visits = useRef({ count: 0, shown: false });
+  useFocusEffect(
+    useCallback(() => {
+      visits.current = { count: visits.current.count + 1, shown: true };
+      return () => {
+        visits.current = { ...visits.current, shown: false };
+        setNotice(null);
+      };
+    }, []),
+  );
+  const visit = useCallback(() => (visits.current.shown ? visits.current.count : null), []);
 
   const refetchSettings = settings.refetch;
   const refetchHistory = history.refetch;
@@ -187,9 +199,13 @@ export function useLongCycleToday({
     settings: settingsData ?? null,
     notice,
     setNotice,
+    visit,
     refetch,
   };
 }
+
+/** A visita da Hoje à vista agora (cada volta à tela é outra), ou null com ela fora de vista. */
+export type LongCycleVisit = () => number | null;
 
 /**
  * As gravações do grupo e da tela dos prazos, uma por vez (um segundo toque enquanto uma está saindo não faz nada).
@@ -382,7 +398,8 @@ export function LongCyclePeriodSheet({
 /**
  * O grupo "Hora de trocar" nas Sugestões do Hoje: a linha tem os gestos da de "Acho que acabou" (o toque e o círculo
  * põem na lista) e, depois da migração, as opções num botão pequeno. A gravação que tira a linha deixa um aviso no
- * lugar dela, com o "Desfazer", que recebe o foco. Sem linha e sem aviso, nada.
+ * lugar dela, com o "Desfazer", que recebe o foco. Sem linha e sem aviso, nada. O aviso e o foco depois de uma gravação
+ * só valem na visita da Hoje em que ela começou (`visit`, de useLongCycleToday).
  */
 export function LongCycleGroup({
   today,
@@ -392,6 +409,7 @@ export function LongCycleGroup({
   settings,
   notice,
   setNotice,
+  visit,
   busy,
   onAdd,
 }: {
@@ -402,6 +420,7 @@ export function LongCycleGroup({
   settings: readonly LongCycleSetting[] | null;
   notice: LongCycleNotice | null;
   setNotice: (notice: LongCycleNotice | null) => void;
+  visit: LongCycleVisit;
   /** Uma inclusão por vez (as de "Acho que acabou" também): os botões ficam desativados enquanto isso. */
   busy: boolean;
   onAdd: (suggestion: LongCycleSuggestion) => void;
@@ -415,6 +434,10 @@ export function LongCycleGroup({
   const focusOptions = (key: string) => moveFocus(nodeRef(() => optionNodes.current.get(key) ?? null));
   const undoRef = useRef<View>(null);
   const { announce, clear, region } = useAnnounce('long-cycle-announce');
+  // A visita da Hoje em que a gravação das opções começou (uma por vez): a que termina com a Hoje fora de vista, ou
+  // já noutra visita, não deixa aviso nem move o foco (o aviso é da visita, e quem saiu não está mais aqui).
+  const startedIn = useRef<number | null>(null);
+  const sameVisit = (started: number | null) => started !== null && started === visit();
   // Depois de pôr na lista: o foco vai para as opções da linha que ficou no lugar (a seguinte, senão a de antes).
   const focusAt = useRef<number | null>(null);
   const keys = suggestions.map((s) => s.key).join('|');
@@ -447,13 +470,15 @@ export function LongCycleGroup({
   }
 
   async function undo(current: LongCycleNotice) {
+    const started = visit();
     const saved = await writer.write(current.state.item.key, longCycleUndo(current.kind, current.previous));
     if (!saved) return;
     setNotice(null);
-    focusOptions(current.state.item.key);
+    if (sameVisit(started)) focusOptions(current.state.item.key);
   }
 
   function done(kind: LongCycleDone, state: LongCycleState, previous: LongCycleSetting | undefined, saved: LongCycleSetting) {
+    if (!sameVisit(startedIn.current)) return;
     const index = targetIndex.current;
     if (kind === 'period') {
       const next = longCycleRestate(state, saved, today);
@@ -540,7 +565,10 @@ export function LongCycleGroup({
         context="hoje"
         settings={settings}
         writer={writer}
-        onStart={() => setNotice(null)}
+        onStart={() => {
+          startedIn.current = visit();
+          setNotice(null);
+        }}
         onDone={done}
         onClose={() => setTarget(null)}
       />
