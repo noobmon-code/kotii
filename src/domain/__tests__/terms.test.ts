@@ -209,8 +209,16 @@ describe('termos de uso', () => {
     expect(ai).toContain('só entram na despensa ou na lista quando você toca para guardar');
   });
 
+  it('os prazos de troca da casa são dado guardado, mas não mudam o que é compartilhado nem o que vai para a IA', () => {
+    // A mesma data de excluir produto (2026-11-24, o dia do merge): as duas frases saem juntas, e o aviso não volta.
+    expect(TERMS_VERSION).toBe('2026-11-24');
+    expect(termsNotice(['2026-11-14'])).toBeNull();
+    const stored = section('O que o app guarda e para quê');
+    expect(stored).toContain('despensa (com o que foi para o congelador), cardápio, os prazos de troca dos itens da casa (escova de dente, refil do filtro…), tarefas e pontos');
+  });
+
   it('excluir o produto que não está em nenhuma nota é uma mudança de texto: a versão muda, e o aviso não volta', () => {
-    expect(TERMS_VERSION).toBe('2026-11-22');
+    expect(TERMS_VERSION).toBe('2026-11-24');
     // Quem aceitou a versão da foto de produto não vê o aviso de novo.
     expect(termsNotice(['2026-11-14'])).toBeNull();
     const erase = section('Apagar dados e sair');

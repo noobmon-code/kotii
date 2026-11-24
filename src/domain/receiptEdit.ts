@@ -1,9 +1,13 @@
 // O que a nota deixa corrigir em cada momento. Na revisão, tudo. Depois de
-// confirmada, o cabeçalho (mercado, data da compra, total e quem pagou) e o
-// valor do item que ficou sem: a data errada deixa a nota fora do mês, e o
-// mercado errado estraga o histórico de preço. O que já saiu da nota na
-// confirmação fica como está: a despensa, os itens tirados da lista e os preços
-// compartilhados entre casas, se ela deu algum (o gatilho do banco só
+// confirmada, o cabeçalho (mercado, data da compra, total e quem pagou), o
+// valor do item que ficou sem, o produto de uma linha ("Trocar produto") e o
+// item que a leitura perdeu ("Item"): a data errada deixa a nota fora do mês, o
+// mercado ou o produto errado estragam o histórico de preço, e o item que faltou
+// some dos gastos. A troca de produto e o item que faltou passam pelas funções de
+// 20261124180430_confirmed_receipt_items.sql (domain/receiptCorrection), que
+// levam junto a despensa da linha. Tirar uma linha e mudar a quantidade, a
+// unidade ou a descrição continuam só na revisão. Os preços compartilhados entre
+// casas, se a nota deu algum, ficam como estão (o gatilho do banco só
 // compartilha na passagem de rascunho para confirmada, e a leitura do servidor
 // some nela).
 
@@ -21,14 +25,20 @@ export interface ReceiptEditing {
    * confirmada, onde só o item que ficou sem valor ganha o preço e o total (a quantidade já foi para a despensa).
    */
   items: 'all' | 'missingValue';
-  /** Incluir um item que a leitura perdeu: só na revisão (na confirmada, criaria o produto fora do confirm_receipt). */
+  /**
+   * Incluir um item que a leitura perdeu. Na revisão, o formulário de sempre; na confirmada, o produto primeiro e
+   * depois a quantidade e o valor, por add_confirmed_receipt_item (e só quando o banco tem a função: a tela pergunta
+   * antes, useReceiptCorrectionsAvailable).
+   */
   addItem: boolean;
+  /** Trocar o produto de uma linha já confirmada (change_receipt_item_product); na revisão, o produto se escolhe no item. */
+  changeProduct: boolean;
 }
 
 /** O que dá para corrigir na nota, pelo status dela. */
 export function receiptEditing(status: ReceiptStatus): ReceiptEditing {
   const draft = status === 'draft';
-  return { items: draft ? 'all' : 'missingValue', addItem: draft };
+  return { items: draft ? 'all' : 'missingValue', addItem: true, changeProduct: !draft };
 }
 
 /**
@@ -37,7 +47,7 @@ export function receiptEditing(status: ReceiptStatus): ReceiptEditing {
  * nunca deram, e a tela não sabe depois se esta deu (a leitura some na confirmação).
  */
 export const CONFIRMED_EDIT_NOTE =
-  'O que você corrigir aqui vale só para a casa (gastos, Mercado do mês e histórico de preço) e não vai para os preços compartilhados entre casas.';
+  'O que você corrigir aqui vale só para a casa (gastos, Mercado do mês, histórico de preço e despensa) e não vai para os preços compartilhados entre casas.';
 
 export type PurchaseDateChange = { kind: 'invalid' } | { kind: 'same' } | { kind: 'changed'; purchasedAt: string };
 

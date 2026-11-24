@@ -44,7 +44,7 @@ export function fitsList(category: string, listKind: ListKind | undefined): bool
 }
 
 /** Quantidade da nota em jeito de lista: 1,234 kg vira 1 kg; 12 un continua 12 un. */
-function listQuantity(quantity: number, unit: Unit): number {
+export function listQuantity(quantity: number, unit: Unit): number {
   if (unit === 'un') return Math.max(1, Math.round(quantity));
   if (unit === 'g' || unit === 'ml') return Math.max(50, Math.round(quantity / 50) * 50);
   return Math.max(0.5, Math.round(quantity * 2) / 2);

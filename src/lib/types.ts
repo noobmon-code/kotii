@@ -94,6 +94,12 @@ export interface ReceiptItem {
    * cartela de 10). Ausente no banco de antes da coluna; null sem resposta.
    */
   pack_count?: number | null;
+  /**
+   * A linha incluída depois de a nota ser confirmada ("Item", add_confirmed_receipt_item): o texto dela é da pessoa,
+   * e trocar o produto dela não ensina apelido à casa. Só lida, nunca gravada pelo app; ausente no banco de antes da
+   * coluna (que também não tem as correções da nota confirmada).
+   */
+  added_after_confirmation?: boolean;
 }
 
 export interface LatestPrice {

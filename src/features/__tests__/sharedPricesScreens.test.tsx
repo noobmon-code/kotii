@@ -85,6 +85,7 @@ jest.mock('@/features/AiUsageCard', () => ({ AiUsageCard: () => null }));
 jest.mock('@/data/appDashboard', () => ({ useIsAppAdmin: () => ({ data: false }) }));
 jest.mock('@/data/storeModeration', () => ({ useIsModerator: () => ({ data: false }) }));
 jest.mock('@/data/weather', () => ({ useHouseholdLocation: () => ({ data: null }) }));
+jest.mock('@/data/longCycle', () => ({ useLongCycleSettings: () => ({ data: null }) }));
 jest.mock('@/lib/reminders', () => ({ REMINDER_PLACE: 'neste celular' }));
 // Os desenhos animados (reanimated), o fundo e as imagens não entram no que se confere aqui.
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));

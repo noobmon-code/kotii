@@ -13,6 +13,7 @@ import ProfileScreen from '@/app/perfil';
 import FeedbackScreen from '@/app/recado';
 import { APP_DASHBOARD_TITLE } from '@/domain/appDashboard';
 import { HOUSE_PLACE_ROW_HINT, HOUSE_PLACE_ROW_UNKNOWN, HOUSE_PLACE_TITLE } from '@/domain/housePlace';
+import { LONG_CYCLE_ROW_SUBTITLE, LONG_CYCLE_TITLE } from '@/domain/longCycle';
 import { DocumentsSection } from '@/features/DocumentsSection';
 import {
   FEEDBACK_DISCLOSURE,
@@ -138,6 +139,10 @@ jest.mock('@/data/storeModeration', () => ({ useIsModerator: () => ({ data: mock
 // Onde fica a casa aberta (a linha "Clima da casa"): undefined enquanto carrega, null sem bairro.
 const mockLocation = { data: null as { label: string } | null | undefined };
 jest.mock('@/data/weather', () => ({ useHouseholdLocation: () => ({ data: mockLocation.data }) }));
+// Os prazos de troca da casa (a linha "Prazos de troca"): undefined enquanto lê, null antes da migração. O `from` de
+// mentira daqui só responde select → eq → maybeSingle: a leitura dos ajustes vem pronta.
+const mockLongCycle = { data: null as unknown[] | null | undefined };
+jest.mock('@/data/longCycle', () => ({ useLongCycleSettings: () => ({ data: mockLongCycle.data }) }));
 jest.mock('@/ui/dialogs', () => ({ confirmAction: jest.fn(), notify: jest.fn() }));
 jest.mock('expo-router', () => ({ router: { push: jest.fn(), navigate: jest.fn() }, useFocusEffect: () => undefined }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
@@ -194,6 +199,7 @@ beforeEach(() => {
   shown = () => <SettingsScreen />;
   mockModerator.value = false;
   mockLocation.data = null;
+  mockLongCycle.data = null;
   mockHousehold.members = [mockMe, mockBeto];
   mockHousehold.me = mockMe;
   mockHousehold.houses = [];
@@ -723,6 +729,37 @@ describe('Configurações: clima da casa', () => {
     await act(async () => renderer?.unmount());
     mockLocation.data = null;
     expect(await mount()).toContain(`${HOUSE_PLACE_TITLE}Casa da Ana · ${HOUSE_PLACE_ROW_HINT}Suas casas (2)`);
+  });
+});
+
+describe('Configurações: prazos de troca', () => {
+  it('a linha fica entre "Clima da casa" e "Suas casas", e abre os prazos de troca', async () => {
+    mockLongCycle.data = [];
+    mockLocation.data = null;
+    const text = await mount();
+    expect(text).toContain(`${HOUSE_PLACE_TITLE}${HOUSE_PLACE_ROW_HINT}${LONG_CYCLE_TITLE}${LONG_CYCLE_ROW_SUBTITLE}Suas casas`);
+    await act(async () => pressable(`${LONG_CYCLE_TITLE}${LONG_CYCLE_ROW_SUBTITLE}`).props.onPress());
+    expect(router.push).toHaveBeenCalledWith('/trocas');
+  });
+
+  it('com mais de uma casa, a linha diz de qual casa são os prazos (a aberta)', async () => {
+    mockHousehold.houses = [
+      { id: 'h1', name: 'Casa da Ana', role: 'owner' },
+      { id: 'h2', name: 'Casa da praia', role: 'member' },
+    ];
+    mockLongCycle.data = [{ item_key: 'vassoura', every_months: 6, off: false, replaced_on: null }];
+    expect(await mount()).toContain(`${LONG_CYCLE_TITLE}Casa da Ana · ${LONG_CYCLE_ROW_SUBTITLE}Suas casas (2)`);
+  });
+
+  it('só aparece depois que os ajustes responderam com a tabela: nem lendo, nem antes da migração', async () => {
+    mockLongCycle.data = undefined;
+    expect(await mount()).not.toContain(LONG_CYCLE_TITLE);
+    await act(async () => renderer?.unmount());
+    mockLongCycle.data = null;
+    expect(await mount()).not.toContain(LONG_CYCLE_TITLE);
+    await act(async () => renderer?.unmount());
+    mockLongCycle.data = [];
+    expect(await mount()).toContain(LONG_CYCLE_TITLE);
   });
 });
 
