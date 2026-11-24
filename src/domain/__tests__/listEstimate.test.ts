@@ -3036,6 +3036,32 @@ describe('outra marca no mercado escolhido', () => {
     expect(openCandidates([typed], prices, { products })).toEqual([]);
   });
 
+  it('o item cujo produto (ou ligação) a casa nunca comprou procura na base aberta: o produto da casa do mesmo item não dá preço a ele', () => {
+    const products = [
+      { id: 'tj', name: 'Arroz Tio João 5kg', category: 'graos' },
+      { id: 'pf', name: 'Arroz Prato Fino 5kg', category: 'graos' },
+    ];
+    const prices = [own('tj', 'assai', 24.9, 'ARROZ T1 TIO JOAO 5KG', '01')];
+    // A dica é o Prato Fino, que a casa nunca comprou: o preço do mesmo item é só do item que não diz produto nenhum
+    // (itemResolver), então ele procura fora, em vez de ficar sem preço nenhum.
+    const hinted = { ...item('a', 'Arroz', 'pf'), category: 'graos' };
+    expect(estimateList([hinted], prices, { products }).byItem.has('a')).toBe(false);
+    expect(openCandidates([hinted], prices, { products }).map((one) => one.id)).toEqual(['a']);
+    // O mesmo com o nome ligado só a um produto sem preço, e com um produto de mesmo nome sem preço.
+    const linked = { ...item('b', 'Arroz', null), category: 'graos' };
+    const links = new LinkIndex([{ name_key: 'arroz', product_id: 'pf' }]);
+    expect(estimateList([linked], prices, { products, links }).byItem.has('b')).toBe(false);
+    expect(openCandidates([linked], prices, { products, links }).map((one) => one.id)).toEqual(['b']);
+    const sameName = [...products, { id: 'ar', name: 'Arroz', category: 'graos' }];
+    expect(openCandidates([linked], prices, { products: sameName }).map((one) => one.id)).toEqual(['b']);
+    // O digitado sem produto nem ligação sai pelo Tio João, e não procura.
+    expect(estimateList([linked], prices, { products }).byItem.get('b')).toMatchObject({ productId: 'tj', sameItem: true });
+    expect(openCandidates([linked], prices, { products })).toEqual([]);
+    // O item cujo produto outras casas viram tem esse preço, e não procura.
+    const shared = [seen('pf', 'assai', 22.9, KG(5))];
+    expect(openCandidates([hinted], prices, { products, shared })).toEqual([]);
+  });
+
   it('a estimativa com o mercado escolhido e o "Onde comprar" dão a mesma resposta de outra marca', () => {
     const list = [arroz(), { ...arroz('Arroz 5kg'), id: 'b' }];
     const from = { ...sources(), brandKeys: new Map([['a', KEYS], ['b', KEYS_5KG]]) };

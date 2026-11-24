@@ -65,6 +65,7 @@ import {
   ownSameItemKeys,
   productsByGenericKey,
   type OpenSearchItem,
+  type OwnSameItems,
 } from './openPrices';
 import { normalizeSearch } from './search';
 import type { PurchaseRecord } from './recentPurchases';
@@ -1115,7 +1116,10 @@ export function itemsWithoutPrice(
  * podem buscar (openPriceItem: de qualquer marca, de categoria que se compartilha, e não o item de um produto da casa
  * com preço que é o mesmo item, ownSameItemKeys e itemFits). O item digitado "Arroz" numa casa que comprou "Arroz
  * Camil 5kg" não procura: ele sai pelo produto da casa do mesmo item (`sameItem`, itemResolver), e o dado da casa
- * vence. Numa casa que só comprou "Arroz Quebrado Kicaldo 5kg", procura: o quebrado não dá preço a ele.
+ * vence. Numa casa que só comprou "Arroz Quebrado Kicaldo 5kg", procura: o quebrado não dá preço a ele. O produto da
+ * casa do mesmo item só tira da busca o item a que ele dá preço, o mesmo de itemResolver: sem produto, sem ligação e sem
+ * produto de mesmo nome. O item que diz um produto (ou tem ligação) que a casa nunca comprou, e que nem outras casas
+ * viram, procura: ele não sai pelo produto da casa do mesmo item, e ficaria sem preço nenhum.
  */
 export function openCandidates(
   items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit' | 'category' | 'brandPreferred'>[],
@@ -1125,17 +1129,24 @@ export function openCandidates(
 ): OpenSearchItem[] {
   const without = itemsWithoutPrice(items, prices, sources);
   const ownKeys = ownSameItemKeys(products, prices);
+  const { candidates } = itemResolver(prices, { ...sources, products });
+  const noOwn: OwnSameItems = new Map();
   return items
     .filter((item) => without.has(item.id))
-    .map((item) => ({
-      id: item.id,
-      name: item.name,
-      category: item.category ?? null,
-      quantity: item.quantity,
-      unit: item.unit,
-      ...(item.brandPreferred === true ? { brandPreferred: true } : {}),
-    }))
-    .filter((item) => openPriceItem(item, ownKeys));
+    .map((item) => {
+      const named = item.productId != null || candidates(item).length > 0;
+      const search: OpenSearchItem = {
+        id: item.id,
+        name: item.name,
+        category: item.category ?? null,
+        quantity: item.quantity,
+        unit: item.unit,
+        ...(item.brandPreferred === true ? { brandPreferred: true } : {}),
+      };
+      return { search, own: named ? noOwn : ownKeys };
+    })
+    .filter(({ search, own }) => openPriceItem(search, own))
+    .map(({ search }) => search);
 }
 
 /**

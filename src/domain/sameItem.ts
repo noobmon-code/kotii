@@ -402,6 +402,13 @@ interface KindDimension {
    * a marca, e toda descrição com essa chave é dela (keyNamesBrand). Não muda o "mesmo item".
    */
   brands?: readonly string[];
+  /**
+   * Palavras de um valor que são uma marca, num tipo de qualquer marca: o Kuat é um guaraná, a Sukita uma laranja e o
+   * Sprite um limão, e a chave ("i:refrigerante|4=guarana") não diz a marca; mas no nome de um produto da casa a
+   * palavra é a marca dele (brandHead, em domain/cheaperBrand: a descrição da base aberta com "KUAT" é da própria
+   * casa, não "outra marca"). Não muda o "mesmo item" nem a chave.
+   */
+  brandTerms?: readonly string[];
 }
 
 const FLAVORS: Readonly<Record<string, readonly string[]>> = {
@@ -473,6 +480,7 @@ const KINDS: readonly KindDimension[] = [
       tonica: ['tonica'],
     },
     brands: ['coca', 'pepsi', 'fanta', 'schweppes'],
+    brandTerms: ['kuat', 'sukita', 'sprite'],
   },
   { keys: ['suco', 'iogurte', 'bebida_lactea', 'biscoito', 'sorvete', 'picole', 'bolo', 'gelatina'], values: FLAVORS },
   // O biscoito que a lista diz: o recheado não é o de maisena. Um "Biscoito" só, sem tipo, é qualquer um.
@@ -712,6 +720,9 @@ export function keyNamesBrand(key: string): boolean {
       return brands != null && values.split(',').some((value) => brands.includes(value));
     });
 }
+
+/** As palavras que são uma marca dentro de um tipo de qualquer marca (`brandTerms`: o Kuat, a Sukita, o Sprite). */
+export const KIND_BRAND_TERMS: ReadonlySet<string> = new Set(KINDS.flatMap((dimension) => dimension.brandTerms ?? []));
 
 /** O grupo do item, pela chave de itemIdentity ("papel_toalha" é de casa, "presunto" é comida). */
 export function itemGroup(key: string): 'casa' | 'comida' | 'pet' {

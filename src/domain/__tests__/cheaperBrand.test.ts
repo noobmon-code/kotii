@@ -38,6 +38,7 @@ import {
   type SharedItemPrice,
 } from '../openPrices';
 import { comparablePrice } from '../packagePrice';
+import { KIND_BRAND_TERMS } from '../sameItem';
 import { SHARED_CATEGORIES } from '../sharedPrices';
 
 // A marca mais barata (domain/cheaperBrand): quem pode trocar de marca, o que é o mesmo item, o tamanho do preço, a
@@ -139,6 +140,23 @@ describe('a marca de um produto da casa (brandHead)', () => {
       ['Queijo Mussarela Fatiado Tirolez 200g', 'frios', 'tirolez'],
     ];
     expect(heads.map(([name, category]) => brandHead({ name, category }))).toEqual(heads.map(([, , head]) => head));
+  });
+
+  it('a marca dentro de um tipo de qualquer marca (o Kuat é um guaraná, a Sukita uma laranja, o Sprite um limão) é a marca', () => {
+    expect([...KIND_BRAND_TERMS].sort()).toEqual(['kuat', 'sprite', 'sukita']);
+    const heads: [string, string][] = [
+      ['Refrigerante Kuat 2L', 'kuat'],
+      ['Refrigerante Guaraná Kuat 2L', 'kuat'],
+      ['Kuat 2L', 'kuat'],
+      ['Refrigerante Sukita 2L', 'sukita'],
+      ['Refrigerante Sprite 2L', 'sprite'],
+      ['Sprite Lemon Fresh 2L', 'sprite'],
+      ['Guaraná Antarctica 2L', 'antarctica'],
+      ['Refrigerante Soda Limonada Antarctica 2L', 'antarctica'],
+    ];
+    expect(heads.map(([name]) => brandHead({ name, category: 'bebidas' }))).toEqual(heads.map(([, head]) => head));
+    // A chave continua sem a marca: o Kuat e o Antarctica são o mesmo guaraná.
+    expect(genericItem('Refrigerante Kuat 2L', 'bebidas').key).toBe(genericItem('Guaraná Antarctica 2L', 'bebidas').key);
   });
 });
 
@@ -328,6 +346,20 @@ describe('a busca das marcas (brandKeyGroups)', () => {
     const { groups } = brandAnswered([leite], () => [key('LEITE UHT INT PIRACANJUBA 1L', 'un', 3), key('LEITE UHT INT ITALAC 1L', 'un', 5)]);
     // O Italac é da casa; o Piracanjuba, outra marca.
     expect(groups.map((group) => group.keys)).toEqual([['LEITE UHT INT PIRACANJUBA 1L']]);
+  });
+
+  it('o Kuat da casa não vira "outra marca" do guaraná; o Antarctica, sim', () => {
+    const reference = 'Refrigerante Kuat 2L';
+    const guarana = searchItem('g', 'Guaraná', {
+      category: 'bebidas',
+      referenceKey: genericItem(reference, 'bebidas').key,
+      referenceName: reference,
+      base: 'l',
+      amounts: [2],
+      houseHeads: [brandHead({ name: reference, category: 'bebidas' })!],
+    });
+    const { groups } = brandAnswered([guarana], () => [key('REFRIG KUAT GUARANA PET 2L', 'un', 5), key('REFRIG GUARANA ANTARCTICA 2L', 'un', 3)]);
+    expect(groups.map((group) => group.keys)).toEqual([['REFRIG GUARANA ANTARCTICA 2L']]);
   });
 
   it('a quantidade que a lista diz só pergunta os tamanhos que cabem inteiros nela', () => {

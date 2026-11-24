@@ -41,7 +41,7 @@ import {
 } from './openPrices';
 import { comparablePrice, packagesFor, plainSize, type ComparablePrice } from './packagePrice';
 import { samePackageSize, sharedPackageSize, type PackageSize } from './packageSize';
-import { spelledOut } from './sameItem';
+import { KIND_BRAND_TERMS, spelledOut } from './sameItem';
 import { guessCategory } from './search';
 import { sharedPack, sharedRowOf, type SharedQuote, type StoreCnpj } from './sharedPrices';
 
@@ -153,12 +153,15 @@ const words = (text: string) => spelledOut(text).split(' ').filter(Boolean);
  * nem tamanho, embalagem, unidade, conectivo, "tipo" ou palavra que descreve qualquer marca ("branco", "tradicional").
  * "Arroz Tio João 5kg" é "tio"; "Leite Integral Italac 1L",
  * "italac"; null quando o nome não tem marca ("Arroz 5kg", "Refrigerante Coca-Cola 2l", onde a Coca é o sabor). A
+ * palavra que é uma marca dentro de um tipo de qualquer marca (KIND_BRAND_TERMS: o Kuat, a Sukita, o Sprite) fica no
+ * nome sem marca, mas é a marca: "Refrigerante Kuat 2L" é "kuat", e "Guaraná Antarctica 2L", "antarctica". A
  * descrição da base aberta com essa palavra é o produto da própria casa.
  */
 export function brandHead(product: { name: string; category?: string | null }): string | null {
   const generic = new Set(words(genericItem(product.name, product.category).name).map(singular));
   for (const word of words(product.name)) {
     const one = singular(word);
+    if (KIND_BRAND_TERMS.has(word)) return word;
     if (generic.has(one) || generic.has(word) || /\d/.test(word) || BRAND_SKIP.has(word)) continue;
     if (PACKAGING.has(word) || PACKAGING.has(one) || LOOSE_UNITS.has(word)) continue;
     return word;

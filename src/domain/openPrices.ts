@@ -192,7 +192,9 @@ export function ownSameItemKeys(
  * O item pode buscar preço na base aberta (quem chama já sabe que ele não tem preço nenhum: itemsWithoutPrice): de
  * qualquer marca (brandFreeItemKey), de uma categoria que se compartilha, "outros" ou sem categoria, com palavras
  * para buscar, e não é o item de um produto da casa com preço (`own`: a mesma chave e o mesmo item, itemFits, sem
- * marca de outro produto que a lista não diga; a mesma regra que dá a ele o preço desse produto).
+ * marca de outro produto que a lista não diga; a mesma regra que dá a ele o preço desse produto). Essa regra só vale
+ * para o item que não diz produto nenhum (sem produto, sem ligação e sem produto de mesmo nome): para o outro, quem
+ * chama passa `own` vazio (openCandidates, em domain/listEstimate), e ele procura em vez de ficar sem preço.
  */
 export function openPriceItem(item: Pick<OpenSearchItem, 'name' | 'category' | 'brandPreferred'>, own: OwnSameItems): boolean {
   const key = brandFreeItemKey(item);
