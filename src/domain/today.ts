@@ -84,7 +84,13 @@ export const TODAY_KIND_ORDER: readonly TodayKind[] = [
 export const TODAY_BLOCK_TITLES = { agora: 'Agora', emBreve: 'Em breve', sugestoes: 'Sugestões' } as const;
 
 /** Os grupos de "Sugestões", nesta ordem. */
-export const SUGGESTION_TITLES = { restock: 'Acho que acabou', menu: 'Cardápio de hoje', lists: 'Listas abertas' } as const;
+export const SUGGESTION_TITLES = {
+  restock: 'Acho que acabou',
+  // Os prazos de troca (domain/longCycle): o que dura meses e precisa ser trocado. Sugestão, não pendência.
+  longCycle: 'Hora de trocar',
+  menu: 'Cardápio de hoje',
+  lists: 'Listas abertas',
+} as const;
 
 // ---------------------------------------------------------------------------
 // Onde cada coisa entra (pelo estado que o assunto já calcula)

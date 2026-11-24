@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
-import { Platform, Text as RNText } from 'react-native';
+import { AccessibilityInfo, Modal, Platform, Text as RNText, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -9,11 +9,22 @@ import TodayScreen from '@/app/(tabs)/index';
 import { toTimestamp } from '@/domain/health';
 import { FIRST_STEP_INVITE_BY_CODE, FIRST_STEP_INVITE_BY_LINK, FIRST_STEPS_TITLE } from '@/domain/firstSteps';
 import { INVITE_TITLE } from '@/domain/onboarding';
-import { ALL_CLEAR_TITLE, PANTRY_SHOWN, TODAY_BLOCK_TITLES } from '@/domain/today';
+import { ALL_CLEAR_TITLE, PANTRY_SHOWN, SUGGESTION_TITLES, TODAY_BLOCK_TITLES } from '@/domain/today';
+import {
+  longCycleDayError,
+  longCycleOffNotice,
+  longCycleReplacedNotice,
+  type LongCycleChange,
+  type LongCycleSetting,
+} from '@/domain/longCycle';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { FEATURES } from '@/lib/features';
 import type { Chore, Equipment, HomeDocument, Medication, PantryItem, Supply } from '@/lib/types';
-import { Badge, Button, LinkButton, ListRow, Section } from '@/ui/primitives';
+import { SuggestionGroup } from '@/features/TodayBlocks';
+import { ActionSheet } from '@/ui/ActionSheet';
+import { notify } from '@/ui/dialogs';
+import { moveFocus } from '@/ui/focus';
+import { AddCircle, Badge, Button, Chip, IconButton, LinkButton, ListRow, Section } from '@/ui/primitives';
 
 // A tela Hoje por urgência, com as linhas de verdade e as buscas trocadas por respostas prontas: "Agora" (o atrasado
 // antes do que é de hoje), "Em breve" (o mais perto antes) e "Sugestões" (que não contam nem seguram o "Tudo em
@@ -34,6 +45,9 @@ function answered(data: boolean): StepAnswer {
   return { data, status: 'success', fetchStatus: 'idle' };
 }
 const mockQuery = (data: unknown = []) => ({ data, isSuccess: true, isError: false, isPending: false, isRefetching: false, refetch: jest.fn() });
+/** Uma busca que ainda não trouxe nada (a primeira, ou a que falhou sem nada guardado). */
+const mockNoData = { data: undefined, isSuccess: false, isPending: true };
+type LongCycleAnswer = { data: unknown; fetchStatus: 'fetching' | 'paused' | 'idle'; isError?: boolean };
 const mockData = {
   medications: [] as Medication[],
   chores: [] as Chore[],
@@ -57,11 +71,60 @@ const mockData = {
   asked: { list: [] as boolean[], receipt: [] as boolean[], pantry: [] as boolean[] },
   seen: { list: [] as boolean[], receipt: [] as boolean[], pantry: [] as boolean[] },
   overview: {} as Record<string, unknown>,
+  // Os prazos de troca (data/longCycle): os ajustes da casa (null antes da migração) e a leitura longa.
+  longCycleSettings: { data: [], fetchStatus: 'idle' } as LongCycleAnswer,
+  longCycleHistory: { data: [], fetchStatus: 'idle' } as LongCycleAnswer,
+  // O que trocar no que as buscas respondem (uma busca sem dados, a que falhou ao buscar de novo).
+  overrides: {} as Record<string, object>,
+  // Os nomes postos agora há pouco (useJustListed), que a tela lê no próximo desenho.
+  justListed: new Set<string>(),
 };
+const mockSaveSetting = jest.fn(async ({ itemKey, change }: { itemKey: string; change: LongCycleChange }): Promise<LongCycleSetting> => {
+  const rows = (mockData.longCycleSettings.data as LongCycleSetting[] | null) ?? [];
+  const before = rows.find((r) => r.item_key === itemKey) ?? { item_key: itemKey, every_months: null, off: false, replaced_on: null };
+  const row = { ...before, ...change };
+  mockData.longCycleSettings = { ...mockData.longCycleSettings, data: [...rows.filter((r) => r.item_key !== itemKey), row] };
+  return row;
+});
+const mockFocus = { blur: [] as (() => void)[], focus: [] as (() => void)[] };
 const mockAddItems = jest.fn(async (_: unknown) => ({ id: 'mercado' }));
 const mockOpenList = jest.fn(async () => ({ id: 'mercado', name: 'Mercado' }));
 
-jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
+jest.mock('expo-router', () => ({
+  router: { push: jest.fn() },
+  // A tela à vista ao montar; `mockFocus.blur` a tira de vista (o que a limpeza do efeito faz) e `mockFocus.focus` a
+  // traz de volta (o efeito roda de novo).
+  useFocusEffect: (effect: () => void | (() => void)) => {
+    const { useEffect } = jest.requireActual<typeof import('react')>('react');
+    useEffect(() => {
+      let shown = true;
+      let cleanup = effect();
+      const leave = () => {
+        if (!shown) return;
+        shown = false;
+        if (typeof cleanup === 'function') cleanup();
+      };
+      const enter = () => {
+        if (shown) return;
+        shown = true;
+        cleanup = effect();
+      };
+      mockFocus.blur.push(leave);
+      mockFocus.focus.push(enter);
+      return () => {
+        leave();
+        mockFocus.blur = mockFocus.blur.filter((f) => f !== leave);
+        mockFocus.focus = mockFocus.focus.filter((f) => f !== enter);
+      };
+    }, [effect]);
+  },
+}));
+jest.mock('@/data/longCycle', () => ({
+  useLongCycleSettings: () => ({ ...mockData.longCycleSettings, refetch: jest.fn() }),
+  useLongCycleHistory: () => ({ ...mockData.longCycleHistory, refetch: jest.fn() }),
+  useSetLongCycleSetting: () => ({ mutateAsync: mockSaveSetting, isPending: false }),
+}));
+jest.mock('@/ui/focus', () => ({ ...jest.requireActual<typeof import('@/ui/focus')>('@/ui/focus'), moveFocus: jest.fn() }));
 jest.mock('@/lib/supabase', () => ({ supabase: {}, unwrap: (r: { data: unknown }) => r.data, errorMessage: (error: unknown) => String(error) }));
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -94,7 +157,7 @@ jest.mock('@/data/weather', () => ({
 jest.mock('@/data/home', () => ({
   ...jest.requireActual<typeof import('@/data/home')>('@/data/home'),
   useChoreRotations: () => mockQuery(undefined),
-  useChores: () => mockQuery(mockData.chores),
+  useChores: () => ({ ...mockQuery(mockData.chores), ...mockData.overrides.chores }),
   useCompleteChore: () => ({ mutate: jest.fn(), isPending: false }),
   useDoses: () => mockQuery([]),
   useMedications: () => mockQuery(mockData.medications),
@@ -123,8 +186,8 @@ jest.mock('@/data/market', () => ({
   useAddToMarketList: () => ({ mutateAsync: jest.fn(), isPending: false }),
   useAddToPharmacyList: () => ({ mutateAsync: jest.fn() }),
   useOpenMarketList: () => ({ mutateAsync: mockOpenList }),
-  usePurchaseRecords: () => mockQuery(mockData.purchases),
-  useShoppingLists: () => mockQuery(mockData.lists),
+  usePurchaseRecords: () => ({ ...mockQuery(mockData.purchases), ...mockData.overrides.purchases }),
+  useShoppingLists: () => ({ ...mockQuery(mockData.lists), ...mockData.overrides.lists }),
 }));
 jest.mock('@/data/firstSteps', () => ({
   useAnyList: (enabled: boolean, seen = false) => {
@@ -152,7 +215,7 @@ jest.mock('@/data/menu', () => ({ useMenu: () => mockQuery(mockData.menu) }));
 jest.mock('@/data/pendingReceipts', () => ({ usePendingReceipts: () => ({ pending: [], storeNames: {} }) }));
 jest.mock('@/data/receipts', () => ({ useDraftReceipts: () => mockQuery(mockData.drafts) }));
 jest.mock('@/data/supplies', () => ({
-  useSupplies: () => mockQuery({ supplies: mockData.supplies, available: true }),
+  useSupplies: () => ({ ...mockQuery({ supplies: mockData.supplies, available: true }), ...mockData.overrides.supplies }),
   useRecordRefill: () => ({ mutate: jest.fn(), isPending: false }),
 }));
 jest.mock('@/features/health/useHealthOverview', () => ({ useHealthOverview: () => mockData.overview }));
@@ -162,7 +225,13 @@ jest.mock('@/features/finance/PayBillModal', () => ({ PayBillModal: () => null }
 jest.mock('@/features/InstallAppCard', () => ({ InstallAppCard: () => null }));
 jest.mock('@/features/MarketTrip', () => ({ MarketTripBanner: () => null }));
 jest.mock('@/features/RecentPurchases', () => ({
-  useJustListed: () => ({ pending: new Set<string>(), add: jest.fn(), drop: jest.fn() }),
+  useJustListed: () => ({
+    pending: mockData.justListed,
+    add: (names: string[]) => {
+      mockData.justListed = new Set([...mockData.justListed, ...names.map((n) => n.toLowerCase())]);
+    },
+    drop: jest.fn(),
+  }),
 }));
 jest.mock('@/features/TermsNotice', () => ({ TermsNoticeCard: () => null }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn(), confirmAction: jest.fn() }));
@@ -321,7 +390,16 @@ beforeEach(async () => {
     asked: { list: [], receipt: [], pantry: [] },
     seen: { list: [], receipt: [], pantry: [] },
     overview: overview(),
+    longCycleSettings: { data: [], fetchStatus: 'idle' },
+    longCycleHistory: { data: [], fetchStatus: 'idle' },
+    overrides: {},
+    justListed: new Set<string>(),
   });
+  mockSaveSetting.mockClear();
+  jest.mocked(moveFocus).mockClear();
+  jest.mocked(notify).mockClear();
+  mockFocus.blur = [];
+  mockFocus.focus = [];
   jest.mocked(router.push).mockClear();
   mockOpenList.mockClear();
   mockAddItems.mockClear();
@@ -800,5 +878,384 @@ describe('os primeiros passos', () => {
     await mount();
     const titles = renderer!.root.findAllByType(Section).map((s) => s.props.title);
     expect(titles).toEqual([TODAY_BLOCK_TITLES.agora, TODAY_BLOCK_TITLES.emBreve, FIRST_STEPS_TITLE, TODAY_BLOCK_TITLES.sugestoes]);
+  });
+});
+
+describe('"Hora de trocar" (prazos de troca)', () => {
+  const bought = (name: string, day: string, category: string, extra: Partial<PurchaseRecord> = {}): PurchaseRecord => ({
+    name,
+    category,
+    productId: null,
+    quantity: 1,
+    unit: 'un',
+    at: `${day}T10:00:00.000Z`,
+    source: 'receipt',
+    ...extra,
+  });
+  /** O travesseiro na hora desde 1/8, a vassoura desde 1/9 e a escova desde 1/10 (hoje é 10/11). */
+  function dueHouse() {
+    settledHouse();
+    mockData.purchases = [
+      bought('Escova de dente', '2026-07-01', 'higiene', { productId: 'p-escova', quantity: 2 }),
+      bought('Vassoura', '2025-09-01', 'limpeza'),
+      bought('Travesseiro', '2024-08-01', 'outros'),
+    ];
+  }
+  const group = (title: string) => renderer!.root.findAllByType(SuggestionGroup).find((g) => g.props.title === title);
+  const rows = () => group(SUGGESTION_TITLES.longCycle)?.findAllByType(ListRow).map((r) => r.props.title as string) ?? [];
+  const row = (title: string) => group(SUGGESTION_TITLES.longCycle)!.findAllByType(ListRow).find((r) => r.props.title === title)!;
+  const options = (name: string) => renderer!.root.findAllByType(IconButton).find((b) => b.props.label === `Opções de ${name}`);
+  const sheet = () => renderer!.root.findAllByType(ActionSheet).find((a) => a.props.visible);
+  const sheetButton = (label: string) =>
+    sheet()!.findAll((n) => n.props.accessibilityRole === 'button' && typeof n.props.onPress === 'function' && rawText(n) === label)[0];
+  // No Jest o sistema é o iOS: a ação escolhida roda quando o menu acaba de descer (o onDismiss do Modal).
+  async function pressSheet(label: string) {
+    const menu = sheet()!;
+    await act(async () => sheetButton(label).props.onPress());
+    await act(async () => menu.findByType(Modal).props.onDismiss());
+  }
+  const viewOf = (node: ReactTestInstance) => node.findAllByType(View)[0].instance as unknown;
+  const focusedLast = () => (jest.mocked(moveFocus).mock.calls.at(-1)?.[0] as { current: unknown } | undefined)?.current;
+  const undoButton = () => group(SUGGESTION_TITLES.longCycle)!.findAllByType(Button).find((b) => b.props.title === 'Desfazer')!;
+
+  it('fica nas sugestões, entre "Acho que acabou" e "Cardápio de hoje", e não segura o "Tudo em dia"', async () => {
+    dueHouse();
+    await mount();
+    // Só o grupo dos prazos: a casa continua em dia, com o cartão.
+    expect(page()).toContain('Tudo em dia por aqui.');
+    expect(page()).toContain(ALL_CLEAR_TITLE);
+    expect(rows()).toEqual(['Travesseiro', 'Vassoura', 'Escova de dente']);
+    expect(row('Escova de dente').props.subtitle).toBe('Última compra há 4 meses · trocar a cada 3 meses');
+
+    await act(async () => renderer!.unmount());
+    mockData.purchases = [
+      ...mockData.purchases,
+      bought('Café', '2026-10-09', 'cafe_cha'),
+      bought('Café', '2026-10-19', 'cafe_cha'),
+      bought('Café', '2026-10-29', 'cafe_cha'),
+    ];
+    mockData.menu = [{ id: 'm1', day: TODAY, meal: 'almoco', dish: 'Feijoada' }];
+    await mount();
+    const titles = section(TODAY_BLOCK_TITLES.sugestoes)!.findAllByType(SuggestionGroup).map((g) => g.props.title);
+    expect(titles).toEqual([SUGGESTION_TITLES.restock, SUGGESTION_TITLES.longCycle, SUGGESTION_TITLES.menu]);
+  });
+
+  it('o círculo e o toque na linha põem na lista de mercado pelo servidor, com a chave do item', async () => {
+    dueHouse();
+    await mount();
+    const brush = row('Escova de dente');
+    await act(async () => brush.findByType(AddCircle).props.onPress());
+    expect(mockAddItems).toHaveBeenLastCalledWith({
+      newListName: 'Mercado',
+      reuseMarketList: true,
+      items: [{ name: 'Escova de dente', category: 'higiene', productId: 'p-escova', quantity: 2, unit: 'un', cycleKey: 'escova_dente' }],
+    });
+    await act(async () => row('Vassoura').props.onPress());
+    expect(mockAddItems).toHaveBeenCalledTimes(2);
+    expect(mockAddItems.mock.calls[1][0]).toMatchObject({ items: [{ name: 'Vassoura', cycleKey: 'vassoura' }] });
+    expect(router.push).not.toHaveBeenCalled();
+  });
+
+  it('uma inclusão por vez nos dois grupos', async () => {
+    dueHouse();
+    mockData.purchases = [
+      ...mockData.purchases,
+      bought('Café', '2026-10-09', 'cafe_cha'),
+      bought('Café', '2026-10-19', 'cafe_cha'),
+      bought('Café', '2026-10-29', 'cafe_cha'),
+    ];
+    let finish: (value: { id: string }) => void = () => undefined;
+    mockAddItems.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    await mount();
+    const restockRow = group(SUGGESTION_TITLES.restock)!.findAllByType(ListRow)[0];
+    const brush = row('Escova de dente');
+    await act(async () => {
+      restockRow.props.onPress();
+      brush.findByType(AddCircle).props.onPress();
+    });
+    expect(mockAddItems).toHaveBeenCalledTimes(1);
+    await act(async () => finish({ id: 'mercado' }));
+  });
+
+  it('as opções: "Já troquei", "Mudar o prazo" e "Não sugerir mais"; antes da migração, nenhum botão de opções', async () => {
+    dueHouse();
+    await mount();
+    await act(async () => options('Vassoura')!.props.onPress());
+    expect(sheet()!.props.title).toBe('Vassoura');
+    expect(sheet()!.props.message).toBe('Última compra há 1 ano e 2 meses · trocar todo ano');
+    expect(sheet()!.props.actions.map((a: { label: string }) => a.label)).toEqual(['Já troquei', 'Mudar o prazo', 'Não sugerir mais']);
+
+    await act(async () => renderer!.unmount());
+    mockData.longCycleSettings = { data: null, fetchStatus: 'idle' };
+    await mount();
+    expect(rows()).toEqual(['Travesseiro', 'Vassoura', 'Escova de dente']);
+    expect(options('Vassoura')).toBeUndefined();
+    expect(renderer!.root.findAllByType(IconButton).filter((b) => String(b.props.label).startsWith('Opções'))).toHaveLength(0);
+  });
+
+  it('"Já troquei" grava hoje, o aviso fica no lugar da linha com o foco no "Desfazer", que grava o de antes', async () => {
+    dueHouse();
+    mockData.longCycleSettings = { data: [{ item_key: 'vassoura', every_months: null, off: false, replaced_on: '2025-01-05' }], fetchStatus: 'idle' };
+    await mount();
+    await act(async () => options('Vassoura')!.props.onPress());
+    await pressSheet('Já troquei');
+    expect(mockSaveSetting).toHaveBeenCalledWith({ itemKey: 'vassoura', change: { replaced_on: TODAY } });
+    // A vassoura saiu, o aviso ficou no lugar dela (a segunda linha).
+    expect(rows()).toEqual(['Travesseiro', 'Vassoura', 'Escova de dente']);
+    expect(row('Vassoura').props.subtitle).toBe(longCycleReplacedNotice('Vassoura'));
+    expect(undoButton().props.accessibilityLabel).toBe('Desfazer a troca de Vassoura');
+    expect(focusedLast()).toBe(viewOf(undoButton()));
+
+    await act(async () => undoButton().props.onPress());
+    expect(mockSaveSetting).toHaveBeenLastCalledWith({ itemKey: 'vassoura', change: { replaced_on: '2025-01-05' } });
+    // A linha volta, e o foco vai para as opções dela.
+    expect(group(SUGGESTION_TITLES.longCycle)!.findAllByType(Button).find((b) => b.props.title === 'Desfazer')).toBeUndefined();
+    expect(row('Vassoura').props.subtitle).toBe('Última compra há 1 ano e 2 meses · trocar todo ano');
+    expect(focusedLast()).toBe(viewOf(options('Vassoura')!));
+  });
+
+  it('"Já troquei" com a data do aparelho errada avisa e não grava; dois toques gravam uma vez', async () => {
+    dueHouse();
+    await mount();
+    await act(async () => options('Vassoura')!.props.onPress());
+    jest.setSystemTime(new Date(1999, 11, 31, 12));
+    await pressSheet('Já troquei');
+    const clock = longCycleDayError('1999-12-31')!;
+    expect(notify).toHaveBeenCalledWith(clock.title, clock.message);
+    expect(mockSaveSetting).not.toHaveBeenCalled();
+    jest.setSystemTime(NOW);
+
+    let finish: () => void = () => undefined;
+    mockSaveSetting.mockImplementationOnce(
+      ({ itemKey, change }) =>
+        new Promise((resolve) => (finish = () => resolve({ item_key: itemKey, every_months: null, off: false, replaced_on: null, ...change }))),
+    );
+    await act(async () => options('Vassoura')!.props.onPress());
+    const action = sheet()!.props.actions.find((a: { label: string }) => a.label === 'Já troquei');
+    // As duas chamadas da mesma ação, uma logo depois da outra (o segundo toque antes de a primeira gravar).
+    await act(async () => {
+      action.onPress();
+      action.onPress();
+    });
+    expect(mockSaveSetting).toHaveBeenCalledTimes(1);
+    await act(async () => finish());
+  });
+
+  it('"Não sugerir mais" grava, diz como voltar, e o "Desfazer" volta a sugerir', async () => {
+    dueHouse();
+    await mount();
+    await act(async () => options('Travesseiro')!.props.onPress());
+    await pressSheet('Não sugerir mais');
+    expect(mockSaveSetting).toHaveBeenCalledWith({ itemKey: 'travesseiro', change: { off: true } });
+    expect(row('Travesseiro').props.subtitle).toBe(longCycleOffNotice('Travesseiro'));
+    expect(undoButton().props.accessibilityLabel).toBe('Voltar a sugerir Travesseiro');
+    await act(async () => undoButton().props.onPress());
+    expect(mockSaveSetting).toHaveBeenLastCalledWith({ itemKey: 'travesseiro', change: { off: false } });
+    expect(rows()).toEqual(['Travesseiro', 'Vassoura', 'Escova de dente']);
+  });
+
+  it('"Mudar o prazo" abre a folha do prazo; no iPhone, só depois de o menu sair', async () => {
+    jest.replaceProperty(Platform, 'OS', 'ios');
+    dueHouse();
+    await mount();
+    const periodChips = () => renderer!.root.findAllByType(Chip).filter((c) => c.props.toggle);
+    await act(async () => options('Escova de dente')!.props.onPress());
+    const menu = sheet()!;
+    await act(async () => sheetButton('Mudar o prazo').props.onPress());
+    // O menu fechou, e a folha espera ele descer.
+    expect(periodChips()).toHaveLength(0);
+    await act(async () => menu.findByType(Modal).props.onDismiss());
+    expect(periodChips().map((c) => c.props.label)).toEqual(['1 mês', '2 meses', '3 meses', '4 meses', '6 meses', '9 meses', '1 ano', '1 ano e meio', '2 anos']);
+    expect(periodChips().find((c) => c.props.selected)!.props.label).toBe('3 meses');
+    expect(periodChips().find((c) => c.props.label === '3 meses')!.props.accessibilityLabel).toBe('3 meses, o padrão do Kotii');
+    // Um prazo maior: a escova sai da hora, e o aviso fica no lugar dela.
+    await act(async () => periodChips().find((c) => c.props.label === '6 meses')!.props.onPress());
+    await act(async () => renderer!.root.findAllByType(Button).find((b) => b.props.title === 'Salvar')!.props.onPress());
+    expect(mockSaveSetting).toHaveBeenCalledWith({ itemKey: 'escova_dente', change: { every_months: 6 } });
+    expect(row('Escova de dente').props.subtitle).toBe('Escova de dente: agora a cada 6 meses.');
+    expect(undoButton().props.accessibilityLabel).toBe('Voltar ao prazo de antes de Escova de dente');
+    await act(async () => undoButton().props.onPress());
+    expect(mockSaveSetting).toHaveBeenLastCalledWith({ itemKey: 'escova_dente', change: { every_months: null } });
+  });
+
+  it('um prazo que ainda deixa na hora: a linha fica e o foco volta às opções dela', async () => {
+    dueHouse();
+    await mount();
+    await act(async () => options('Vassoura')!.props.onPress());
+    await pressSheet('Mudar o prazo');
+    // 9 meses depois de 1/9/2025 ainda é a hora (até o dobro, 1/3/2027).
+    const chip = renderer!.root.findAllByType(Chip).find((c) => c.props.toggle && c.props.label === '9 meses')!;
+    await act(async () => chip.props.onPress());
+    await act(async () => renderer!.root.findAllByType(Button).find((b) => b.props.title === 'Salvar')!.props.onPress());
+    expect(mockSaveSetting).toHaveBeenCalledWith({ itemKey: 'vassoura', change: { every_months: 9 } });
+    // O cache novo (no app, o setQueryData da gravação desenha de novo; aqui, a busca de mentira não avisa).
+    await rerender();
+    expect(row('Vassoura').props.subtitle).toBe('Última compra há 1 ano e 2 meses · trocar a cada 9 meses');
+    expect(group(SUGGESTION_TITLES.longCycle)!.findAllByType(Button).find((b) => b.props.title === 'Desfazer')).toBeUndefined();
+    expect(focusedLast()).toBe(viewOf(options('Vassoura')!));
+  });
+
+  it('depois de pôr na lista, o foco vai para as opções da linha que ficou no lugar', async () => {
+    dueHouse();
+    await mount();
+    await act(async () => row('Travesseiro').findByType(AddCircle).props.onPress());
+    // A lista de agora há pouco chega no desenho seguinte.
+    await rerender();
+    expect(rows()).toEqual(['Vassoura', 'Escova de dente']);
+    expect(focusedLast()).toBe(viewOf(options('Vassoura')!));
+  });
+
+  describe('sem tudo o que pode esconder uma linha, nenhum grupo', () => {
+    it.each<[string, () => void]>([
+      ['os ajustes na primeira busca', () => (mockData.longCycleSettings = { data: undefined, fetchStatus: 'fetching' })],
+      ['os ajustes sem internet, sem nada guardado', () => (mockData.longCycleSettings = { data: undefined, fetchStatus: 'paused' })],
+      ['as listas carregando', () => (mockData.overrides.lists = mockNoData)],
+      ['as listas que falharam ao buscar de novo', () => (mockData.overrides.lists = { isSuccess: false, isError: true })],
+      ['as reposições carregando', () => (mockData.overrides.supplies = mockNoData)],
+      ['as tarefas carregando', () => (mockData.overrides.chores = mockNoData)],
+      ['o histórico dos 180 dias sem dados, mesmo com a leitura longa guardada', () => {
+        mockData.longCycleHistory = { data: mockData.purchases, fetchStatus: 'idle' };
+        mockData.overrides.purchases = mockNoData;
+      }],
+      ['a leitura longa na primeira busca', () => (mockData.longCycleHistory = { data: undefined, fetchStatus: 'fetching' })],
+    ])('%s', async (_, setup) => {
+      dueHouse();
+      setup();
+      await mount();
+      expect(group(SUGGESTION_TITLES.longCycle)).toBeUndefined();
+    });
+  });
+
+  it('a leitura longa que falhou: só as compras dos 180 dias', async () => {
+    dueHouse();
+    mockData.purchases = [bought('Escova de dente', '2026-07-01', 'higiene')];
+    mockData.longCycleHistory = { data: undefined, fetchStatus: 'idle', isError: true };
+    await mount();
+    expect(rows()).toEqual(['Escova de dente']);
+  });
+
+  it('o que a casa já acompanha fica de fora: "Acho que acabou", "Gás, água e ração" e a tarefa que se repete', async () => {
+    dueHouse();
+    // Uma escova por semana: está em "Acho que acabou".
+    mockData.purchases = [
+      ...mockData.purchases,
+      bought('Escova de dente', '2026-10-10', 'higiene'),
+      bought('Escova de dente', '2026-10-17', 'higiene'),
+      bought('Escova de dente', '2026-10-24', 'higiene'),
+      bought('Refil filtro Europa', '2026-03-01', 'limpeza'),
+      bought('Refil de mop', '2026-03-01', 'limpeza'),
+    ];
+    mockData.supplies = [{ id: 'f', name: 'Filtro da cozinha', kind: 'filtro', typical_days: 180, notes: null, created_at: '2026-01-01', refills: [] }];
+    mockData.chores = [{ ...chore('Trocar a vassoura', '2027-01-01'), recurrence: 'monthly' }];
+    await mount();
+    expect(group(SUGGESTION_TITLES.restock)!.findAllByType(ListRow).map((r) => r.props.title)).toEqual(['Escova de dente']);
+    expect(rows()).toEqual(['Travesseiro', 'Refil de mop']);
+  });
+
+  it('"Ver os outros" abre os prazos de troca; antes da migração, não aparece', async () => {
+    dueHouse();
+    mockData.purchases = [...mockData.purchases, bought('Refil de mop', '2026-03-01', 'limpeza')];
+    await mount();
+    expect(rows()).toHaveLength(3);
+    const more = group(SUGGESTION_TITLES.longCycle)!.findByType(LinkButton);
+    expect(more.props.title).toBe('Ver o outro (1)');
+    expect(more.props.accessibilityLabel).toBe('Ver o outro item na hora de trocar');
+    await act(async () => more.props.onPress());
+    expect(router.push).toHaveBeenCalledWith('/trocas');
+
+    await act(async () => renderer!.unmount());
+    mockData.longCycleSettings = { data: null, fetchStatus: 'idle' };
+    await mount();
+    expect(group(SUGGESTION_TITLES.longCycle)!.findAllByType(LinkButton)).toHaveLength(0);
+  });
+
+  it('o aviso sai quando a Hoje deixa de estar à vista', async () => {
+    dueHouse();
+    await mount();
+    await act(async () => options('Vassoura')!.props.onPress());
+    await pressSheet('Não sugerir mais');
+    expect(row('Vassoura').props.subtitle).toBe(longCycleOffNotice('Vassoura'));
+    await act(async () => mockFocus.blur.forEach((leave) => leave()));
+    expect(rows()).toEqual(['Travesseiro', 'Escova de dente']);
+  });
+
+  it('a gravação que termina com a Hoje fora de vista, ou já noutra visita, não deixa aviso, não fala nem move o foco', async () => {
+    const announced = jest.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => undefined);
+    const save = mockSaveSetting.getMockImplementation()!;
+    /** A próxima gravação fica no ar até `finish`. */
+    function holdNextWrite() {
+      const held = { finish: () => undefined as void };
+      mockSaveSetting.mockImplementationOnce(
+        (args) => new Promise((resolve) => (held.finish = () => void save(args).then(resolve))),
+      );
+      return held;
+    }
+    const leave = () => act(async () => mockFocus.blur.forEach((f) => f()));
+    const come = () => act(async () => mockFocus.focus.forEach((f) => f()));
+    const noUndo = () => expect(group(SUGGESTION_TITLES.longCycle)!.findAllByType(Button).filter((b) => b.props.title === 'Desfazer')).toHaveLength(0);
+    dueHouse();
+    await mount();
+
+    // "Não sugerir mais" no ar; a pessoa troca de aba (ou abre os prazos) antes de a gravação voltar.
+    const off = holdNextWrite();
+    await act(async () => options('Travesseiro')!.props.onPress());
+    await pressSheet('Não sugerir mais');
+    expect(mockSaveSetting).toHaveBeenLastCalledWith({ itemKey: 'travesseiro', change: { off: true } });
+    await leave();
+    jest.mocked(moveFocus).mockClear();
+    announced.mockClear();
+    await act(async () => off.finish());
+    await rerender();
+    // Nada falado nem foco movido para o "Desfazer" da Hoje escondida.
+    expect(announced).not.toHaveBeenCalled();
+    expect(moveFocus).not.toHaveBeenCalled();
+    // De volta à Hoje: o travesseiro saiu, sem aviso nem "Desfazer" (que gravaria o de antes de outra visita).
+    await come();
+    await rerender();
+    expect(rows()).toEqual(['Vassoura', 'Escova de dente']);
+    noUndo();
+    expect(announced).not.toHaveBeenCalled();
+    expect(moveFocus).not.toHaveBeenCalled();
+
+    // "Já troquei" no ar; a pessoa sai e volta antes de a gravação voltar: o aviso era da visita de antes.
+    const replaced = holdNextWrite();
+    await act(async () => options('Vassoura')!.props.onPress());
+    await pressSheet('Já troquei');
+    expect(mockSaveSetting).toHaveBeenLastCalledWith({ itemKey: 'vassoura', change: { replaced_on: TODAY } });
+    await leave();
+    await come();
+    jest.mocked(moveFocus).mockClear();
+    await act(async () => replaced.finish());
+    await rerender();
+    expect(rows()).toEqual(['Escova de dente']);
+    noUndo();
+    expect(announced).not.toHaveBeenCalled();
+    expect(moveFocus).not.toHaveBeenCalled();
+
+    // Um prazo que deixa na hora: o foco não volta às opções da linha se a Hoje saiu de vista no meio.
+    const period = holdNextWrite();
+    await act(async () => options('Escova de dente')!.props.onPress());
+    await pressSheet('Mudar o prazo');
+    // 4 meses depois de 1/7 ainda é a hora (até o dobro, 1/3/2027).
+    const chip = renderer!.root.findAllByType(Chip).find((c) => c.props.toggle && c.props.label === '4 meses')!;
+    await act(async () => chip.props.onPress());
+    await act(async () => renderer!.root.findAllByType(Button).find((b) => b.props.title === 'Salvar')!.props.onPress());
+    expect(mockSaveSetting).toHaveBeenLastCalledWith({ itemKey: 'escova_dente', change: { every_months: 4 } });
+    await leave();
+    jest.mocked(moveFocus).mockClear();
+    await act(async () => period.finish());
+    await rerender();
+    expect(moveFocus).not.toHaveBeenCalled();
+    expect(row('Escova de dente').props.subtitle).toBe('Última compra há 4 meses · trocar a cada 4 meses');
+    noUndo();
+
+    // Na mesma visita, tudo como antes: o aviso, a fala e o foco no "Desfazer".
+    await come();
+    await act(async () => options('Escova de dente')!.props.onPress());
+    await pressSheet('Não sugerir mais');
+    expect(row('Escova de dente').props.subtitle).toBe(longCycleOffNotice('Escova de dente'));
+    expect(announced).toHaveBeenCalledWith(longCycleOffNotice('Escova de dente'));
+    expect(focusedLast()).toBe(viewOf(undoButton()));
+    announced.mockRestore();
   });
 });

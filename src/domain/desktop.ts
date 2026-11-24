@@ -206,6 +206,8 @@ export const SCREEN_AREAS: Record<string, AppArea | null> = {
   pessoa: 'saude',
   // Configurações.
   clima: 'configuracoes',
+  // Os prazos de troca da casa (Configurações → Casa).
+  trocas: 'configuracoes',
   casas: 'configuracoes',
   avisos: 'configuracoes',
   perfil: 'configuracoes',
