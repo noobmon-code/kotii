@@ -7,6 +7,8 @@ import {
   basePackSize,
   brandFreeItemKey,
   CAN_IS_THE_PACKAGE,
+  COOKED_IS_THE_USUAL,
+  CURED_HAM_WORDS,
   keyFit,
   keyPackageSize,
   LT_IS_THE_CAN,
@@ -398,6 +400,52 @@ describe('o mesmo item: as descrições que ficam', () => {
     expect(keyFit({ name: 'Leite', category: 'laticinios' }, 'LEITE INTEGRAL LT 1L')).toBe(true);
     expect(keyFit({ name: 'Chocolate', category: 'doces' }, 'CHOC AO LT NESTLE 90G')).toBe(true);
   });
+
+  it('o cozido é o de sempre no presunto, no peito de peru e na mortadela; o cru é outro produto do presunto, nos dois sentidos', () => {
+    expect([...COOKED_IS_THE_USUAL].sort()).toEqual(['mortadela', 'peito_peru', 'presunto']);
+    expect([...CURED_HAM_WORDS].sort()).toEqual(['cru', 'crua', 'iberico', 'jamon', 'parma', 'serrano']);
+    // A nota imprime o presunto de sempre como "PRES COZ" ou "PRESUNTO COZ": é ele, abreviado ou por extenso.
+    const cooked = ['PRES COZ SADIA KG', 'PRESUNTO COZ PERDIGAO FAT KG', 'PRESUNTO COZIDO PERDIGAO KG', 'PRES SADIA FAT KG', 'PRESUNTO SADIA COZ FAT'];
+    const cured = ['PRESUNTO PARMA FAT KG', 'PRESUNTO CRU FAT KG', 'PRESUNTO SERRANO FAT', 'PRES CRU KG', 'PRESUNTO TIPO PARMA KG'];
+    for (const name of ['Presunto', 'Presunto cozido']) {
+      for (const description of cooked) expect([name, description, keyFit({ name, category: 'frios' }, description)]).toEqual([name, description, true]);
+      for (const description of cured) expect([name, description, keyFit({ name, category: 'frios' }, description)]).toEqual([name, description, false]);
+    }
+    // A lista que pede o cru leva o cru e não leva o cozido, que daria um preço de outro produto, bem mais barato.
+    for (const name of ['Presunto parma', 'Presunto cru', 'Presunto serrano']) {
+      for (const description of ['PRESUNTO PARMA FAT KG', 'PRESUNTO CRU FAT KG', 'PRESUNTO SERRANO FAT']) {
+        expect([name, description, keyFit({ name, category: 'frios' }, description)]).toEqual([name, description, true]);
+      }
+      for (const description of cooked) expect([name, description, keyFit({ name, category: 'frios' }, description)]).toEqual([name, description, false]);
+    }
+    for (const [name, description] of [
+      ['Peito de peru', 'PEITO PERU DEFUM COZ'],
+      ['Peito de peru', 'PEITO DE PERU COZIDO SADIA'],
+      ['Peito de peru', 'PEITO PERU SADIA'],
+      ['Mortadela', 'MORTADELA COZ'],
+    ] as const) {
+      expect([name, description, keyFit({ name, category: 'frios' }, description)]).toEqual([name, description, true]);
+    }
+    // O cozido continua outro produto na comida que não vem cozida.
+    expect(keyFit({ name: 'Milho', category: null }, 'MILHO COZ 200G')).toBe(false);
+    expect(keyFit({ name: 'Feijão', category: 'graos' }, 'FEIJAO PRETO COZ 400G')).toBe(false);
+    expect(keyFit({ name: 'Lombo', category: 'carnes' }, 'LOMBO SUINO COZ')).toBe(false);
+    expect(keyFit({ name: 'Camarão', category: 'peixes' }, 'CAMARAO COZ')).toBe(false);
+    // O cru só é marca para o presunto: o camarão cru é o camarão.
+    expect(keyFit({ name: 'Camarão', category: 'peixes' }, 'CAMARAO CRU')).toBe(true);
+  });
+
+  it('em item de casa o "COZ" é a cozinha: o papel toalha e o detergente de cozinha são o papel toalha e o detergente', () => {
+    expect([...otherProductMarks('PAPEL TOALHA COZ SNOB')]).toEqual(['cozido']);
+    for (const [name, category, description] of [
+      ['Papel toalha', 'papel', 'PAPEL TOALHA COZ SNOB'],
+      ['Papel toalha', null, 'PAPEL TOALHA COZ SNOB'],
+      ['Papel toalha', 'papel', 'PAP TOALHA COZINHA SNOB'],
+      ['Detergente', 'limpeza', 'DETERG COZ'],
+    ] as const) {
+      expect([name, description, keyFit({ name, category }, description)]).toEqual([name, description, true]);
+    }
+  });
 });
 
 describe('os grupos: as descrições e o tamanho de cada item', () => {
@@ -424,6 +472,17 @@ describe('os grupos: as descrições e o tamanho de cada item', () => {
     const chicken = answered([item('f', 'Frango', 'carnes', 1, 'kg')], () => [key('FRANGO DESFIADO LATA 170G', 'un', 5), key('FRANGO INTEIRO', 'kg', 1)]).groups;
     expect(groupOf(chicken, 'f')).toMatchObject({ keys: [], weightOnly: ['FRANGO INTEIRO'], expected: null });
     expect(entryOf(chicken, 'f')?.perBase).toBeNull();
+  });
+
+  it('"Presunto" 1 kg: o cozido da nota ("PRES COZ", "PRESUNTO COZIDO") fica no grupo e o parma não entra', () => {
+    // O banco dá, em cada mercado, a linha mais barata do grupo: com o parma no grupo e o cozido fora, o preço de
+    // "Presunto" seria o do parma.
+    const keys = [key('PRES COZ SADIA KG', 'kg', 5), key('PRESUNTO COZIDO PERDIGAO KG', 'kg', 3), key('PRESUNTO PARMA FAT KG', 'kg', 1)];
+    const ham = answered([item('p', 'Presunto', 'frios', 1, 'kg')], () => keys).groups;
+    expect(groupOf(ham, 'p')).toMatchObject({ keys: [], weightOnly: ['PRES COZ SADIA KG', 'PRESUNTO COZIDO PERDIGAO KG'] });
+    // A lista que pede o parma fica só com ele.
+    const parma = answered([item('p', 'Presunto parma', 'frios', 1, 'kg')], () => keys).groups;
+    expect(groupOf(parma, 'p')).toMatchObject({ keys: [], weightOnly: ['PRESUNTO PARMA FAT KG'] });
   });
 
   it('a lata e a caixa de 12: "Cerveja lata 350ml" não leva a caixa; "Cerveja" leva os dois tamanhos e fica com o mais visto', () => {

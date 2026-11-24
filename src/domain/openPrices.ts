@@ -25,7 +25,7 @@ import { genericItem } from './genericItem';
 import { singular } from './nameWords';
 import { packagesFor, plainSize } from './packagePrice';
 import { packageLabel, packageSize, samePackageSize, sharedPackageSize, type PackageSize } from './packageSize';
-import { addsForm, itemExtraWords, itemIdentity, sameItemFit, searchWords, spelledOut } from './sameItem';
+import { addsForm, itemExtraWords, itemGroup, itemIdentity, sameItemFit, searchWords, spelledOut } from './sameItem';
 import { guessCategory } from './search';
 import {
   newerSharedRow,
@@ -354,7 +354,11 @@ const MARK_OF: ReadonlyMap<string, string> = new Map([
  * As abreviações de nota das palavras de OTHER_PRODUCT_WORDS (a chave guarda a descrição como a nota imprime, e o
  * SPELLED_OUT da revisão da nota não as expande): cada uma é a marca da palavra inteira, em qualquer lugar do nome.
  * Só as que não têm outra leitura comum numa descrição de mercado; as que têm valem só depois de certas palavras
- * (ABBREVIATED_AFTER). Uma abreviação lida a mais só deixa a descrição de fora (na dúvida, fica sem preço).
+ * (ABBREVIATED_AFTER), ou o item decide (itemMarks: o "COZ" também é a cozinha, mas só em item de casa, "PAPEL TOALHA
+ * COZ", onde o cozido não marca nada). Uma abreviação lida a mais não só deixa a descrição de fora: as outras
+ * descrições do grupo continuam dando o preço, e se a que saiu era o produto de sempre, o preço passa a ser de outro
+ * produto (o "PRES COZ" é o presunto de sempre: COOKED_IS_THE_USUAL). Por isso cada marca vale só onde a palavra é
+ * mesmo outro produto do item.
  */
 export const ABBREVIATED_MARKS: ReadonlyMap<string, string> = new Map([
   ['qbr', 'quebrado'],
@@ -478,21 +482,47 @@ export const CAN_IS_THE_PACKAGE: ReadonlySet<string> = new Set([
  */
 export const LT_IS_THE_CAN: ReadonlySet<string> = new Set(['feijao', 'milho', 'tomate', 'abacaxi', 'frango', 'carne', 'salsicha', 'goiaba']);
 
-/** As marcas de um nome para o item da lista (pela chave dele): as de otherProductMarks, sem a lata onde ela é a embalagem. */
+/**
+ * Os itens que vêm cozidos de sempre: o presunto, o peito de peru e a mortadela do frios. A nota escreve "PRES COZ
+ * SADIA KG", "PRESUNTO COZIDO PERDIGAO", "PEITO PERU DEFUM COZ", e essa é a descrição do item de sempre: para eles o
+ * cozido (por extenso ou abreviado) não marca outro produto. Tirá-la deixaria o grupo de "Presunto" só com o cru, bem
+ * mais caro (CURED_HAM_WORDS). Em todo outro item de comida o cozido é outro produto ("MILHO COZ", "FEIJAO PRETO
+ * COZ"); em item de casa ou de pet ele não marca nada, porque lá o "COZ" é a cozinha ("PAPEL TOALHA COZ").
+ */
+export const COOKED_IS_THE_USUAL: ReadonlySet<string> = new Set(['presunto', 'peito_peru', 'mortadela']);
+
+/**
+ * O presunto cru (o parma, o serrano, o jamón, o ibérico) é outro produto do presunto de sempre, o cozido, e custa
+ * várias vezes mais: com qualquer destas palavras o nome tem a marca "cru" para o item presunto, e essa marca vale nos
+ * dois sentidos (BOTH_WAYS): "Presunto" não leva o cru, e "Presunto parma" não leva o cozido.
+ */
+export const CURED_HAM_WORDS: ReadonlySet<string> = new Set(['cru', 'crua', 'parma', 'serrano', 'jamon', 'iberico']);
+
+/** As marcas que a lista e a descrição precisam ter juntas: a que a lista diz e a descrição não diz também tira a descrição. */
+const BOTH_WAYS: ReadonlySet<string> = new Set(['cru']);
+
+/**
+ * As marcas de um nome para o item da lista (pela chave dele): as de otherProductMarks, sem a lata onde ela é a
+ * embalagem, sem o cozido onde ele é o de sempre ou fora da comida, e com o cru do presunto.
+ */
 function itemMarks(name: string, itemKey: string | null): ReadonlySet<string> {
   const marks = new Set(otherProductMarks(name));
+  const words = spelledOut(name).split(' ').filter(Boolean);
   if (itemKey != null && CAN_IS_THE_PACKAGE.has(itemKey)) marks.delete('lata');
   else if (itemKey != null && LT_IS_THE_CAN.has(itemKey)) {
-    const words = spelledOut(name).split(' ').filter(Boolean);
     if (words.some((word, at) => word === 'lt' && at > 0 && !/\d$/.test(words[at - 1]))) marks.add('lata');
   }
+  if (itemKey != null && (COOKED_IS_THE_USUAL.has(itemKey) || itemGroup(itemKey) !== 'comida')) marks.delete('cozido');
+  if (itemKey === 'presunto' && words.some((word) => CURED_HAM_WORDS.has(word) || CURED_HAM_WORDS.has(singular(word)))) marks.add('cru');
   return marks;
 }
 
 /**
  * A descrição da base é o mesmo item da lista: `mesmo` de sameItemFit (talvez, outro e "não sei" ficam de fora), sem
  * marca de outro produto que o nome da lista não tenha (otherProductMarks, sem a lata onde ela é só a embalagem:
- * CAN_IS_THE_PACKAGE) e sem forma que a lista não diz (addsForm: o café solúvel para "Café"). A descrição é lida
+ * CAN_IS_THE_PACKAGE, e sem o cozido onde ele é o de sempre: COOKED_IS_THE_USUAL), sem faltar a marca que vale nos dois
+ * sentidos (o cru do presunto: "Presunto parma" não leva o cozido) e sem forma que a lista não diz (addsForm: o café
+ * solúvel para "Café"). A descrição é lida
  * com a caixa de volta (restorePackMark) e a categoria que o app adivinha dela. O resultado fica guardado (até
  * 20 000), fora do guardado de readItem: refazer a conta quando alguém marca um item no carrinho não chama
  * sameItemFit de novo.
@@ -508,7 +538,8 @@ export function keyFit(item: { name: string; category?: string | null }, key: st
   if (fit) {
     const itemKey = want?.key ?? null;
     const mine = itemMarks(item.name, itemKey);
-    fit = [...itemMarks(restored, itemKey)].every((mark) => mine.has(mark));
+    const theirs = itemMarks(restored, itemKey);
+    fit = [...theirs].every((mark) => mine.has(mark)) && [...mine].every((mark) => !BOTH_WAYS.has(mark) || theirs.has(mark));
   }
   if (fit) {
     const have = itemIdentity(restored, category);

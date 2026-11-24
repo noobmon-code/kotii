@@ -692,9 +692,14 @@ function isKindWord(word: string, key: string, family: string | null): boolean {
   return KINDS.some((dimension) => dimensionFits(dimension, key, family) && Object.values(dimension.values).some((terms) => terms.includes(word)));
 }
 
+/** O grupo do item, pela chave de itemIdentity ("papel_toalha" é de casa, "presunto" é comida). */
+export function itemGroup(key: string): 'casa' | 'comida' | 'pet' {
+  return GROUPS.get(key.split('+')[0]) ?? 'comida';
+}
+
 function fitsGroup(key: string, category: string | null | undefined): boolean {
   if (!category || category === 'outros') return true;
-  const group = GROUPS.get(key.split('+')[0]) ?? 'comida';
+  const group = itemGroup(key);
   const of = categoryGroup(category);
   return group === 'pet' ? category === 'pet' : of === group;
 }
