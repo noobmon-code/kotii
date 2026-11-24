@@ -267,7 +267,7 @@ describe('termos de uso', () => {
     expect(stored).toContain('despensa (com o que foi para o congelador), cardápio, os prazos de troca dos itens da casa (escova de dente, refil do filtro…), tarefas e pontos');
   });
 
-  it('excluir o produto que não está em nenhuma nota é uma mudança de texto: a versão muda, e o aviso não volta', () => {
+  it('excluir o produto que não está em nenhuma nota é uma mudança de texto: a versão muda, e o aceite que volta o aviso é o da lista aberta', () => {
     expect(TERMS_VERSION).toBe('2026-11-24');
     // Excluir produto, sozinho, não traria o aviso de volta: o aceite de 2026-11-24 é o da lista aberta de preços.
     expect(termsNotice(['2026-11-24'])).toBeNull();
