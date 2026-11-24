@@ -65,7 +65,7 @@ describe('termos de uso', () => {
   });
 
   it('os preços compartilhados: o tamanho da embalagem lido na descrição vai; quanto você levou e o que você responde, não', () => {
-    expect(TERMS_VERSION).toBe('2026-11-22');
+    expect(TERMS_VERSION).toBe('2026-11-24');
     const prices = section('Preços compartilhados');
     expect(prices).toContain('o tamanho da embalagem que o app leu na descrição (só na nota lida pelo QR code, quando ela diz, como "5 kg" ou "12 x 350 ml")');
     expect(prices).toContain('a quantidade que você levou');
@@ -73,7 +73,7 @@ describe('termos de uso', () => {
   });
 
   it('a marca mais barata: a base também compara as marcas do item sem marca, por kg ou litro, e a de fora é "outra marca"', () => {
-    expect(TERMS_VERSION).toBe('2026-11-22');
+    expect(TERMS_VERSION).toBe('2026-11-24');
     const prices = section('Preços compartilhados');
     expect(prices).toContain('No item sem marca da lista, com o mercado escolhido e no "Onde comprar"');
     expect(prices).toContain('por kg ou por litro');
@@ -237,13 +237,13 @@ describe('termos de uso', () => {
     expect(names).toContain('O nome que a sua casa der a um mercado vale para ela acima do nome padrão');
   });
 
-  it('a lista aberta de preços (22/11/2026) é uma mudança importante: o aviso volta para todo mundo', () => {
+  it('a lista aberta de preços (24/11/2026) é uma mudança importante: o aviso volta para todo mundo', () => {
     // O que se compartilha entre casas e quem vê mudou (toda casa vê toda a base do estado, e as descrições chegam ao
     // app de quem procura): o aceite é o da mesma data do texto.
-    expect(TERMS_ACCEPT_VERSION).toBe('2026-11-22');
-    expect(TERMS_VERSION).toBe('2026-11-22');
+    expect(TERMS_ACCEPT_VERSION).toBe('2026-11-24');
+    expect(TERMS_VERSION).toBe('2026-11-24');
     expect(termsNotice(['2026-11-14'])).toBe('mudou');
-    expect(termsNotice(['2026-11-22'])).toBeNull();
+    expect(termsNotice(['2026-11-24'])).toBeNull();
   });
 
   it('a foto de produto no "Escanear" é um envio novo à IA: o texto diz', () => {
