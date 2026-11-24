@@ -283,7 +283,8 @@ describe('nota repetida na revisão', () => {
     await open(<ReceiptScreen />);
     expect(page()).toContain(NOTICE);
     await press('Confirmar nota');
-    expect(mockDb.rpcs.map((call) => call.fn)).toEqual(['confirm_receipt']);
+    // A nota já confirmada pergunta se o banco tem as correções dela (só uma leitura, receipt_corrections_available).
+    expect(mockDb.rpcs.map((call) => call.fn).filter((fn) => fn !== 'receipt_corrections_available')).toEqual(['confirm_receipt']);
     expect(mockDb.rpcs[0].args.p_receipt_id).toBe('r1');
     expect(mockDb.deletes).toEqual([]);
     expect(mockRouter.back).toHaveBeenCalled();

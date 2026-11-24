@@ -391,7 +391,8 @@ describe('"Finalizar compra" com a nota, de ponta a ponta', () => {
     expect(where()).toBe('/nota/r1');
     // A revisão marcou sozinha o detergente do carrinho: confirmar o tira da lista.
     await press('Confirmar nota');
-    expect(mockDb.rpcs.map(({ fn }) => fn)).toEqual(['confirm_receipt']);
+    // A nota já confirmada pergunta se o banco tem as correções dela (só uma leitura, receipt_corrections_available).
+    expect(mockDb.rpcs.map(({ fn }) => fn).filter((fn) => fn !== 'receipt_corrections_available')).toEqual(['confirm_receipt']);
     expect(where()).toBe('/lista/l1');
     expect(mockList.confirmed).toHaveLength(1);
     expect(mockList.confirmed[0]).toMatchObject({ onlineAtTap: true, removedListItems: ['li1'] });
