@@ -6,7 +6,7 @@
 import { formatBRDate } from './dates';
 
 /** Data da versão do texto (AAAA-MM-DD). Muda a cada mudança no texto. */
-export const TERMS_VERSION = '2026-11-22';
+export const TERMS_VERSION = '2026-11-24';
 
 /**
  * A versão que a pessoa aceita (AAAA-MM-DD). Só muda numa mudança importante (o que é guardado, compartilhado
